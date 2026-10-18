@@ -4,6 +4,7 @@
 #include <cassert>
 #include <cstring>
 
+#include "dh/render/ReducingList.h"
 #include "dh/render/RenderDataPoint.h"
 
 namespace dh {
@@ -88,7 +89,40 @@ bool ColumnRenderView::copyFrom(const ColumnRenderView& source, int outputDataIn
     return true;
 }
 
+namespace {
+
+/// Java ColumnRenderView.mergeMultiData: reduces one source column into one output column.
+/// Returns false where Java would throw (overlapping visible datapoints).
+bool mergeMultiData(const ColumnRenderView& sourceData, ReducingList& reducingList, ColumnRenderView& output) {
+    const int target = output.maxVerticalSliceCount;
+    if (target <= 0) {
+        // Java: output.fill(EMPTY_DATA)
+        for (int i = 0; i < output.size; ++i) {
+            output.set(i, rdp::EMPTY_DATA);
+        }
+    } else if (target == 1) {
+        output.set(0, ReducingList::reduceToOne(sourceData));
+        for (int index = 1, size = output.size; index < size; index++) {
+            output.set(index, rdp::EMPTY_DATA);
+        }
+    } else {
+        if (!reducingList.populate(sourceData)) {
+            return false;
+        }
+        reducingList.reduce(output.maxVerticalSliceCount);
+        reducingList.copyTo(output);
+    }
+    return true;
+}
+
+} // namespace
+
 bool ColumnRenderView::changeVerticalSizeFrom(const ColumnRenderView& source) {
+    ReducingList reducingList;
+    return changeVerticalSizeFrom(source, reducingList);
+}
+
+bool ColumnRenderView::changeVerticalSizeFrom(const ColumnRenderView& source, ReducingList& reducingList) {
     if (subViewCount() != source.subViewCount()) {
         return false; // "Cannot copy and resize to views with different dataCounts"
     }
@@ -98,9 +132,16 @@ bool ColumnRenderView::changeVerticalSizeFrom(const ColumnRenderView& source) {
             return false;
         }
     } else {
-        // TODO(WP-E1): per sub-view mergeMultiData via RenderDataPointReducingList
-        // (target==1 -> reduceToOne, otherwise populate/reduce/copyTo).
-        return false;
+        for (int i = 0; i < subViewCount(); i++) {
+            const ColumnRenderView sourceSubView = source.subView(i, 1);
+            ColumnRenderView       thisSubView   = subView(i, 1);
+            if (sourceSubView.size <= 0 || thisSubView.size <= 0) {
+                return false; // window past the end of the arrays (Java would throw)
+            }
+            if (!mergeMultiData(sourceSubView, reducingList, thisSubView)) {
+                return false;
+            }
+        }
     }
 
     // copy over the void data too
