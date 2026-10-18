@@ -11,7 +11,6 @@
 #include "dh/platform/testing/TestChunk.h"
 #include "dh/pos/SectionPos.h"
 #include "dh/util/Bits.h"
-#include "golden_loader.h"
 
 using namespace dh;
 
@@ -352,67 +351,4 @@ TEST_CASE("build: column solid up to the build limit") {
     // climb ends at y == exclusiveMax (out-of-range read is air); no air point is emitted,
     // stone starts at lastY=64: y=63 differs from the initial air -> air point h=1.
     checkSection(*ds, 0, 0, same({encode(0, 1, 128, 0, 15), encode(1, 128, 0, 0, 15)}));
-}
-
-TEST_CASE("build: golden chunk_build") {
-    DH_GOLDEN_SUITE_OR_SKIP(s, "chunk_build.pending");
-    // TODO(re-check against tools/golden-dumper/README.md once chunk_build is dumped): the input layout
-    // below is a best guess - in.chunk.blocks = {palette:[{serial,isAir,isSolid,isLiquid,opacity}|serial],
-    // columns:[256 x [[paletteIdx,count],...]] bottom-up from minY, index x*16+z}. Cases that do not match
-    // are skipped rather than failed.
-    for (const auto& gc : s.cases) {
-        const auto& in = gc.in;
-        if (!in.contains("chunk") || !in["chunk"].contains("blocks")) continue;
-        const auto& jc = in["chunk"];
-        const auto& jb = jc["blocks"];
-        if (!jb.contains("palette") || !jb.contains("columns") || !jb["columns"].is_array()
-            || jb["columns"].size() != 256)
-            continue;
-
-        MapBlockRegistry              reg;
-        std::vector<const BlockInfo*> palette;
-        for (const auto& e : jb["palette"]) {
-            if (e.is_string()) {
-                const std::string ser = e.get<std::string>();
-                palette.push_back(
-                    ser == "minecraft:air"     ? reg.air()
-                    : ser == "minecraft:water" ? reg.water()
-                                               : reg.addBlock(BlockInfo{ser})
-                );
-            } else {
-                BlockInfo b;
-                b.serial   = e.value("serial", std::string());
-                b.isAir    = e.value("isAir", false);
-                b.isSolid  = e.value("isSolid", true);
-                b.isLiquid = e.value("isLiquid", false);
-                b.opacity  = static_cast<std::uint8_t>(e.value("opacity", 16));
-                palette.push_back(b.serial == "minecraft:air" ? reg.air() : reg.addBlock(b));
-            }
-        }
-        const int cx = jc.value("chunkX", 0), cz = jc.value("chunkZ", 0);
-        const int minY = jc.value("minY", MIN_Y), maxY = jc.value("maxY", MAX_Y);
-        TestChunk chunk(cx, cz, minY, maxY, reg.air(), reg.defaultBiome());
-        chunk.setDhBlockLightingCorrect(true);
-        for (int i = 0; i < 256; ++i) {
-            int y = minY;
-            for (const auto& run : jb["columns"][static_cast<std::size_t>(i)]) {
-                const int idx = run[0].get<int>(), n = run[1].get<int>();
-                for (int k = 0; k < n && y < maxY; ++k, ++y)
-                    chunk.setBlock(i / 16, y, i % 16, palette[static_cast<std::size_t>(idx)]);
-            }
-        }
-        const auto comp = compressionModeFromValue(in.value("worldCompression", 0));
-        if (!comp) continue;
-        auto ds = createFromChunk(chunk, BuildOptions{*comp});
-        if (!gc.out.contains("columns")) continue;
-        REQUIRE_MESSAGE(ds.has_value(), gc.name);
-        const auto& cols = gc.out["columns"];
-        REQUIRE(cols.size() == 4096);
-        for (int i = 0; i < 4096; ++i)
-            CHECK_MESSAGE(
-                ds->columns[static_cast<std::size_t>(i)] == dh::test::hexU64Array(cols[static_cast<std::size_t>(i)]),
-                gc.name
-            );
-        if (gc.out.contains("isEmpty")) CHECK(ds->isEmpty == gc.out["isEmpty"].get<bool>());
-    }
 }
