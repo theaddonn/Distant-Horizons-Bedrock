@@ -71,6 +71,10 @@ public:
     /// CloseReason first when it matters). Local onDisconnected follows; later frames are dropped.
     void disconnect(dh::SessionId session) override;
 
+    /// Runs `task` on the dispatch thread, ordered with the listener events (use it to mutate state the
+    /// listener callbacks read).
+    void runOnDispatch(std::function<void()> task) { post(std::move(task)); }
+
     /// Game thread, once per tick: sends the queued outbound frames. Returns the number sent.
     std::size_t flushOutbound();
 
