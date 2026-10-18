@@ -35,6 +35,15 @@ struct IBlockRegistry {
     /// nullptr if the platform cannot resolve `serial`.
     virtual const BiomeInfo* resolveBiome(std::string_view serial) = 0;
 
+    /// Every known state of the block whose base name (text before '[', e.g. "minecraft:kelp")
+    /// equals `baseName` (Java getAllBlockWrappers). Empty if unknown. The default only does an
+    /// exact resolveBlock; implementations that can enumerate states should override.
+    virtual std::vector<const BlockInfo*> resolveAllStates(std::string_view baseName) {
+        const BlockInfo* b = resolveBlock(baseName);
+        if (b == nullptr) return {};
+        return {b};
+    }
+
     virtual const BlockInfo* air()          = 0;
     virtual const BlockInfo* water()        = 0;
     virtual const BiomeInfo* defaultBiome() = 0;
@@ -62,6 +71,8 @@ public:
     explicit MapBlockRegistry(bool autoCreateUnknown = false);
 
     const BlockInfo* resolveBlock(std::string_view serial) override;
+    /// Scan of the sorted map: serials equal to baseName or baseName + "[...]".
+    std::vector<const BlockInfo*> resolveAllStates(std::string_view baseName) override;
     const BiomeInfo* resolveBiome(std::string_view serial) override;
     const BlockInfo* air() override { return air_; }
     const BlockInfo* water() override { return water_; }
