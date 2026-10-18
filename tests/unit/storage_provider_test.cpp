@@ -1,6 +1,7 @@
 #include <doctest.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <thread>
@@ -530,6 +531,30 @@ TEST_CASE("propagator: deterministic order, nearest parent first") {
     CHECK(order[0] == sec::encode(7, 0, 0));
     CHECK(order[1] == sec::encode(7, -5, 0));
     CHECK(order[2] == sec::encode(7, 20, 0));
+}
+
+TEST_CASE("updater: a listener may update the same position (no deadlock)") {
+    Fx                f;
+    std::atomic<bool> done{false};
+    std::atomic<int>  calls{0};
+    f.provider->addUpdateListener([&](std::uint64_t pos) {
+        if (calls.fetch_add(1) == 0) {
+            // re-enter for the same pos with different content
+            (void)f.up().update(f.make(sec::detail(pos), sec::x(pos), sec::z(pos), f.dirt, 20, 15, 4));
+        }
+    });
+    std::thread worker([&] {
+        (void)f.up().update(f.make(6, 0, 0, f.stone, 10, 15, 4));
+        done = true;
+    });
+    for (int i = 0; i < 500 && !done.load(); ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    const bool finished = done.load();
+    if (finished) worker.join();
+    else worker.detach(); // deadlocked: do not hang the suite
+    REQUIRE(finished);
+    CHECK(calls.load() == 2);
+    f.up().waitQuiescent();
+    CHECK(f.up().inFlightUpdates() == 0);
 }
 
 TEST_CASE("chunk hash store / tracker") {
