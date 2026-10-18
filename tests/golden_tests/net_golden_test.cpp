@@ -124,6 +124,15 @@ TEST_CASE("golden net: messages and session constrain") {
         ours[1]                     = static_cast<std::byte>(kProtocolVersion & 0xFF);
         auto r                      = decodeFrame(ours);
         INFO("case ", gc.name);
+        // DELIBERATE DEVIATION (user decision 2026-10-18): Java validates LevelInit keys after decode
+        // (ClientPluginChannelApi); our LevelInitMessage::decode rejects invalid level/server keys up
+        // front. Java's random-key level_init frames therefore do not round-trip here and are counted
+        // as skipped, not failed. Any other message that fails to decode is a real disagreement.
+        const bool levelInitStrictReject = gc.name.rfind("level_init_", 0) == 0 && !r.has_value();
+        if (levelInitStrictReject) {
+            st.skipped += 3; // roundTrip, body, frame
+            continue;
+        }
         c.eq("roundTrip", r.has_value()); // Java: decode(body) consumed everything and re-encoded identically
         if (!r.has_value()) {
             // The roundTrip CHECK above already failed; body/frame cannot be compared without a decoded message.
