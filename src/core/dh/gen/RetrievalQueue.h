@@ -144,6 +144,12 @@ struct IRetrievalQueue {
     /// Cancels every waiting (not yet started) request for which `removeIf(pos)` returns true.
     virtual void removeRetrievalRequestIf(std::function<bool(std::uint64_t)> removeIf) = 0;
 
+    /// Java get/setCanRegenerate: gate for regeneration tasks (set by the requester each tick: true once no
+    /// block-detail section is missing). Default: ignored. GenQueue stores it; no regeneration scheduling reads
+    /// it in this port yet (Java WorldGenerationQueue only stores it too).
+    virtual void setCanRegenerate(bool) {}
+    virtual bool getCanRegenerate() const { return false; }
+
     virtual std::size_t waitingTaskCount() const    = 0;
     virtual std::size_t inProgressTaskCount() const = 0;
 

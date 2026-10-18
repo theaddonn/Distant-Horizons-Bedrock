@@ -1,5 +1,6 @@
 #include "dh/gen/LodRequestModule.h"
 
+#include "dh/platform/ILogger.h"
 #include "dh/pos/SectionPos.h"
 
 #include <algorithm>
@@ -40,9 +41,14 @@ void LodRequestModule::startWorldGen() {
     if (queue_ != nullptr || !factory_) return; // Java: "Failed to start world gen due to concurrency"
     std::unique_ptr<IRetrievalQueue> q = factory_();
     if (!q) return;
+    if (!provider_.setRetrievalQueue(q.get())) {
+        // Java asserts "previous world gen queue is still here!": don't register anything
+        log::logf(LogLevel::Error, "Failed to start world gen: the provider already has a retrieval queue.");
+        q->shutdown(true);
+        return;
+    }
     queue_ = std::move(q);
     provider_.addWorldGenCompleteListener(&listener_);
-    provider_.setRetrievalQueue(queue_.get());
 }
 
 void LodRequestModule::stopWorldGen() {
@@ -128,7 +134,9 @@ std::size_t LodRequestSet::startQueued(
     const std::function<bool(std::uint64_t)>& posInRange
 ) {
     std::size_t queuedNow = 0;
-    for (const std::uint64_t pos : sortedMissing(target)) {
+    // snapshot BEFORE queuing (LodQuadTree :948-959 uses the list as it was sorted for this tick)
+    const std::vector<std::uint64_t> snapshot = sortedMissing(target);
+    for (const std::uint64_t pos : snapshot) {
         if (!provider.canQueueRetrievalNow()) break;
         if (posInRange && !posInRange(pos)) continue;
 
@@ -145,13 +153,35 @@ std::size_t LodRequestSet::startQueued(
             missing_.insert(pos);
             continue;
         }
+        if (const auto done = future->get();
+            done && (done->kind == RetrievalResult::Kind::Rejected || done->kind == RetrievalResult::Kind::Failed)) {
+            // completed inline as failed: Java positionQueued = false
+            std::lock_guard lock(mutex_);
+            queued_.erase(pos);
+            missing_.insert(pos);
+            continue;
+        }
         ++queuedNow;
         future->onComplete([this, &provider, pos](const RetrievalResult& r) { onFinished(provider, pos, r); });
     }
 
-    // don't allow regeneration until the next world gen tick
-    provider.setCanRegenerate(false);
+    // LodQuadTree :938-958/:985: regeneration only once no block-detail (6) section is missing
+    if (!snapshot.empty()) {
+        bool highDetailRequestPresent = true;
+        for (const std::uint64_t pos : snapshot) {
+            if (sec::detail(pos) == sec::SECTION_BLOCK_DETAIL_LEVEL) highDetailRequestPresent = false;
+        }
+        provider.setCanRegenerate(!highDetailRequestPresent);
+    } else {
+        provider.setCanRegenerate(true);
+    }
     return queuedNow;
+}
+
+void LodRequestSet::onConfigChanged(GeneratedProvider& provider) {
+    // LodQuadTree.onConfigValueSet (:994-1003): generator plan changed, forget everything
+    clear();
+    provider.setCanRegenerate(false);
 }
 
 } // namespace dh

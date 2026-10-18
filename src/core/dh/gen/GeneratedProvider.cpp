@@ -140,9 +140,13 @@ std::shared_ptr<RetrievalFuture> GeneratedProvider::queueRetrieval(std::uint64_t
 }
 
 void GeneratedProvider::onRetrievalResult(std::uint64_t pos, const RetrievalResult& result) {
-    if (result.kind == RetrievalResult::Kind::Success && result.source) {
-        auto src = std::make_shared<const FullDataSource>(*result.source);
-        auto r   = updater().update(std::move(src)); // Java dataUpdater.updateDataSource (:148)
+    if (result.kind == RetrievalResult::Kind::Success && !result.source) {
+        // Java LodUtil.assertTrue(:146)
+        log::logf(LogLevel::Error, "Successful retrieval object should have a datasource.");
+    } else if (result.kind == RetrievalResult::Kind::Success) {
+        // shared with the (const) result; the updater only reads it
+        std::shared_ptr<const FullDataSource> src = result.source;
+        auto r = updater().update(std::move(src)); // Java dataUpdater.updateDataSource (:148)
         if (!r) {
             log::logf(LogLevel::Error, "generated section update failed: %s", r.error().message.c_str());
         } else {
@@ -166,6 +170,16 @@ void GeneratedProvider::onRetrievalResult(std::uint64_t pos, const RetrievalResu
     // Split (:162-166) and Rejected (shutdown, not logged :136): nothing to do
     std::lock_guard lock(mutex_);
     queued_.erase(pos); // :179
+}
+
+void GeneratedProvider::setCanRegenerate(bool v) {
+    canRegenerate_.store(v);
+    IRetrievalQueue* queue;
+    {
+        std::lock_guard lock(mutex_);
+        queue = queue_;
+    }
+    if (queue != nullptr) queue->setCanRegenerate(v);
 }
 
 void GeneratedProvider::removeRetrievalRequestIf(std::function<bool(std::uint64_t)> removeIf) {
