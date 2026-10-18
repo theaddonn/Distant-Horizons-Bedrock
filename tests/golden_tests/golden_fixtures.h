@@ -76,7 +76,8 @@ inline std::vector<std::uint64_t> longs(const json& a) {
 
 /// Dumper "Ds" json -> FullDataSource (createWithData semantics: isEmpty = false). Unlisted columns are empty with
 /// defGen/defComp (0 when absent); the mapping is built in id order with IdMap::addAllAllowingDups.
-inline std::unique_ptr<FullDataSource> fromGoldenSource(const json& ds, GoldenRegistry& reg) {
+template <class Reg>
+inline std::unique_ptr<FullDataSource> fromGoldenSource(const json& ds, Reg& reg) {
     auto s     = std::make_unique<FullDataSource>();
     s->pos     = hexU64(ds.at("pos"));
     s->isEmpty = false;
