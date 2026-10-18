@@ -422,7 +422,7 @@ void runStoreConformance(MakeStore&& make) {
         CHECK_FALSE(m->has_value());
     }
 
-    SUBCASE("timestamps(range): bounds inclusive, detail filtered, sorted by pos") {
+    SUBCASE("timestamps(range): start inclusive, end exclusive, detail filtered, sorted by pos") {
         auto s = make(false);
         for (int x = -1; x <= 4; x++) {
             for (int z = -1; z <= 1; z++) {
@@ -432,22 +432,22 @@ void runStoreConformance(MakeStore&& make) {
         // Same coordinates at another detail level must not appear.
         REQUIRE(s->put(makeRecord(sec::encode(7, 2, 0), 1, 5)).has_value());
 
-        auto r = s->timestamps(6, 1, 0, 3, 0);
+        auto r = s->timestamps(6, 1, 0, 4, 1);
         REQUIRE(r.has_value());
         REQUIRE(r->size() == 3); // x = 1,2,3 at z = 0
         CHECK((*r)[0] == std::make_pair(sec::encode(6, 1, 0), std::int64_t{1010}));
         CHECK((*r)[1] == std::make_pair(sec::encode(6, 2, 0), std::int64_t{1020}));
         CHECK((*r)[2] == std::make_pair(sec::encode(6, 3, 0), std::int64_t{1030}));
 
-        // Single cell: start == end is inclusive.
-        auto one = s->timestamps(6, 2, 1, 2, 1);
+        // Single cell: end = start + 1.
+        auto one = s->timestamps(6, 2, 1, 3, 2);
         REQUIRE(one.has_value());
         REQUIRE(one->size() == 1);
         CHECK((*one)[0].first == sec::encode(6, 2, 1));
         CHECK((*one)[0].second == 1021);
 
         // Negative coordinates.
-        auto neg = s->timestamps(6, -1, -1, 0, 0);
+        auto neg = s->timestamps(6, -1, -1, 1, 1);
         REQUIRE(neg.has_value());
         CHECK(neg->size() == 4);
         CHECK(std::is_sorted(neg->begin(), neg->end(), [](const auto& a, const auto& b) { return a.first < b.first; }));
@@ -460,7 +460,10 @@ void runStoreConformance(MakeStore&& make) {
         auto none = s->timestamps(6, 10, 10, 20, 20);
         REQUIRE(none.has_value());
         CHECK(none->empty());
-        auto inverted = s->timestamps(6, 3, 0, 1, 0);
+        auto emptyRange = s->timestamps(6, 2, 0, 2, 1); // start == end is empty
+        REQUIRE(emptyRange.has_value());
+        CHECK(emptyRange->empty());
+        auto inverted =s->timestamps(6, 3, 0, 1, 0);
         REQUIRE(inverted.has_value());
         CHECK(inverted->empty());
     }
