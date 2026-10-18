@@ -14,7 +14,6 @@
 #include "dh/fulldata/FullDataSource.h"
 #include "dh/platform/IBlockRegistry.h"
 #include "dh/platform/testing/TestChunk.h"
-#include "golden_loader.h"
 
 using namespace dh;
 
@@ -448,21 +447,4 @@ TEST_CASE("skybake: fuzz invariants") {
             }
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// golden
-// ---------------------------------------------------------------------------
-
-// TODO: the light_chunk / light_ds suites are generated in parallel by tools/golden-dumper.
-// Once they exist, re-check the case key names against tools/golden-dumper/README.md and
-// replace the placeholders below with real comparisons.
-TEST_CASE("golden: light_chunk") {
-    DH_GOLDEN_SUITE_OR_SKIP(suite, "light_chunk.pending");
-    CHECK_FALSE(suite.cases.empty());
-}
-
-TEST_CASE("golden: light_ds") {
-    DH_GOLDEN_SUITE_OR_SKIP(suite, "light_ds.pending");
-    CHECK_FALSE(suite.cases.empty());
 }

@@ -15,7 +15,6 @@
 #include "dh/render/ColumnRenderSource.h"
 #include "dh/render/ReducingList.h"
 #include "dh/render/RenderDataPoint.h"
-#include "golden_loader.h"
 
 using dh::BlockMaterial;
 using dh::ColumnRenderView;
@@ -258,25 +257,5 @@ TEST_CASE("reduce: fuzz structural invariants") {
             CHECK(rdp::yMax(d) <= prevMin); // top-down, no overlap
             prevMin = rdp::yMin(d);
         }
-    }
-}
-
-TEST_CASE("reduce: golden vectors (reduce.gv.json)") {
-    DH_GOLDEN_SUITE_OR_SKIP(suite, "reduce.pending");
-    // Key mapping assumed (re-check against tools/golden-dumper/README.md when the suite lands):
-    //   in.column  = hex-long array, the source column (top-down), n = its length
-    //   in.target  = destination slot count
-    //   out.column = hex-long array of `target` entries, or out.throws when Java rejected the input
-    for (const auto& c : suite.cases) {
-        INFO("case " << c.name);
-        const Col  in     = dh::test::hexU64Array(c.in["column"]);
-        const int  target = c.in["target"].get<int>();
-        const auto got    = shrink(in, target);
-        if (c.out.contains("throws")) {
-            CHECK_FALSE(got.has_value());
-            continue;
-        }
-        REQUIRE(got.has_value());
-        CHECK(*got == dh::test::hexU64Array(c.out["column"]));
     }
 }

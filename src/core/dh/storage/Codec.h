@@ -49,7 +49,8 @@ Result<FullDataSource> decode(const StoreRecord& rec, IBlockRegistry& registry);
 Result<FullDataSource> decodeAdjacentOnly(const StoreRecord& rec, Direction dir, IBlockRegistry& registry);
 
 /// The checksum encode() stores in meta.dataChecksum (FNV-1a 32 over the uncompressed
-/// payloads of data + the four adjacent blobs, each prefixed by its u32 LE length).
+/// payloads of data, the four adjacent blobs, genSteps, compressionModes and mapping, each prefixed by its u32 LE
+/// length).
 Result<std::uint32_t> computeDataChecksum(const StoreRecord& rec);
 
 /// Wire form (big-endian envelope, little-endian blobs inside).

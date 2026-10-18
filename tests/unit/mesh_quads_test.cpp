@@ -13,7 +13,6 @@
 #include "dh/mesh/BufferQuad.h"
 #include "dh/mesh/LodQuadBuilder.h"
 #include "dh/mesh/MeshBuffers.h"
-#include "golden_loader.h"
 
 using namespace dh;
 
@@ -496,109 +495,5 @@ TEST_CASE("LodQuadBuilder: grass side colouring modes") {
     SUBCASE("debug render mode disables the grass logic") {
         auto m = make(GrassSideRendering::AsDirt, true, Direction::North);
         for (int v = 0; v < 4; ++v) CHECK(vertexColor(m, v) == greenBytes);
-    }
-}
-
-//========//
-// golden //
-//========//
-
-// Re-check this against tools/golden-dumper/README.md once the `quads` suite is generated: the
-// schema below is the one requested from the dumper (in.calls = [{fn, args:[...]}], in.grassMode,
-// in.transparency, out.opaque[] / out.transparent[] hex strings, one per buffer).
-namespace {
-
-std::int64_t jnum(const nlohmann::json& j) {
-    if (j.is_string()) return dh::test::hexI64(j);
-    if (j.is_boolean()) return j.get<bool>() ? 1 : 0;
-    return j.get<std::int64_t>();
-}
-
-int enumIndex(const nlohmann::json& j, std::initializer_list<const char*> names) {
-    if (j.is_number()) return static_cast<int>(j.get<std::int64_t>());
-    if (j.is_string()) {
-        int i = 0;
-        for (const char* n : names) {
-            if (j.get<std::string>() == n) return i;
-            ++i;
-        }
-    }
-    return -1;
-}
-
-} // namespace
-
-TEST_CASE("quads: golden vectors") {
-    DH_GOLDEN_SUITE_OR_SKIP(suite, "quads.pending");
-    REQUIRE(!suite.cases.empty());
-    for (const auto& c : suite.cases) {
-        CAPTURE(c.name);
-        QuadBuilderOptions o;
-        const int          grass = enumIndex(c.in["grassMode"], {"AS_GRASS", "FADE_TO_DIRT", "AS_DIRT"});
-        const int          trans = enumIndex(c.in["transparency"], {"DISABLED", "COMPLETE"});
-        REQUIRE(grass >= 0);
-        REQUIRE(trans >= 0);
-        o.grassSide    = static_cast<GrassSideRendering>(grass);
-        o.transparency = static_cast<Transparency>(trans);
-        if (c.in.contains("dirtColor")) o.dirtColorArgb = static_cast<std::uint32_t>(jnum(c.in["dirtColor"]));
-        if (c.in.contains("debugRenderMode")) o.debugRenderMode = jnum(c.in["debugRenderMode"]) != 0;
-        LodQuadBuilder b(o);
-        for (const auto& call : c.in["calls"]) {
-            const std::string fn   = call["fn"].get<std::string>();
-            const auto&       args = call["args"];
-            auto              a    = [&](int i) { return jnum(args[static_cast<std::size_t>(i)]); };
-            if (fn == "addQuadAdj") {
-                const int dir = enumIndex(args[0], {"DOWN", "UP", "NORTH", "SOUTH", "WEST", "EAST"});
-                REQUIRE(dir >= 0);
-                b.addQuadAdj(
-                    static_cast<Direction>(dir),
-                    (int16_t)a(1),
-                    (int16_t)a(2),
-                    (int16_t)a(3),
-                    (int16_t)a(4),
-                    (int16_t)a(5),
-                    (uint32_t)a(6),
-                    (uint16_t)a(7),
-                    (uint8_t)a(8),
-                    (uint8_t)a(9),
-                    (uint8_t)a(10)
-                );
-            } else if (fn == "addQuadUp") {
-                b.addQuadUp(
-                    (int16_t)a(0),
-                    (int16_t)a(1),
-                    (int16_t)a(2),
-                    (int16_t)a(3),
-                    (uint32_t)a(4),
-                    (uint16_t)a(5),
-                    (uint8_t)a(6),
-                    (uint8_t)a(7),
-                    (uint8_t)a(8)
-                );
-            } else if (fn == "addQuadDown") {
-                b.addQuadDown(
-                    (int16_t)a(0),
-                    (int16_t)a(1),
-                    (int16_t)a(2),
-                    (int16_t)a(3),
-                    (uint32_t)a(4),
-                    (uint16_t)a(5),
-                    (uint8_t)a(6),
-                    (uint8_t)a(7),
-                    (uint8_t)a(8)
-                );
-            } else if (fn == "mergeQuads") {
-                b.mergeQuads();
-            } else {
-                FAIL("unknown golden fn " << fn);
-            }
-        }
-        MeshBuffers m  = b.build();
-        const auto& eo = c.out["opaque"];
-        const auto& et = c.out["transparent"];
-        REQUIRE(m.opaque.size() == eo.size());
-        REQUIRE(m.transparent.size() == et.size());
-        for (std::size_t i = 0; i < eo.size(); ++i) CHECK(toHex(m.opaque[i]) == eo[i].get<std::string>());
-        for (std::size_t i = 0; i < et.size(); ++i) CHECK(toHex(m.transparent[i]) == et[i].get<std::string>());
     }
 }
