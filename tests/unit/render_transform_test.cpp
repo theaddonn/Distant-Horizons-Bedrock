@@ -792,8 +792,8 @@ TEST_CASE("golden f2r") {
         opt.caveCullingHeight     = o.value("caveCullingHeight", 60);
         opt.blocksToAvoid     = o.value("blocksToIgnore", 1) == 1 ? BlocksToAvoid::NonColliding : BlocksToAvoid::None;
         level.minY            = o.value("minHeight", -64);
-        const BlockSet ign    = resolveCsv(o.value("ignoredRenderBlockCsv", std::string()), reg);
-        const BlockSet cave   = resolveCsv(o.value("ignoredRenderCaveBlockCsv", std::string()), reg);
+        const BlockSet ign    = resolveCsv(o.value("ignoredRenderBlockCsv", std::string()), reg, true);
+        const BlockSet cave   = resolveCsv(o.value("ignoredRenderCaveBlockCsv", std::string()), reg, true);
         const BlockSet sub    = resolveCsv(o.value("waterSubSurfaceBlockReplacementCsv", std::string()), reg);
         const BlockSet surf   = resolveCsv(o.value("waterSurfaceBlockReplacementCsv", std::string()), reg);
         opt.ignoredBlocks     = &ign;
@@ -807,4 +807,39 @@ TEST_CASE("golden f2r") {
         CHECK_MESSAGE(r->data == expected, c.name);
         CHECK_MESSAGE(r->voidData == test::hexU64Array(c.out["voidData"]), c.name);
     }
+}
+
+TEST_CASE("air is always ignored (Java pre-seeds the ignore sets with air)") {
+    Fixture f;
+    f.opt.blocksToAvoid = BlocksToAvoid::None;
+    f.setColumn(
+        0,
+        0,
+        {
+            {f.reg.air(), 5, 10},
+            {f.stone,     0, 10}
+    }
+    );
+    auto o = f.run();
+    CHECK(count(o) == 1);
+    CHECK(dp(o, 0).top == 10);
+}
+
+TEST_CASE("resolveCsv expands all states and adds air for unresolvable ignore entries") {
+    MapBlockRegistry reg;
+    const BlockInfo* a0 = reg.addBlock(BlockInfo{.serial = "minecraft:a[k=0]"});
+    const BlockInfo* a1 = reg.addBlock(BlockInfo{.serial = "minecraft:a[k=1]"});
+    const BlockInfo* ab = reg.addBlock(BlockInfo{.serial = "minecraft:ab"});
+    const BlockInfo* a  = reg.addBlock(BlockInfo{.serial = "minecraft:a"});
+    const BlockSet   s  = resolveCsv("minecraft:a", reg);
+    CHECK(s.size() == 3);
+    CHECK(s.count(a0) == 1);
+    CHECK(s.count(a1) == 1);
+    CHECK(s.count(a) == 1);
+    CHECK(s.count(ab) == 0); // different base name
+    CHECK(resolveCsv("minecraft:nope", reg).empty());
+    const BlockSet ign = resolveCsv("minecraft:nope", reg, true);
+    CHECK(ign.size() == 1);
+    CHECK(ign.count(reg.air()) == 1);
+    CHECK(reg.resolveAllStates("minecraft:nope").empty());
 }
