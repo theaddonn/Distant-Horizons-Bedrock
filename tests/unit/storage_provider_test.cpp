@@ -211,7 +211,8 @@ TEST_CASE("provider: getAsync / updateAsync run on the executors") {
     f.fileExec.shutdown();
     auto rejected = f.provider->updateAsync(f.make(6, 1, 0, f.stone, 10, 0, 4));
     REQUIRE(rejected->isDone());
-    CHECK_FALSE(rejected->result().value_or(true));
+    CHECK_FALSE(rejected->result().has_value()); // explicit Rejected error, never Ok(false)
+    CHECK(rejected->result().error().code == ErrorCode::Rejected);
     bool nullGot = false;
     f.provider->getAsync(pos, [&](std::shared_ptr<const FullDataSource> s) { nullGot = (s == nullptr); });
     CHECK(nullGot);

@@ -236,12 +236,19 @@ public:
       clock_(clock),
       periodNanos_(periodMs * 1'000'000) {}
 
-    /// Returns true if the world was ticked. The first call always ticks.
+    /// Returns true if the world was ticked. The first call always ticks. Jitter-tolerant: the schedule advances by
+    /// whole periods (a poll that arrives 0.1 ms early is simply served by the next poll, the long-run rate stays
+    /// 1/period); only when more than two periods behind it resyncs to `now` instead of bursting.
     bool poll() {
         const std::int64_t now = clock_.steadyNanos();
-        if (started_ && now - last_ < periodNanos_) return false;
-        started_ = true;
-        last_    = now;
+        if (!started_) {
+            started_ = true;
+            last_    = now;
+        } else {
+            const std::int64_t elapsed = now - last_;
+            if (elapsed < periodNanos_) return false;
+            last_ = elapsed > 2 * periodNanos_ ? now : last_ + periodNanos_;
+        }
         ++ticks_;
         world_.tick();
         return true;

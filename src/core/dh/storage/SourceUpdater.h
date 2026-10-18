@@ -110,7 +110,7 @@ public:
     void notifyListeners(std::uint64_t pos);
 
     /// Java updateDataSourceAsync: runs update() on the async executor. A rejected/closed executor
-    /// completes the future immediately with `false` (Java: completedFuture(null)).
+    /// completes the future immediately with Error(ErrorCode::Rejected); Ok(false) means strictly "ran, unchanged".
     std::shared_ptr<UpdateFuture> updateAsync(std::shared_ptr<const FullDataSource> input);
 
     ListenerId addListener(UpdateListener listener);

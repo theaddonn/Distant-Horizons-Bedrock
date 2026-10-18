@@ -210,10 +210,10 @@ int settleWorld(
     return r;
 }
 
-/// Stand-in for "the rest of the world already has LODs" (what world generation or a server download would
-/// provide): flat-ish single-data-point columns written through the updater like any other section update. The
-/// chunk pipeline is exercised for the area around the player, this keeps the whole view data-bearing so the
-/// tiling invariant is meaningful.
+/// TILING-ONLY DEVICE (not a world-gen substitute). Stand-in for "the rest of the world already has LODs" (what world
+/// generation or a server download would provide): flat-ish single-data-point columns written through the updater like
+/// any other section update. The chunk pipeline is exercised for the area around the player, this keeps the whole view
+/// data-bearing so the tiling invariant is meaningful.
 struct BackgroundFiller {
     const FakeChunkSource& src;
     Terrain                terrain;
@@ -628,42 +628,59 @@ TEST_CASE("e2e net: client requests sections, server generates them, stored copi
     REQUIRE(cli != nullptr);
     CHECK(cli->isRendering());
 
-    // The tree only asks for more data around sections that already render (LodQuadTree.java:727 + the world-gen
-    // list), and a fresh client has nothing, so the test drives the same retrieval path the tree uses
-    // (GeneratedProvider::queueRetrieval -> ClientRequestQueue -> server) for the sections inside the generation
-    // window: 16 leaf sections (x,z in [-2,1]) around the origin, plus one parent the server cannot generate.
+    // Tree-driven retrieval: the (empty, renderable) sections of the client tree ask for what is missing inside the
+    // generation window: LodQuadTree.submit -> ProviderRetrievalQueue -> GeneratedProvider::queueRetrieval ->
+    // ClientRequestQueue -> server GenQueue -> FakeChunkGenerator. Parents the ChunksOnly server cannot generate come
+    // back as Split and the tree re-queues their children.
     for (int i = 0; i < 20 && !cli->requestModule().isWorldGenRunning(); ++i) fx.round();
     REQUIRE(cli->requestModule().isWorldGenRunning());
     REQUIRE(srv->serverside().requestModule().isWorldGenRunning());
-    std::vector<std::pair<Pos, std::shared_ptr<RetrievalFuture>>> requests;
-    for (int x = -2; x <= 1; ++x) {
-        for (int z = -2; z <= 1; ++z) {
-            const Pos pos = sec::encode(6, x, z);
-            auto      f   = cli->provider().queueRetrieval(pos);
-            REQUIRE(f != nullptr);
-            requests.emplace_back(pos, f);
-        }
-    }
-    auto splitFuture = cli->provider().queueRetrieval(sec::encode(7, -1, -1));
-    REQUIRE(splitFuture != nullptr);
 
     const std::int64_t startMs = fx.clock.nowMillis();
-    int                rounds  = 0;
-    auto               allDone = [&] {
-        for (auto& r : requests)
-            if (!r.second->isDone()) return false;
-        return splitFuture->isDone();
-    };
-    for (; rounds < 4000 && !allDone(); ++rounds) fx.round();
-    REQUIRE(allDone());
-    for (int i = 0; i < 20; ++i) fx.round(); // let stores / limiters settle
+    int                rounds = 0, quiet = 0;
+    std::size_t        maxQueued = 0;
+    for (; rounds < 4000 && quiet < 12; ++rounds) {
+        fx.round();
+        auto t = cli->clientside().tree();
+        if (!t) continue;
+        maxQueued          = std::max(maxQueued, t->queuedRetrievalCount());
+        std::size_t leaves = 0;
+        if (auto all = cli->store().allPositions())
+            for (auto p : *all) leaves += sec::detail(p) == 6 ? 1 : 0;
+        const bool done = leaves >= 16
+                       && /* out-of-window positions stay "missing" by design */ t->queuedRetrievalCount() == 0
+                       && fx.client.idle() && fx.server.idle() && cli->isQuiescent() && srv->isQuiescent();
+        quiet = done ? quiet + 1 : 0;
+    }
+    if (quiet < 12) {
+        auto        t      = cli->clientside().tree();
+        std::size_t leaves = 0;
+        if (auto all = cli->store().allPositions())
+            for (auto p : *all) leaves += sec::detail(p) == 6 ? 1 : 0;
+        MESSAGE(
+            "DIAG leaves=",
+            leaves,
+            " missing=",
+            t ? t->missingRetrievalCount() : 0,
+            " queued=",
+            t ? t->queuedRetrievalCount() : 0,
+            " maxQueued=",
+            maxQueued,
+            " cIdle=",
+            fx.client.idle(),
+            " sIdle=",
+            fx.server.idle(),
+            " cQ=",
+            cli->isQuiescent(),
+            " sQ=",
+            srv->isQuiescent()
+        );
+    }
+    REQUIRE(quiet >= 12);
+    CHECK(maxQueued > 0);
     const double simSeconds = static_cast<double>(fx.clock.nowMillis() - startMs) / 1000.0;
-    for (auto& r : requests) CHECK(r.second->get()->kind == RetrievalResult::Kind::Success);
-    CHECK(splitFuture->get()->kind == RetrievalResult::Kind::Split);
     CHECK(fx.client.idle());
     CHECK(fx.server.idle());
-    CHECK(cli->isQuiescent());
-    CHECK(srv->isQuiescent());
     CHECK_EQ(fx.cworld->networkState()->pendingRequestCount(), 0u);
 
     // compare every detail-6 section the client stored with the server's
@@ -719,7 +736,7 @@ TEST_CASE("e2e net: client requests sections, server generates them, stored copi
         ++compared;
         withData += c->isEmpty ? 0 : 1;
     }
-    CHECK_EQ(compared, 16u);
+    CHECK(compared >= 16u);
     CHECK_EQ(withData, compared);
     CHECK(serverPositions->size() >= compared);
 
@@ -845,4 +862,197 @@ TEST_CASE("WorldTicker ticks at most every period") {
     CHECK(ticker.poll());
     CHECK_FALSE(ticker.poll()); // no catch-up burst
     CHECK_EQ(ticker.tickCount(), 3u);
+}
+
+TEST_CASE("WorldTicker keeps its rate under jitter (polls slightly faster than the period)") {
+    ManualClock      clock;
+    MapBlockRegistry reg;
+    Stack            s(clock, reg);
+    DhServerWorld    world(s.deps);
+    WorldTicker      ticker(world, clock, 50);
+    for (int i = 0; i < 100; ++i) {
+        ticker.poll();
+        clock.advanceNanos(49'900'000); // 49.9 ms
+    }
+    // 5 s at 20 Hz = 100 ticks; dropping the remainder per tick would give 50
+    CHECK(ticker.tickCount() >= 98u);
+    CHECK(ticker.tickCount() <= 101u);
+    // a stall resyncs instead of bursting
+    clock.advanceMillis(10'000);
+    const auto before = ticker.tickCount();
+    CHECK(ticker.poll());
+    CHECK_FALSE(ticker.poll());
+    CHECK_EQ(ticker.tickCount(), before + 1);
+}
+
+TEST_CASE("e2e save: a rejected save never commits the chunk hash (edit is retried, not lost)") {
+    ManualClock      clock;
+    MapBlockRegistry reg;
+    const Terrain    terrain = Terrain::from(reg);
+    Stack            s(clock, reg);
+    s.options.common.worldGenerator.generatorPlan = GeneratorPlan::Disabled;
+    FakeLevelHandle h("lvl", false);
+    DhServerWorld   world(s.deps);
+    DhServerLevel*  level = world.getOrLoadLevel(h);
+    REQUIRE(level != nullptr);
+
+    FakeChunkSource src(terrain, FakeChunkSource::Kind::Plain);
+    auto            chunk = src.make(0, 0);
+    REQUIRE(world.applyChunkUpdate(h, chunk, {}));
+    for (int i = 0; i < 30; ++i) s.round(world);
+    const std::int32_t oldHash = static_cast<std::int32_t>(chunk->blockBiomeHashCode());
+    REQUIRE_EQ(level->getChunkHash(ChunkPos(0, 0)), oldHash);
+
+    chunk->fillColumn(5, 5, 64, 90, terrain.dirt);
+    const std::int32_t newHash = static_cast<std::int32_t>(chunk->blockBiomeHashCode());
+    REQUIRE(newHash != oldHash);
+    REQUIRE(world.applyChunkUpdate(h, chunk, {}));
+    s.pools.lodBuilder.runAll(); // merged into the delayed save cache
+    s.pools.file.shutdown();     // the update executor refuses from now on
+    for (int i = 0; i < 30; ++i) s.round(world);
+
+    CHECK_EQ(level->getChunkHash(ChunkPos(0, 0)), oldHash); // NOT newHash: the data was never written
+    CHECK(level->isQuiescent());
+    world.close();
+    CHECK(s.idle());
+}
+
+TEST_CASE("e2e close: a level closes safely with tasks queued and no drain hook") {
+    ManualClock      clock;
+    MapBlockRegistry reg;
+    const Terrain    terrain = Terrain::from(reg);
+    Stack            s(clock, reg);
+    s.deps.drainExecutors                         = {};
+    s.deps.closeWaitMs                            = 30;
+    s.options.common.worldGenerator.generatorPlan = GeneratorPlan::Disabled;
+    FakeLevelHandle h("lvl", false);
+    {
+        DhServerWorld  world(s.deps);
+        DhServerLevel* level = world.getOrLoadLevel(h);
+        REQUIRE(level != nullptr);
+        FakeChunkSource src(terrain, FakeChunkSource::Kind::Plain);
+        auto            chunk = src.make(0, 0);
+        REQUIRE(world.applyChunkUpdate(h, chunk, {})); // task stays queued on the manual lod-builder
+        s.round(world);
+        world.close(); // must not touch freed memory when the queued task finally runs
+    }
+    s.pools.runAll(); // late tasks find a dead gate / leaked storage objects
+    CHECK(s.pools.pending() == 0);
+}
+
+TEST_CASE("e2e SP generation: GenQueue -> FakeChunkGenerator -> reload, generated area tiles and renders") {
+    ManualClock      clock;
+    MapBlockRegistry reg;
+    const Terrain    terrain = Terrain::from(reg);
+    Stack            s(clock, reg);
+    s.options.client.graphics.quality.lodChunkRenderDistanceRadius = 24;
+    s.options.common.worldGenerator.generatorPlan                  = GeneratorPlan::ChunksOnly;
+    s.options.common.worldGenerator.generationCenterChunkX         = -8; // centre block (0,0)
+    s.options.common.worldGenerator.generationCenterChunkZ         = -8;
+    s.options.common.worldGenerator.generationMaxChunkRadius       = 6;
+    s.deps.chunkGeneratorFactory = [&](ILevelHandle&) -> std::unique_ptr<IChunkGenerator> {
+        return std::make_unique<FakeChunkGenerator>(s.pools.worldGen, terrain.air, terrain.stone, terrain.biome, 64);
+    };
+    FakeLevelHandle server("overworld", false), client("overworld", true);
+    client.serverSide = &server;
+    BlockPos2D player{0, 0};
+    s.deps.playerBlockPos    = [&] { return std::optional<BlockPos2D>(player); };
+    s.deps.activeClientLevel = [&]() -> ILevelHandle* { return &client; };
+
+    DhClientServerWorld  world(s.deps);
+    DhClientServerLevel* level = world.getOrLoadLevel(server);
+    REQUIRE(level != nullptr);
+    REQUIRE(world.getOrLoadLevel(client) == level);
+    auto getTree = [&] { return level->clientside().tree(); };
+
+    // NO BackgroundFiller: every section with data comes out of the generator through the tree's own requests
+    int quiet = 0, rounds = 0;
+    for (; rounds < 3000 && quiet < 12; ++rounds) {
+        s.round(world, 100);
+        auto        t      = getTree();
+        std::size_t leaves = 0;
+        if (auto all = level->store().allPositions())
+            for (auto p : *all) leaves += sec::detail(p) == 6 ? 1 : 0;
+        const bool done =
+            t && leaves >= 16 && /* out-of-window positions stay "missing" by design */ t->queuedRetrievalCount() == 0
+            && s.idle() && level->isQuiescent() && propagationDone(*level) && level->serverside().genQueue() != nullptr
+            && level->serverside().genQueue()->waitingTaskCount() == 0
+            && level->serverside().genQueue()->inProgressTaskCount() == 0;
+        quiet = done ? quiet + 1 : 0;
+    }
+    if (quiet < 12) {
+        auto        t  = getTree();
+        std::size_t lv = 0;
+        if (auto all = level->store().allPositions())
+            for (auto p : *all) lv += sec::detail(p) == 6 ? 1 : 0;
+        auto* gq = level->serverside().genQueue();
+        MESSAGE(
+            "DIAG leaves=",
+            lv,
+            " missing=",
+            t ? t->missingRetrievalCount() : 0,
+            " queued=",
+            t ? t->queuedRetrievalCount() : 0,
+            " idle=",
+            s.idle(),
+            " quiescent=",
+            level->isQuiescent(),
+            " prop=",
+            propagationDone(*level),
+            " genQ=",
+            gq != nullptr,
+            " waiting=",
+            gq ? gq->waitingTaskCount() : 0,
+            " inprog=",
+            gq ? gq->inProgressTaskCount() : 0,
+            " should=",
+            level->shouldDoWorldGen()
+        );
+    }
+    REQUIRE(quiet >= 12);
+
+    // generated sections hold real data
+    std::size_t leaves = 0, nonEmpty = 0;
+    const auto  storedPositions = level->store().allPositions();
+    REQUIRE(storedPositions.has_value());
+    for (auto p : *storedPositions) {
+        if (sec::detail(p) != 6) continue;
+        ++leaves;
+        nonEmpty += level->provider().get(p)->isEmpty ? 0 : 1;
+    }
+    CHECK(leaves >= 16);
+    CHECK_EQ(nonEmpty, leaves);
+
+    // the view tiles and the generated area renders geometry (reload after onWorldGenTaskComplete / provider update)
+    const auto enabled = enabledSections(getTree());
+    const auto t       = tiling(getTree(), enabled);
+    CHECK(t.cells > 0);
+    CHECK_EQ(t.holes, 0);
+    CHECK_EQ(t.overlaps, 0);
+    const auto  resident     = s.sink.residentSnapshot();
+    std::size_t withGeometry = 0;
+    for (const auto& sct : enabled) {
+        auto it = resident.find(sct->pos);
+        if (it != resident.end() && it->second.opaqueBytes > 0) ++withGeometry;
+    }
+    CHECK(withGeometry > 0);
+    CHECK_EQ(s.sink.violations(), 0u);
+    MESSAGE(
+        "SP generation: ",
+        leaves,
+        " leaf sections generated in ",
+        rounds,
+        " rounds; ",
+        enabled.size(),
+        " enabled sections tile ",
+        t.cells,
+        " cells, ",
+        withGeometry,
+        " with geometry, ",
+        s.sink.totalUploads(),
+        " uploads"
+    );
+
+    world.close();
+    CHECK(s.idle());
 }

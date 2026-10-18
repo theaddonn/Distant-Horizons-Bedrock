@@ -268,6 +268,15 @@ private:
     std::atomic<std::uint64_t> nextToken_{1};
     std::atomic<std::uint64_t> skipped_{0}, accepted_{0};
     std::atomic<std::int64_t>  inFlightChunkTasks_{0};
+    std::atomic<std::int64_t>  outstandingSaves_{0}; ///< hand-overs whose finishSave has not run yet
+    /// Chunk tasks capture this (not the level) to be retired safely, see close().
+    struct TaskGate {
+        std::mutex mutex;
+        bool       dead    = false;
+        int        running = 0;
+    };
+    std::shared_ptr<TaskGate> gate_   = std::make_shared<TaskGate>();
+    bool                      leaked_ = false;
 };
 
 //==================//
@@ -314,6 +323,7 @@ public:
 
 private:
     void createTree(BlockPos2D start);
+    void retire(std::shared_ptr<tree::LodQuadTree> t);
 
     const WorldDeps&   deps_;
     GeneratedProvider& provider_;
