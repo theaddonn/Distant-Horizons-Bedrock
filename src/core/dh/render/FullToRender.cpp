@@ -68,8 +68,10 @@ bool isSnowLayerSerial(std::string_view serial) {
     return layers >= 1 && layers <= 3;
 }
 
-BlockSet resolveCsv(std::string_view csv, IBlockRegistry& registry, bool addAirForUnresolvable) {
+BlockSet resolveCsv(std::string_view csv, IBlockRegistry& registry, bool forIgnoreSet) {
     BlockSet out;
+    // Java pre-seeds both ignore sets with the canonical AIR (BlockStateWrapper.java:1156,1169)
+    if (forIgnoreSet) out.insert(registry.air());
     while (!csv.empty()) {
         const std::size_t comma = csv.find(',');
         std::string_view  tok   = csv.substr(0, comma);
@@ -79,7 +81,7 @@ BlockSet resolveCsv(std::string_view csv, IBlockRegistry& registry, bool addAirF
         if (tok.empty()) continue;
         const std::vector<const BlockInfo*> states = registry.resolveAllStates(tok);
         if (states.empty()) {
-            if (addAirForUnresolvable) out.insert(registry.air()); // Java getAllBlockWrappers :1355-1359
+            if (forIgnoreSet) out.insert(registry.air()); // Java getAllBlockWrappers :1355-1359
         } else {
             out.insert(states.begin(), states.end());
         }
@@ -96,6 +98,11 @@ struct Ctx {
     std::unordered_map<const BlockInfo*, bool> snowCache;
 
     static bool contains(const BlockSet* s, const BlockInfo* b) { return s != nullptr && s->count(b) != 0; }
+    /// Ignore sets: a null pointer behaves as the Java default {AIR}. Pure set membership otherwise
+    /// (a distinct air-like state that is not in the set is NOT ignored).
+    bool containsIgnored(const BlockSet* s, const BlockInfo* b) const {
+        return s != nullptr ? s->count(b) != 0 : b == registry.air();
+    }
 
     bool isSnowLayer(const BlockInfo* b) {
         auto it = snowCache.find(b);
@@ -206,9 +213,9 @@ void setRenderColumnView(
             block = water;
         }
 
-        // Java pre-seeds both ignore sets with air (BlockStateWrapper.java:1154-1170)
-        const bool ignoreBlock = block->isAir || Ctx::contains(opt.ignoredBlocks, block);
-        const bool caveBlock   = block->isAir || Ctx::contains(opt.ignoredCaveBlocks, block);
+        // "ignored" is pure set membership (Java :469-470); only the carry-over reset uses isAir()
+        const bool ignoreBlock = ctx.containsIgnored(opt.ignoredBlocks, block);
+        const bool caveBlock   = ctx.containsIgnored(opt.ignoredCaveBlocks, block);
         if (caveBlock || !block->isSolid || block->isLiquid || block->opacity < BLOCK_FULLY_OPAQUE) {
             if (caveCullingEnabled && skyLight == MIN_MC_LIGHT && topY < caveCullingMaxY && renderDataIndex != 0
                 && fullDataIndex != 0 && (fullDataIndex + 1) < colSize) {
