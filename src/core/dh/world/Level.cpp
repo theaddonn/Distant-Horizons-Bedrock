@@ -1,7 +1,9 @@
 #include "dh/world/Level.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
+#include <thread>
 #include <utility>
 
 #include "dh/fulldata/Merge.h"
@@ -111,7 +113,17 @@ AbstractLevel::AbstractLevel(ILevelHandle& handle, const WorldDeps& deps) : deps
     });
 }
 
-AbstractLevel::~AbstractLevel() { close(); }
+AbstractLevel::~AbstractLevel() {
+    close();
+    if (leaked_) { // see close(): queued tasks may still reference these
+        (void)saveCache_.release();
+        (void)propagator_.release();
+        (void)provider_.release();
+        (void)tracker_.release();
+        (void)hashStore_.release();
+        (void)store_.release();
+    }
+}
 
 GeneratedProviderOptions AbstractLevel::generatedOptions() const {
     GeneratedProviderOptions g;
@@ -126,11 +138,20 @@ bool AbstractLevel::updateChunkAsync(std::shared_ptr<IChunk> chunk, std::vector<
 
     inFlightChunkTasks_.fetch_add(1);
     // PORTING.md "shared_ptr<IChunk> ownership": the task owns the chunk and its neighbours until it is done.
-    const bool queued =
-        deps_.exec.lodBuilder->execute([this, chunk = std::move(chunk), neighbours = std::move(neighbours)] {
+    // The gate lets close() retire tasks that are queued but never started (they only touch the gate afterwards).
+    const bool queued = deps_.exec.lodBuilder->execute(
+        [this, gate = gate_, chunk = std::move(chunk), neighbours = std::move(neighbours)] {
+            {
+                std::lock_guard lock(gate->mutex);
+                if (gate->dead) return; // level closed (and possibly destroyed) before this task started
+                ++gate->running;
+            }
             runChunkUpdate(chunk, neighbours);
             inFlightChunkTasks_.fetch_sub(1);
-        });
+            std::lock_guard lock(gate->mutex);
+            --gate->running;
+        }
+    );
     if (!queued) inFlightChunkTasks_.fetch_sub(1);
     return queued;
 }
@@ -182,6 +203,7 @@ void AbstractLevel::runChunkUpdate(
 }
 
 void AbstractLevel::onSaveHandover(std::shared_ptr<DataSourceSaveContainer> container) {
+    outstandingSaves_.fetch_add(1); // finishSave() releases it; close() waits for 0
     const std::uint64_t pos     = container->merged.pos;
     const std::uint64_t token   = container->token;
     const bool          hashing = !deps_.options->common.lodBuilding.disableUnchangedChunkCheck;
@@ -202,14 +224,16 @@ void AbstractLevel::onSaveHandover(std::shared_ptr<DataSourceSaveContainer> cont
 }
 
 void AbstractLevel::finishSave(std::uint64_t sectionPos, std::uint64_t token, const Result<bool>& result) {
-    // Commit recipe (ChunkHashStore.h): commit on Ok(true); on Ok(false) only while the provider is open (updateAsync
-    // also reports Ok(false) when it was rejected) and the section really exists in the store; discard on errors.
-    bool commit = false;
-    if (result.has_value() && !provider_->isClosed()) {
-        commit = *result || provider_->timestamp(sectionPos).has_value();
-    }
-    if (commit) (void)tracker_->commit(token);
+    (void)sectionPos;
+    // Commit recipe (ChunkHashStore.h): updateAsync reports rejection / shutdown as an Error (never Ok(false)), so
+    //   Ok(true)  changed + saved            -> commit
+    //   Ok(false) ran, section unchanged     -> commit (also for sections never stored, e.g. all-empty LODs; Java
+    //                                           commits, which avoids rebuilding the chunk on every load) - but only
+    //                                           while the provider is open (a closed updater no-ops with Ok(false))
+    //   Error     rejected / failed          -> discard, the next chunk event retries
+    if (result.has_value() && !provider_->isClosed()) (void)tracker_->commit(token);
     else tracker_->discard(token);
+    outstandingSaves_.fetch_sub(1); // last touch of the level
 }
 
 void AbstractLevel::tick() {
@@ -227,6 +251,19 @@ void AbstractLevel::tick() {
     }
 }
 
+namespace {
+/// Bounded wait on the level's own counters (never on shared pools). Yields; real time, not the injected clock.
+template <class Pred>
+bool waitFor(Pred done, int timeoutMs) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+    while (!done()) {
+        if (std::chrono::steady_clock::now() >= deadline) return false;
+        std::this_thread::sleep_for(std::chrono::microseconds(200));
+    }
+    return true;
+}
+} // namespace
+
 void AbstractLevel::close() {
     std::lock_guard lock(lifecycleMutex_);
     if (closed_.load()) return;
@@ -236,19 +273,50 @@ void AbstractLevel::close() {
     closeImpl();
 
     if (ok()) {
-        // 2. let already queued chunk updates reach the save cache
+        // 2. chunk updates already queued reach the save cache (optional platform drain), then retire the rest: a task
+        //    that has not started will find the gate dead and never touch this level again
         if (deps_.drainExecutors) deps_.drainExecutors();
+        {
+            std::lock_guard glock(gate_->mutex);
+            gate_->dead = true;
+        }
+        bool clean = waitFor(
+            [&] {
+                std::lock_guard glock(gate_->mutex);
+                return gate_->running == 0;
+            },
+            deps_.closeWaitMs
+        );
 
         // 3. flush the delayed saves synchronously (Java just stopped the cache and lost up to 1 s of edits)
         closing_.store(true);
         saveCache_->close();
         saveCache_->flush();
 
-        // 4. nothing may reference the level any more
+        // 4. per-level barrier: nothing of this level may still run. The counters are the level's own, so this does
+        //    not depend on how (or whether) the platform drains shared pools.
         if (deps_.drainExecutors) deps_.drainExecutors();
-        provider_->updater().waitQuiescent();
-        provider_->close();
-        (void)store_->flush();
+        clean = clean
+             && waitFor(
+                    [&] {
+                        return outstandingSaves_.load() == 0 && provider_->updater().pendingAsyncCount() == 0
+                            && provider_->updater().inFlightUpdates() == 0 && propagator_->updatingCount() == 0;
+                    },
+                    deps_.closeWaitMs
+             );
+        if (clean) {
+            provider_->close();
+            (void)store_->flush();
+        } else {
+            // A queued task still captures the provider/updater/propagator (their documented lifetime rule). Destroying
+            // them now would be a use-after-free; leak them instead and say so.
+            log::logf(
+                LogLevel::Error,
+                "Level [%s] closed with tasks still queued; leaking its storage objects.",
+                identifier().c_str()
+            );
+            leaked_ = true;
+        }
     }
     closed_.store(true);
 }
@@ -263,9 +331,9 @@ void AbstractLevel::onOptionsChanged() {
 
 bool AbstractLevel::isQuiescent() const {
     if (!ok()) return true;
-    return saveCache_->unsavedCount() == 0 && tracker_->pendingSectionCount() == 0 && inFlightChunkTasks_.load() == 0
-        && provider_->updater().pendingAsyncCount() == 0 && provider_->updater().inFlightUpdates() == 0
-        && propagator_->updatingCount() == 0;
+    return saveCache_->unsavedCount() == 0 && outstandingSaves_.load() == 0 && tracker_->pendingSectionCount() == 0
+        && inFlightChunkTasks_.load() == 0 && provider_->updater().pendingAsyncCount() == 0
+        && provider_->updater().inFlightUpdates() == 0 && propagator_->updatingCount() == 0;
 }
 
 //==================//
@@ -373,7 +441,15 @@ void ClientLevelModule::stopRenderer() {
     // G2: the retrieval queue / request module must already be stopped (the caller's duty), then the tree closes.
     t->close();
     std::lock_guard lock(mutex_);
-    retired_.push_back(std::move(t)); // keep alive: sections hold a reference to their tree (see header)
+    retire(std::move(t));
+}
+
+void ClientLevelModule::retire(std::shared_ptr<tree::LodQuadTree> t) {
+    // mutex_ held. Sections hold a reference to their tree, so a closed tree is kept for a while; only the most recent
+    // few are kept (older ones were closed long ago and their sections answered/removed through the sink by now).
+    retired_.push_back(std::move(t));
+    constexpr std::size_t kMaxRetired = 3;
+    while (retired_.size() > kMaxRetired) retired_.erase(retired_.begin());
 }
 
 bool ClientLevelModule::isRendering() const {
@@ -397,9 +473,10 @@ void ClientLevelModule::clientTick(BlockPos2D playerPos) {
 
     // recreate the tree if the render distance changed (ClientLevelModule.java:75-87)
     if (t->blockRenderDistanceDiameter != tree::LodQuadTree::viewDiameterInBlocks(*deps_.options)) {
-        t->close();
         std::lock_guard lock(mutex_);
-        retired_.push_back(t);
+        if (tree_ != t) return; // stopRenderer()/another restart won the race: do not resurrect a stopped renderer
+        t->close();
+        retire(t);
         createTree(playerPos);
         t = tree_;
     }
@@ -738,11 +815,18 @@ void DhClientLevel::optionsChangedImpl() {
 void DhClientLevel::closeImpl() {
     // Java DhClientLevel.close(): lodRequestModule, network source, session config listener, clientside, then super
     if (requestModule_) requestModule_->close();
+    // Network listeners run on the transport's dispatch thread. Dropping alive_ stops new entries; a listener that is
+    // already past weak.lock() keeps the token alive, so waiting for expiry is a real barrier. (Never close a level
+    // from inside one of these listeners: it would wait for itself.)
+    std::weak_ptr<bool> weakAlive = alive_;
     alive_.reset();
     if (net_ != nullptr) {
         net_->setPartialUpdateHandler(identifier(), {});
         if (configListener_ != 0) net_->removeSessionConfigListener(configListener_);
         configListener_ = 0;
+    }
+    if (!waitFor([&] { return weakAlive.expired(); }, deps_.closeWaitMs)) {
+        log::logf(LogLevel::Error, "Level [%s]: a network listener is still running at close.", identifier().c_str());
     }
     if (syncQueue_) syncQueue_->closeQueue();
     if (client_) client_->close();
@@ -878,6 +962,8 @@ void DhServerLevel::onWorldGenTaskComplete(std::uint64_t pos) {
     if (server_ && server_->requestHandler() != nullptr) server_->requestHandler()->onWorldGenTaskComplete(pos);
 }
 
+// Deviation: Java's propagator targeted (0,0) on a dedicated server; following the players keeps the sections they
+// look at fresh first.
 BlockPos2D DhServerLevel::focusPos() const {
     std::size_t cursor = 0;
     return nextPlayerTarget(deps_.serverPlayers, identifier(), cursor);

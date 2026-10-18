@@ -21,6 +21,7 @@
 #include "dh/platform/IClock.h"
 #include "dh/thread/KeyedLock.h"
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -122,6 +123,7 @@ public:
             keys.reserve(map_.size());
             for (auto& kv : map_) keys.push_back(kv.first);
         }
+        std::sort(keys.begin(), keys.end()); // deterministic hand-over order (not hash order)
 
         std::vector<ContainerPtr> removed;
         for (std::int64_t pos : keys) {

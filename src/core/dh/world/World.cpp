@@ -363,14 +363,13 @@ DhClientServerLevel* DhClientServerWorld::getOrLoadLevel(ILevelHandle& handle) {
         if (std::find(e->clientWrappers.begin(), e->clientWrappers.end(), &handle) == e->clientWrappers.end()) {
             e->clientWrappers.push_back(&handle);
         }
+        level->startRenderer(handle); // idempotent; registers this handle as a viewer (under the lock, see unloadLevel)
     }
-    level->startRenderer(handle); // idempotent; registers this handle as a viewer
     return level.get();
 }
 
 bool DhClientServerWorld::unloadLevel(ILevelHandle& handle) {
     std::shared_ptr<DhClientServerLevel> toClose;
-    std::shared_ptr<DhClientServerLevel> toStop;
     {
         std::lock_guard lock(mutex_);
         if (closed_) return false;
@@ -379,6 +378,7 @@ bool DhClientServerWorld::unloadLevel(ILevelHandle& handle) {
             if (e == nullptr) return false;
             deps_.log().log(LogLevel::Info, "Unloading level [" + std::string(handle.dhIdentifier()) + "]");
             handle.onUnload();
+            for (ILevelHandle* w : e->clientWrappers) w->onUnload(); // attached client handles notice the level is gone
             toClose = std::move(e->level);
             entries_.erase(entries_.begin() + (e - entries_.data()));
         } else {
@@ -391,12 +391,12 @@ bool DhClientServerWorld::unloadLevel(ILevelHandle& handle) {
                 e->clientWrappers.end()
             );
             e->level->forgetClientHandle(handle);
-            if (e->clientWrappers.empty() && e->level->isRendering()) toStop = e->level;
+            // stop under the world lock: a concurrent getOrLoadLevel(client) cannot slip in between check and stop
+            if (e->clientWrappers.empty() && e->level->isRendering()) e->level->stopRenderer();
             handle.onUnload(); // we still want to unload the wrapper though
         }
     }
     if (toClose) toClose->close();
-    if (toStop) toStop->stopRenderer();
     return true;
 }
 
