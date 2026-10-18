@@ -76,6 +76,7 @@ public final class Json
 		else if (o instanceof int[]) { int[] a = (int[]) o; sb.append('['); for (int i = 0; i < a.length; i++) { if (i > 0) sb.append(','); sb.append(a[i]); } sb.append(']'); }
 		else if (o instanceof short[]) { short[] a = (short[]) o; sb.append('['); for (int i = 0; i < a.length; i++) { if (i > 0) sb.append(','); sb.append(a[i]); } sb.append(']'); }
 		else if (o instanceof byte[]) { byte[] a = (byte[]) o; sb.append('['); for (int i = 0; i < a.length; i++) { if (i > 0) sb.append(','); sb.append(a[i]); } sb.append(']'); }
+		else if (o instanceof float[]) { float[] a = (float[]) o; sb.append('['); for (int i = 0; i < a.length; i++) { if (i > 0) sb.append(','); write(sb, Float.valueOf(a[i])); } sb.append(']'); }
 		else if (o instanceof double[]) { double[] a = (double[]) o; sb.append('['); for (int i = 0; i < a.length; i++) { if (i > 0) sb.append(','); write(sb, Double.valueOf(a[i])); } sb.append(']'); }
 		else if (o instanceof boolean[]) { boolean[] a = (boolean[]) o; sb.append('['); for (int i = 0; i < a.length; i++) { if (i > 0) sb.append(','); sb.append(a[i]); } sb.append(']'); }
 		else if (o instanceof Object[]) { Object[] a = (Object[]) o; sb.append('['); for (int i = 0; i < a.length; i++) { if (i > 0) sb.append(','); write(sb, a[i]); } sb.append(']'); }

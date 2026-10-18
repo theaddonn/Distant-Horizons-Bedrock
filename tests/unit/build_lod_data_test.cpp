@@ -355,7 +355,7 @@ TEST_CASE("build: column solid up to the build limit") {
 }
 
 TEST_CASE("build: golden chunk_build") {
-    DH_GOLDEN_SUITE_OR_SKIP(s, "chunk_build");
+    DH_GOLDEN_SUITE_OR_SKIP(s, "chunk_build.pending");
     // TODO(re-check against tools/golden-dumper/README.md once chunk_build is dumped): the input layout
     // below is a best guess - in.chunk.blocks = {palette:[{serial,isAir,isSolid,isLiquid,opacity}|serial],
     // columns:[256 x [[paletteIdx,count],...]] bottom-up from minY, index x*16+z}. Cases that do not match

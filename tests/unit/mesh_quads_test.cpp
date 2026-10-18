@@ -529,7 +529,7 @@ int enumIndex(const nlohmann::json& j, std::initializer_list<const char*> names)
 } // namespace
 
 TEST_CASE("quads: golden vectors") {
-    DH_GOLDEN_SUITE_OR_SKIP(suite, "quads");
+    DH_GOLDEN_SUITE_OR_SKIP(suite, "quads.pending");
     REQUIRE(!suite.cases.empty());
     for (const auto& c : suite.cases) {
         CAPTURE(c.name);

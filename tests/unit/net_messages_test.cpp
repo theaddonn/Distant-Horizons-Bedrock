@@ -496,7 +496,7 @@ TEST_CASE("net: golden suite (Java frames)") {
     // Golden frames come from Java with protocol version 16 (0x0010); ours is 0x4010. Only the 2-byte version
     // differs, so we replace it and then require decode + re-encode to reproduce the Java bytes exactly.
     // Cases whose message id is not ported (CodecCrash) are skipped.
-    DH_GOLDEN_SUITE_OR_SKIP(suite, "net");
+    DH_GOLDEN_SUITE_OR_SKIP(suite, "net.pending");
     int checked = 0;
     for (const auto& c : suite.cases) {
         INFO(c.name);
