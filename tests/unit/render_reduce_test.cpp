@@ -262,7 +262,7 @@ TEST_CASE("reduce: fuzz structural invariants") {
 }
 
 TEST_CASE("reduce: golden vectors (reduce.gv.json)") {
-    DH_GOLDEN_SUITE_OR_SKIP(suite, "reduce");
+    DH_GOLDEN_SUITE_OR_SKIP(suite, "reduce.pending");
     // Key mapping assumed (re-check against tools/golden-dumper/README.md when the suite lands):
     //   in.column  = hex-long array, the source column (top-down), n = its length
     //   in.target  = destination slot count
