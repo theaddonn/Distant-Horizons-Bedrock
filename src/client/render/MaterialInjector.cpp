@@ -137,7 +137,7 @@ LL_TYPE_INSTANCE_HOOK(
 
 } // namespace
 
-void install() {
+void installMaterialInjector() {
     if (gInstalled.exchange(true)) return;
     auto mod = ll::mod::NativeMod::current();
     if (!mod) return;
@@ -166,7 +166,7 @@ void install() {
     DH_LOG_I("materials: injector on, DH_Terrain.material.bin %zu bytes", gMaterialBytes.size());
 }
 
-void uninstall() {
+void uninstallMaterialInjector() {
     if (!gInstalled.exchange(false)) return;
     if (gActive.exchange(false)) {
         LoadListProbeHook::unhook();

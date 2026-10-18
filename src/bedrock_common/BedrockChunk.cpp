@@ -57,10 +57,38 @@ const dh::BlockInfo* BedrockChunk::blockAt(int relX, std::int32_t y, int relZ) c
     return blocks_[index(relX, y, relZ)];
 }
 
+void BedrockChunk::snapshot() {
+    ensureBlocks();
+    (void)minNonEmptyHeight();
+    (void)solidHeightMapValue(0, 0);
+    (void)worldBlockLightPosList();
+    if (!biomes_.empty()) return;
+    std::vector<const dh::BiomeInfo*> out(static_cast<std::size_t>(16) * 16 * static_cast<std::size_t>(maxY_ - minY_));
+    const Biome*                      lastBiome = nullptr;
+    const dh::BiomeInfo*              lastInfo  = nullptr;
+    for (int z = 0; z < 16; ++z)
+        for (int x = 0; x < 16; ++x)
+            for (std::int32_t y = minY_; y < maxY_; ++y) {
+                ChunkBlockPos pos{
+                    static_cast<uchar>(x),
+                    ChunkLocalHeight{static_cast<short>(y - minY_)},
+                    static_cast<uchar>(z)
+                };
+                const Biome& b = chunk_.getBiome(pos);
+                if (&b != lastBiome) {
+                    lastBiome = &b;
+                    lastInfo  = serializer_.resolve(b);
+                }
+                out[index(x, y, z)] = lastInfo;
+            }
+    biomes_ = std::move(out);
+}
+
 const dh::BiomeInfo* BedrockChunk::biomeAt(int relX, std::int32_t y, int relZ) const {
     DH_DEBUG_ASSERT(isValidRelXZ(relX, relZ), "relX/relZ out of range");
     if (y < minY_) y = minY_;
     if (y >= maxY_) y = maxY_ - 1;
+    if (!biomes_.empty()) return biomes_[index(relX, y, relZ)];
     ChunkBlockPos pos{
         static_cast<uchar>(relX),
         ChunkLocalHeight{static_cast<short>(y - minY_)},

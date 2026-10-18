@@ -6,6 +6,7 @@
 #include "client/hooks/ChunkIngress.h"
 #include "client/hud/DebugHud.h"
 #include "client/render/MaterialInjector.h"
+#include "client/render/RenderHooks.h"
 #include "client/spikes/Spikes.h"
 
 #include "dh/Version.h"
@@ -39,6 +40,7 @@ bool DistantHorizons::enable() {
     exitListener = bus.emplaceListener<ll::event::ClientExitLevelEvent>([](auto&) { DH_LOG_I("level: exit"); });
     dh::hud::install();
     dh::spikes::install();
+    dh::render::installMaterialInjector();
     dh::ingress::install();
     dh::render::install();
     DH_LOG_I("DH enabled");
@@ -48,6 +50,7 @@ bool DistantHorizons::enable() {
 bool DistantHorizons::disable() {
     dh::render::uninstall();
     dh::ingress::uninstall();
+    dh::render::uninstallMaterialInjector();
     dh::spikes::uninstall();
     dh::hud::uninstall();
     auto& bus = ll::event::EventBus::getInstance();
