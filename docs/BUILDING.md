@@ -47,6 +47,8 @@ Tests run with `$(projectdir)` (= `tests/`) as working directory, so golden file
 
 `tests/golden_loader.h` loads `tests/golden/<suite>.gv.json`. Use `DH_GOLDEN_SUITE_OR_SKIP(s, "suite")` at the top of a test case so suites that have not been dumped yet are skipped instead of failing.
 
+The `propagate` replay skips its slow cases (all `*_k8_*` and a few others, ~60 s under ASan) by default; run the full set with `DH_GOLDEN_SLOW=1 scripts/test-host.sh -tc="*propagate*"`.
+
 ## Vendored dependencies
 
 Header-only dependencies of `dh_core` live in `src/core/third_party/` (see `THIRD_PARTY.md` there) and are a public include dir of `dh_core`, so both the Windows and host builds use the same headers.
