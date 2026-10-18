@@ -482,9 +482,10 @@ ServerLevelModule::ServerLevelModule(
     // request handling over the network (AbstractDhServerLevel.registerNetworkHandlers)
     if (deps.serverNetwork != nullptr && deps.serverPlayers != nullptr && deps.exec.networkWork != nullptr) {
         mp::LevelInfo li;
-        li.levelName               = std::string(serverHandle.dhIdentifier());
+        // PORTING.md level naming rule (bedrock_common/LevelNaming.h): levelName = sendLevelKeys ? levelKey : dimension
         li.dimension               = std::string(serverHandle.info().dimensionName());
         li.levelKey                = serverHandle.levelKey();
+        li.levelName               = deps.serverPlayers->settings.sendLevelKeys ? li.levelKey : li.dimension;
         li.coordinateScale         = serverHandle.coordinateScale();
         li.internalServerGenerator = o.common.worldGenerator.chunkGeneratorMode == DistantGeneratorMode::InternalServer;
         handler_                   = std::make_unique<mp::ServerRequestHandler>(

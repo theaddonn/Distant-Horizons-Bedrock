@@ -299,10 +299,14 @@ TEST_CASE("e2e SP: DhClientServerWorld tiles the view, uploads every section, su
     auto          getTree = [&] { return level->clientside().tree(); };
     std::set<Pos> prevCoverage;
 
-    //----- no data yet: the tree runs but nothing can be rendered (Java: empty sections never become renderable) -----
-    for (int i = 0; i < 5; ++i) s.round(world);
-    CHECK(enabledSections(getTree()).empty());
-    CHECK_EQ(s.sink.residentCount(), 0u);
+    //----- no data yet: empty sections upload once and render as nothing (Java), so the view already tiles -----
+    for (int i = 0; i < 8; ++i) s.round(world);
+    {
+        const auto t = tiling(getTree(), enabledSections(getTree()));
+        CHECK(t.cells > 0);
+        CHECK_EQ(t.holes, 0);
+        CHECK_EQ(t.overlaps, 0);
+    }
 
     FakeChunkSource   src(terrain, FakeChunkSource::Kind::Hilly);
     ChunkGrid         grid(src);
