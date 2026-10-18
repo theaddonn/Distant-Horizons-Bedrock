@@ -4,8 +4,8 @@
 //   cd tests && clang++-22 -std=c++20 -g -O1 -fsanitize=thread -I. -Ithird_party \
 //     -I../src/core -I../src/core/third_party main.cpp unit/thread_test.cpp \
 //     ../src/core/dh/thread/PriorityTaskPicker.cpp ../src/core/dh/thread/ThreadPools.cpp \
-//     -o /tmp/thread_tsan -pthread && /tmp/thread_tsan -tc='thread:*'
-// Last run: 22/22 passed, zero TSan reports.
+//     -o ~/.cache/dh-tsan/thread_tsan -pthread && ~/.cache/dh-tsan/thread_tsan -tc='thread:*'
+// Last run: 23/23 passed, zero TSan reports.
 //
 // Waiting in tests is always a bounded condition-variable wait, never a sleep.
 
@@ -652,14 +652,47 @@ TEST_CASE("thread: picker stress, 1e5 tasks over 5 executors") {
     for (auto& t : producers) t.join();
 
     REQUIRE(done.waitFor(kTotal));
+    // completed() is bumped by the worker AFTER the task body returns (so after done.add()):
+    // reading it right after waitFor() races with the last in-flight tasks. Barrier first.
+    picker.shutdownNow(); // every task already ran (done == kTotal), nothing is left to drop
+    picker.joinAll();
     CHECK(rejected.load() == 0);
     for (int e = 0; e < kExecutors; ++e) {
         CHECK(perExecutor[e].load() == kPerExecutor);
         CHECK(executors[e]->completed() == kPerExecutor);
         CHECK(executors[e]->queueSize() == 0);
+        CHECK(executors[e]->running() == 0);
     }
+}
+
+TEST_CASE("thread: picker completed() counts a task only after its body returned") {
+    // Deterministic form of the stress-test flake: a task that has signalled from inside its body
+    // is not yet "completed" until it returns; joinAll() is the barrier that makes it exact.
+    PriorityTaskPicker picker(1);
+    Executor&          ex = picker.createExecutor("ex");
+
+    Counter                 inBody;
+    std::mutex              m;
+    std::condition_variable cv;
+    bool                    release = false;
+
+    REQUIRE(ex.execute([&] {
+        inBody.add();
+        std::unique_lock lock(m);
+        cv.wait_for(lock, kWait, [&] { return release; });
+    }));
+    REQUIRE(inBody.waitFor(1));
+    CHECK(ex.completed() == 0);
+    CHECK(ex.running() == 1);
+    {
+        std::lock_guard lock(m);
+        release = true;
+    }
+    cv.notify_all();
     picker.shutdownNow();
     picker.joinAll();
+    CHECK(ex.completed() == 1);
+    CHECK(ex.running() == 0);
 }
 
 TEST_CASE("thread: picker shutdown while running") {
