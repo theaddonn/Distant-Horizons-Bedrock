@@ -158,15 +158,16 @@ namespace {
 /// IWorldGenCompleteListener for one dimension: world gen runs while a ready player is in it.
 class DimListener final : public dh::IWorldGenCompleteListener {
 public:
-    DimListener(dh::mp::ServerPlayers& players, std::string levelName)
+    DimListener(dh::mp::ServerPlayers& players, std::string levelName, const std::atomic<bool>& generationAllowed)
     : players_(players),
-      levelName_(std::move(levelName)) {}
+      levelName_(std::move(levelName)),
+      generationAllowed_(generationAllowed) {}
 
     /// Set once the request handler exists (before any world gen can complete).
     std::atomic<dh::mp::ServerRequestHandler*> handler{nullptr};
 
     bool shouldDoWorldGen() override {
-        if (players_.settings.values.generatorPlan == dh::net::GeneratorPlan::Disabled) return false;
+        if (!generationAllowed_.load()) return false; // not players_.settings: that is written on another thread
         for (const auto& p : players_.readyPlayers())
             if (p->levelName() == levelName_) return true;
         return false;
@@ -181,8 +182,9 @@ public:
     }
 
 private:
-    dh::mp::ServerPlayers& players_;
-    std::string            levelName_;
+    dh::mp::ServerPlayers&   players_;
+    std::string              levelName_;
+    const std::atomic<bool>& generationAllowed_;
 };
 
 } // namespace
@@ -242,9 +244,13 @@ struct ServerWorldDriver::Impl {
 
     std::atomic<std::uint64_t> noted{0}, ingested{0}, unchanged{0}, skipped{0}, sectionsOk{0}, sectionsFailed{0};
 
-    Clock::time_point lastSlow           = Clock::now();
-    Clock::time_point lastLog            = Clock::now();
-    std::uint64_t     lastLoggedIngested = 0;
+    bool                      hooksInstalled = false, saveHookInstalled = false;
+    Clock::time_point         lastTickTime = Clock::now();
+    std::chrono::milliseconds accum{0};
+    Clock::time_point         lastSlow           = Clock::now();
+    Clock::time_point         lastLog            = Clock::now();
+    std::uint64_t             lastLoggedNoted    = 0;
+    std::uint64_t             lastLoggedIngested = 0;
 
     // --- dimension setup -------------------------------------------------------------------------
 
@@ -270,6 +276,7 @@ struct ServerWorldDriver::Impl {
 
     Dim* createDim(int id);
     void destroyDim(Dim& d);
+    void ensureAllDims();
     void ingestPending();
     void updatePlayers();
     void tickDims();
@@ -359,7 +366,7 @@ ServerWorldDriver::Dim* ServerWorldDriver::Impl::createDim(int id) {
     wo.update.worldCompression = opts.common.lodBuilding.worldCompression;
     dim->worldGen              = std::make_unique<dh::WorldGenerator>(*dim->chunkGen, wo);
 
-    dim->listener = std::make_unique<DimListener>(net->players(), dim->info.levelName);
+    dim->listener = std::make_unique<DimListener>(net->players(), dim->info.levelName, net->generationAllowed());
     dim->module   = std::make_unique<dh::LodRequestModule>(
         *dim->provider,
         *dim->listener,
@@ -395,6 +402,15 @@ ServerWorldDriver::Dim* ServerWorldDriver::Impl::createDim(int id) {
     return raw;
 }
 
+void ServerWorldDriver::Impl::ensureAllDims() {
+    std::vector<int> ids;
+    self.level_.forEachDimension([&](Dimension& d) -> bool {
+        ids.push_back(d.mId->mValue);
+        return true;
+    });
+    for (int id : ids) (void)ensureDim(id); // handlers must exist before the first RequestLevelInit
+}
+
 void ServerWorldDriver::Impl::destroyDim(Dim& d) {
     if (d.handler) {
         net->network().removeLevel(*d.handler);
@@ -402,7 +418,7 @@ void ServerWorldDriver::Impl::destroyDim(Dim& d) {
     }
     if (d.module) d.module->close();
     if (d.worldGen) d.worldGen->close();
-    if (d.chunkGen) d.chunkGen->cancelAll();
+    if (d.chunkGen) d.chunkGen->close(); // before the pools are joined: dropped pool tasks complete via TaskGuard
 }
 
 //=========//
@@ -581,8 +597,9 @@ void ServerWorldDriver::Impl::logPeriodic() {
     const auto now = Clock::now();
     if (now - lastLog < std::chrono::seconds(10)) return;
     lastLog = now;
-    if (ingested.load() == lastLoggedIngested && noted.load() == 0) return;
+    if (ingested.load() == lastLoggedIngested && noted.load() == lastLoggedNoted) return; // nothing new
     lastLoggedIngested = ingested.load();
+    lastLoggedNoted    = noted.load();
     DH_LOG_I("server driver: %s", self.statusText().c_str());
 }
 
@@ -642,8 +659,21 @@ bool ServerWorldDriver::start() {
         m.net = std::make_unique<NetServer>(m.transport, m.clock, *m.config);
         m.net->start();
 
-        ServerOnChunkLoadedHook::hook();
-        ServerOnSaveLiveChunkHook::hook();
+        // LeviLamina convention: hook() returns 0 on success (TODO(verify in game)).
+        if (const int r = ServerOnChunkLoadedHook::hook(); r != 0) {
+            DH_LOG_E("server driver: hooking Level::onChunkLoaded failed (%d)", r);
+            stop();
+            return false;
+        }
+        m.hooksInstalled = true;
+        if (const int r = ServerOnSaveLiveChunkHook::hook(); r != 0) {
+            DH_LOG_E("server driver: hooking DBChunkStorage::saveLiveChunk failed (%d)", r);
+            stop();
+            return false;
+        }
+        m.saveHookInstalled = true;
+        m.net->setJoinHook([&m] { m.ensureAllDims(); });
+        m.ensureAllDims();
         gDriver.store(this);
         running_.store(true);
         DH_LOG_I(
@@ -666,8 +696,11 @@ void ServerWorldDriver::stop() {
     try {
         // 1. hooks off; wait for threads already inside a hook
         gDriver.store(nullptr);
-        ServerOnChunkLoadedHook::unhook();
-        ServerOnSaveLiveChunkHook::unhook();
+        if (m.hooksInstalled && !ServerOnChunkLoadedHook::unhook())
+            DH_LOG_W("server driver: unhook onChunkLoaded failed");
+        if (m.saveHookInstalled && !ServerOnSaveLiveChunkHook::unhook())
+            DH_LOG_W("server driver: unhook saveLiveChunk failed");
+        m.hooksInstalled = m.saveHookInstalled = false;
         while (gInHook.load() != 0) std::this_thread::sleep_for(std::chrono::milliseconds(1));
         {
             std::lock_guard lock(m.pendingMutex);
@@ -714,9 +747,16 @@ void ServerWorldDriver::onServerTick() {
         m.net->network().tick(); // 20 Hz: request groups, payload senders (bandwidth maths assume 50 ms)
         m.transport.flushOutbound();
 
-        const auto now = Clock::now();
-        if (now - m.lastSlow < kSlowTick) return;
-        m.lastSlow = now;
+        // 100 ms cadence from an accumulator (no drift / jitter from tick granularity)
+        const auto now  = Clock::now();
+        m.accum        += std::min(
+            std::chrono::duration_cast<std::chrono::milliseconds>(now - m.lastTickTime),
+            std::chrono::milliseconds(250)
+        );
+        m.lastTickTime = now;
+        if (m.accum < kSlowTick) return;
+        m.accum -= kSlowTick;
+        if (m.accum >= kSlowTick) m.accum = std::chrono::milliseconds(0); // fell behind: do not burst
 
         m.updatePlayers();
         m.ingestPending();

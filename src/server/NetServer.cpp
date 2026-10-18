@@ -1,6 +1,7 @@
 #include "server/NetServer.h"
 
 #include "bedrock_common/FileLogger.h"
+#include "bedrock_common/LevelNaming.h"
 
 #include "ll/api/event/EventBus.h"
 #include "ll/api/event/player/PlayerDisconnectEvent.h"
@@ -25,18 +26,6 @@ dh::net::GeneratorPlan toNetPlan(dh::GeneratorPlan p) {
         return dh::net::GeneratorPlan::Disabled;
     }
     return dh::net::GeneratorPlan::SurfaceThenChunks;
-}
-
-/// [a-zA-Z0-9-_] only, at most 150 chars (K1: LevelInitMessage validation).
-std::string keySafe(const std::string& in) {
-    std::string out;
-    for (char c : in) {
-        const bool ok =
-            (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_';
-        out.push_back(ok ? c : '_');
-    }
-    if (out.size() > 150) out.resize(150);
-    return out;
 }
 
 } // namespace
@@ -69,10 +58,10 @@ dh::mp::LevelInfo NetServer::levelInfoFor(
     const dh::Options& options
 ) {
     dh::mp::LevelInfo li;
-    // levelName is what requests carry (Java getDhIdentifier): unique per world + dimension.
-    li.levelName       = worldName + "@" + dimensionResource;
+    // One naming rule shared with the client driver: see LevelNaming.h.
     li.dimension       = dimensionResource;
-    li.levelKey        = keySafe(options.server.levelKeyPrefix + worldName + "_" + dimensionResource);
+    li.levelKey        = makeLevelKey(options.server.levelKeyPrefix, worldName, dimensionResource);
+    li.levelName       = makeLevelName(options.server.sendLevelKeys, li.levelKey, dimensionResource);
     li.coordinateScale = coordinateScale;
     li.internalServerGenerator =
         options.common.worldGenerator.chunkGeneratorMode == dh::DistantGeneratorMode::InternalServer;
@@ -83,7 +72,9 @@ NetServer::NetServer(PacketTransport& transport, dh::IClock& clock, dh::ConfigSt
 : transport_(transport),
   config_(config),
   players_(transport, clock, settingsFrom(config.options())),
-  network_(players_) {}
+  network_(players_) {
+    generationAllowed_.store(players_.settings.values.generatorPlan != dh::net::GeneratorPlan::Disabled);
+}
 
 NetServer::~NetServer() { stop(); }
 
@@ -98,6 +89,7 @@ void NetServer::start() {
             ServerPlayer& p  = e.self();
             const auto    id = transport_.openSession(p.getNetworkIdentifier(), p.getClientSubId(), p.getRealName());
             DH_LOG_I("net: player '%s' joined, session %llu", p.getRealName().c_str(), (unsigned long long)id);
+            if (joinHook_) joinHook_();
         } catch (...) {
             DH_LOG_E("net: exception swallowed in PlayerJoinEvent");
         }
@@ -133,9 +125,14 @@ void NetServer::stop() {
 void NetServer::applyPendingConfig() {
     if (!configDirty_->exchange(false)) return;
     try {
-        players_.settings = settingsFrom(config_.options());
-        network_.broadcastConfig();
-        DH_LOG_I("net: config changed, session config re-sent to %zu player(s)", players_.readyPlayers().size());
+        dh::mp::ServerSettings next = settingsFrom(config_.options());
+        generationAllowed_.store(next.values.generatorPlan != dh::net::GeneratorPlan::Disabled);
+        // ServerNetwork::onFrame reads players_.settings on the transport dispatch thread: write it there too.
+        transport_.runOnDispatch([this, next = std::move(next)]() mutable {
+            players_.settings = std::move(next);
+            network_.broadcastConfig();
+            DH_LOG_I("net: config changed, session config re-sent to %zu player(s)", players_.readyPlayers().size());
+        });
     } catch (...) {
         DH_LOG_E("net: exception swallowed while applying a config change");
     }

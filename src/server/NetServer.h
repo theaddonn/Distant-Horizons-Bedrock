@@ -21,6 +21,7 @@
 #include "ll/api/event/ListenerBase.h"
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -55,6 +56,11 @@ public:
         const dh::Options& options
     );
 
+    /// Runs on the server thread when a player joined (after the session opened).
+    void setJoinHook(std::function<void()> hook) { joinHook_ = std::move(hook); }
+    /// False while the (live) generator plan is Disabled; readable from any thread.
+    const std::atomic<bool>& generationAllowed() const { return generationAllowed_; }
+
     std::size_t playerCount() const { return transport_.sessionCount(); }
 
 private:
@@ -64,7 +70,9 @@ private:
     dh::mp::ServerNetwork network_;
 
     std::shared_ptr<std::atomic<bool>> configDirty_ = std::make_shared<std::atomic<bool>>(false);
-    bool                               started_     = false;
+    std::function<void()>              joinHook_;
+    std::atomic<bool>                  generationAllowed_{true};
+    bool                               started_ = false;
     ll::event::ListenerPtr             joinListener_;
     ll::event::ListenerPtr             leaveListener_;
 };
