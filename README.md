@@ -1,29 +1,25 @@
-# LeviLamina Mod Template
+# Distant Horizons (Bedrock)
 
-> [!WARNING]
-> Remember to change the [LICENSE](LICENSE) file when you use this template
+A port of [Distant Horizons](https://gitlab.com/distant-horizons-team/distant-horizons) to Minecraft Bedrock Edition, as a [LeviLamina](https://github.com/LiteLDev/LeviLamina) client mod: level-of-detail rendering that draws terrain far beyond the normal render distance.
 
-Mod Template for LeviLamina
+Work in progress.
 
-## Usage
+## Compatibility
 
-For detailed instructions, see the [LeviLamina Documentation](https://docs.levimc.org/LeviLamina/developer_guides/tutorials/create_your_first_mod/)
+| Component | Version |
+| --- | --- |
+| Minecraft Bedrock for Windows | 1.26.51.01 |
+| LeviLamina | 26.51.6, client variant |
 
-1. Generate a new repository from this template
-2. Clone the new repository
-3. Change the mod name and the expected LeviLamina version in `xmake.lua`
-4. Add your code.
-5. Run `xmake f -y -p windows -a x64 -m release` in the root of the repository
-6. Run `xmake` to build the mod.
+## Building
 
-After a successful build, you will find mod in `bin/`
+```
+xmake f -y -p windows -a x64 -m release
+xmake
+```
 
-## Contributing
-
-Ask questions by creating an issue.
-
-PRs accepted.
+The built mod is in `bin/DistantHorizons`.
 
 ## License
 
-CC0-1.0 © LeviMC(LiteLDev)
+LGPL-3.0, like the original mod. See `LICENSE` and `LICENSE.LESSER`.

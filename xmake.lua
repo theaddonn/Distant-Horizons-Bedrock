@@ -3,25 +3,22 @@ add_rules("mode.debug", "mode.release")
 add_repositories("levimc-repo https://github.com/LiteLDev/xmake-repo.git")
 
 option("target_type")
-    set_default("server")
+    set_default("client")
     set_showmenu(true)
-    set_values("server", "client")
+    set_values("client")
 option_end()
 
--- add_requires("levilamina x.x.x") for a specific version
--- add_requires("levilamina develop") to use develop version
--- please note that you should add bdslibrary yourself if using dev version
-add_requires("levilamina", {configs = {target_type = get_config("target_type")}})
+add_requires("levilamina 26.51.6", {configs = {target_type = "client"}})
 
-add_requires("levibuildscript")
+add_requires("levibuildscript 0.6.1")
 
 if not has_config("vs_runtime") then
     set_runtimes("MD")
 end
 
-target("my-mod") -- Change this to your mod name.
+target("DistantHorizons")
     add_rules("@levibuildscript/linkrule")
-    add_rules("@levibuildscript/modpacker")
+    add_rules("@levibuildscript/modpacker", {modName = "DistantHorizons", modVersion = "0.1.0", modPlatform = "client"})
     if is_plat("windows") then
         add_defines("NOMINMAX", "UNICODE", "_HAS_CXX23=1")
         set_exceptions("none") -- To avoid conflicts with /EHa.
@@ -48,10 +45,3 @@ target("my-mod") -- Change this to your mod name.
     add_headerfiles("src/**.h")
     add_files("src/**.cpp")
     add_includedirs("src")
-    if is_config("target_type", "server") then
-    --  add_includedirs("src-server")
-    --  add_files("src-server/**.cpp")
-    else
-    --  add_includedirs("src-client")
-    --  add_files("src-client/**.cpp")
-    end

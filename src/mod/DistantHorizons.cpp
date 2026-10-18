@@ -1,32 +1,32 @@
-#include "mod/MyMod.h"
+#include "mod/DistantHorizons.h"
 
 #include "ll/api/mod/RegisterHelper.h"
 
-namespace my_mod {
+namespace distant_horizons {
 
-MyMod& MyMod::getInstance() {
-    static MyMod instance;
+DistantHorizons& DistantHorizons::getInstance() {
+    static DistantHorizons instance;
     return instance;
 }
 
-bool MyMod::load() {
+bool DistantHorizons::load() {
     getSelf().getLogger().debug("Loading...");
     // Code for loading the mod goes here.
     return true;
 }
 
-bool MyMod::enable() {
+bool DistantHorizons::enable() {
     getSelf().getLogger().debug("Enabling...");
     // Code for enabling the mod goes here.
     return true;
 }
 
-bool MyMod::disable() {
+bool DistantHorizons::disable() {
     getSelf().getLogger().debug("Disabling...");
     // Code for disabling the mod goes here.
     return true;
 }
 
-} // namespace my_mod
+} // namespace distant_horizons
 
-LL_REGISTER_MOD(my_mod::MyMod, my_mod::MyMod::getInstance());
+LL_REGISTER_MOD(distant_horizons::DistantHorizons, distant_horizons::DistantHorizons::getInstance());
