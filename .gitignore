@@ -553,3 +553,6 @@ fabric.properties
 # host test project
 /tests/.xmake/
 /tests/build/
+
+# agent worktrees
+/.claude/worktrees/
