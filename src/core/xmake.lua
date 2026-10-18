@@ -16,7 +16,7 @@ target("dh_core")
     add_files(path.join(os.scriptdir(), "dh/**.cpp"))
     set_exceptions("none")
     if is_plat("windows") then
-        add_cxflags("/fp:precise", "/clang:-ffp-contract=off", {tools = {"clang_cl"}})
+        add_cxflags("/clang:-ffp-contract=off", {tools = {"clang_cl"}})
     else
         add_cxflags("-ffp-contract=off", "-Wall", "-Wextra")
     end
