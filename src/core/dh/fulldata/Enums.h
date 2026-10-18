@@ -1,48 +1,11 @@
 #pragma once
 
+#include "dh/platform/IChunkGenerator.h" // dh::GenerationStep
+
 #include <cstdint>
 #include <optional>
 
 namespace dh {
-
-/// Port of Java EDhApiWorldGenerationStep (api/enums/worldGeneration). The value is
-/// persisted per column as a signed byte. NOTE: LiquidCarvers and Terrain both
-/// have the value 7 (as in Java); generationStepFromValue(7) returns LiquidCarvers.
-enum class GenerationStep : std::int8_t {
-    DownSampled        = -1,
-    Empty              = 0,
-    StructureStart     = 1,
-    StructureReference = 2,
-    Biomes             = 3,
-    Noise              = 4,
-    Surface            = 5,
-    Carvers            = 6,
-    LiquidCarvers      = 7,
-    Terrain            = 7,
-    Features           = 8,
-    Light              = 9,
-};
-
-/// Java EDhApiWorldGenerationStep.fromValue (first match wins); nullopt when unknown.
-inline std::optional<GenerationStep> generationStepFromValue(int value) {
-    constexpr GenerationStep all[] = {
-        GenerationStep::DownSampled,
-        GenerationStep::Empty,
-        GenerationStep::StructureStart,
-        GenerationStep::StructureReference,
-        GenerationStep::Biomes,
-        GenerationStep::Noise,
-        GenerationStep::Surface,
-        GenerationStep::Carvers,
-        GenerationStep::LiquidCarvers,
-        GenerationStep::Features,
-        GenerationStep::Light,
-    };
-    for (GenerationStep s : all) {
-        if (static_cast<int>(s) == value) return s;
-    }
-    return std::nullopt;
-}
 
 /// Port of Java EDhApiWorldCompressionMode (api/enums/config).
 enum class WorldCompressionMode : std::int8_t {

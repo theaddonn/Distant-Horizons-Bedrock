@@ -1,17 +1,16 @@
 #pragma once
 
-// Port of core/enums/EDhDirection.java. Enum order matches Java declaration
-// order (and WP0's platform Direction): Down, Up, North, South, West, East.
-// NOTE: if platform/Direction.h lands with the same enum, drop this one and
-// forward to it.
+// Port of core/enums/EDhDirection.java helpers. The enum itself lives in
+// dh/platform/Direction.h (shared with the platform contracts); this header
+// adds the axis/normal/name tables and the Java-ordered direction arrays.
+
+#include "dh/platform/Direction.h"
 
 #include <array>
 #include <cstdint>
 #include <string_view>
 
 namespace dh {
-
-enum class Direction : std::uint8_t { Down = 0, Up, North, South, West, East };
 
 enum class Axis : std::uint8_t { X, Y, Z };
 enum class AxisDirection : std::uint8_t { Positive, Negative };
