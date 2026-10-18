@@ -96,10 +96,15 @@ struct WorldDeps {
     /// level counts as active.
     std::function<ILevelHandle*()> activeClientLevel;
 
-    /// Blocks until the executors no longer run tasks that reference a closing level (PORTING.md: queued tasks
-    /// capture `this`; ThreadPools::shutdown()+join in production, ManualExecutor::runAll in tests). Called by
-    /// AbstractLevel::close() between "stop producing work" and "destroy". Empty = caller guarantees quiescence.
+    /// OPTIONAL extra. AbstractLevel::close() is self-sufficient: it waits (bounded by closeWaitMs) on the level's own
+    /// counters (running chunk tasks, outstanding saves, SourceUpdater::pendingAsyncCount, propagator tasks) and
+    /// leaks - rather than frees - its storage objects if a queued task never finishes. This hook only lets the
+    /// platform run queued work first (tests: ManualExecutor::runAll; production: nothing, or a per-level flush).
+    /// It must NOT shut down shared pools: a single-level unload keeps the other levels running.
     std::function<void()> drainExecutors;
+
+    /// Upper bound of each close() barrier wait, real milliseconds.
+    int closeWaitMs = 5000;
 
     ILogger& log() const { return logger ? *logger : dh::log::get(); }
     bool     valid() const { return clock && registry && options && exec.valid(); }

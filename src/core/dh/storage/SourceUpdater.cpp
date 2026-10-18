@@ -108,7 +108,8 @@ void SourceUpdater::waitQuiescent() const {
 std::shared_ptr<UpdateFuture> SourceUpdater::updateAsync(std::shared_ptr<const FullDataSource> input) {
     auto future = std::make_shared<UpdateFuture>();
     if (!input || shutdown_.load() || options_.asyncExecutor == nullptr) {
-        future->complete(false);
+        // explicit rejection: Ok(false) strictly means "ran, section unchanged" (callers commit chunk hashes on it)
+        future->complete(Result<bool>(ErrorCode::Rejected, "updater shut down or no executor"));
         return future;
     }
 
@@ -122,9 +123,10 @@ std::shared_ptr<UpdateFuture> SourceUpdater::updateAsync(std::shared_ptr<const F
         future->complete(std::move(r));
     });
     if (!accepted) {
-        // Executor shut down while we queued (Java: RejectedExecutionException -> completed future).
+        // Executor shut down while we queued (Java: RejectedExecutionException -> completed future; here an explicit
+        // Rejected error).
         pendingAsync_.fetch_sub(1);
-        future->complete(false);
+        future->complete(Result<bool>(ErrorCode::Rejected, "update executor rejected the task"));
     }
     return future;
 }
