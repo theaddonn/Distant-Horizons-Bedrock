@@ -21,6 +21,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <filesystem>
 #include <fstream>
 #include <memory>
 #include <mutex>
@@ -72,9 +73,14 @@ dh::bedrock::BlockSerializer* serializer() {
     return gSerializer.get();
 }
 
-void processChunk(LevelChunk& lc) {
+void processChunkImpl(LevelChunk& lc) {
     auto* ser = serializer();
     if (!ser) return;
+    if (!dh::bedrock::BedrockChunk::heightSupported(lc)) {
+        static std::atomic<bool> logged{false};
+        if (!logged.exchange(true)) DH_LOG_W("ingress: dimension height is not a multiple of 16, chunks skipped");
+        return;
+    }
     using clock = std::chrono::steady_clock;
     auto t0     = clock::now();
 
@@ -106,6 +112,14 @@ void processChunk(LevelChunk& lc) {
     int n = ++gChunks;
     dh::hud::set("ingress.chunks", n);
     dh::hud::set("ingress.lastMs", ms);
+}
+
+void processChunk(LevelChunk& lc) {
+    try {
+        processChunkImpl(lc);
+    } catch (...) {
+        DH_LOG_E("chunk ingress: exception swallowed");
+    }
 }
 
 LL_TYPE_INSTANCE_HOOK(
