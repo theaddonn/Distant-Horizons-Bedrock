@@ -15,8 +15,12 @@
 // chunk gen, or PreExistingOnly with surface gen) go to the optional rough generator hook; without one they
 // fail with ErrorCode::Unsupported (Java threw NullPointerException).
 //
-// Contract requirement beyond IChunkGenerator.h: the IChunk objects delivered to onChunk must stay valid until
-// the batch's `done` has fired and the processing task finished (Java kept the wrappers in a list).
+// Chunks are delivered as shared_ptr<IChunk> and kept in the job until it finishes (Java kept the wrappers
+// in a list), see IChunkGenerator.h.
+// Lighting: Java DhWorldGenerator does NOT light; DhChunkGenerator (platform) lights block light only, for
+// chunks with !isDhBlockLightingCorrect(), before they reach the consumer. Platform drivers are expected to do
+// the same. As a fallback this adapter runs a block-light-only lightChunk for chunks still not lit. Sky light
+// is never generated here: the updater bakes it per section at detail 6.
 //
 // close(): cancels the chunk generator and completes every outstanding request exactly once with
 // ErrorCode::Cancelled; later chunk/done callbacks are ignored.
@@ -38,8 +42,7 @@
 namespace dh {
 
 struct DhWorldGeneratorOptions {
-    GeneratorPlan plan        = GeneratorPlan::SurfaceThenChunks;
-    int           maxSkyLight = 15;
+    GeneratorPlan plan = GeneratorPlan::SurfaceThenChunks;
     BuildOptions  build;
     UpdateOptions update;
 };
@@ -78,7 +81,7 @@ private:
     void finish(const std::shared_ptr<Job>& job, Result<std::shared_ptr<FullDataSource>> result);
 
     IChunkGenerator&          chunkGen_;
-    DhWorldGeneratorOptions     options_;
+    DhWorldGeneratorOptions   options_;
     std::atomic<std::uint8_t> plan_;
     RoughGenerateFn           rough_;
 

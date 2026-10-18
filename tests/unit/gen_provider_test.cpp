@@ -245,14 +245,21 @@ TEST_CASE("e2e: Split result subdivides through LodRequestSet") {
     std::vector<std::uint64_t> kids;
     sec::forEachChild(parent, [&](std::uint64_t c) { kids.push_back(c); });
     for (auto k : kids) CHECK(set.isMissing(k));
-    CHECK_FALSE(fx.provider->canRegenerate());
+    CHECK_FALSE(fx.provider->canRegenerate()); // only a detail-7 section was missing
+    CHECK_FALSE(fx.queue->getCanRegenerate());
 
     // and they can be generated
     CHECK(set.startQueued(*fx.provider, BlockPos2D{0, 0}) == 4);
+    CHECK(fx.provider->canRegenerate()); // block-detail sections were missing -> regen allowed (LodQuadTree :938-958)
+    CHECK(fx.queue->getCanRegenerate()); // forwarded to the queue
     fx.queue->startAndSetTargetPos(BlockPos2D{0, 0}); // what LodRequestModule::tick does every tick
     fx.pump();
     CHECK(set.missingCount() == 0);
     CHECK(set.queuedCount() == 0);
+    CHECK(set.startQueued(*fx.provider, BlockPos2D{0, 0}) == 0);
+    CHECK(fx.provider->canRegenerate()); // nothing missing
+    set.onConfigChanged(*fx.provider);
+    CHECK_FALSE(fx.provider->canRegenerate());
     for (auto k : kids) {
         auto left = fx.provider->positionsToRetrieve(k, 6);
         REQUIRE(left.has_value());
