@@ -143,7 +143,8 @@ struct ILodStore {
     virtual Result<std::optional<std::int64_t>> timestamp(std::uint64_t pos) = 0;
 
     /// (pos, lastModifiedMillis) for every record at `detailLevel` whose section
-    /// X/Z (at that detail) lie in [startX, endX] x [startZ, endZ] inclusive.
+    /// X/Z (at that detail) lie in [startX, endX) x [startZ, endZ): start inclusive, END EXCLUSIVE
+    /// (Java FullDataSourceV2Repo.getTimestampsForRange binds `end - 1` into a BETWEEN).
     /// Sorted by pos ascending.
     virtual Result<std::vector<std::pair<std::uint64_t, std::int64_t>>> timestamps(
         std::uint8_t detailLevel,

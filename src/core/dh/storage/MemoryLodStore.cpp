@@ -193,7 +193,7 @@ Result<std::vector<std::pair<std::uint64_t, std::int64_t>>> MemoryLodStore::time
         if (static_cast<std::uint8_t>(sec::detail(pos)) != detailLevel) continue;
         const std::int32_t x = sec::x(pos);
         const std::int32_t z = sec::z(pos);
-        if (x < startX || x > endX || z < startZ || z > endZ) continue;
+        if (x < startX || x >= endX || z < startZ || z >= endZ) continue;
         out.emplace_back(pos, rec.meta.lastModifiedMillis);
     }
     return out;
