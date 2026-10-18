@@ -509,6 +509,15 @@ Result<FullDataSource> decodeAdjacentOnly(const StoreRecord& rec, Direction dir,
     return decodeImpl(rec, registry, static_cast<AdjDirection>(ci));
 }
 
+Result<std::array<std::int8_t, FullDataSource::COLUMN_COUNT>> decodeGenSteps(const StoreRecord& rec) {
+    Bytes                                                 storage;
+    View                                                  gs;
+    std::array<std::int8_t, FullDataSource::COLUMN_COUNT> a{};
+    if (auto st = unframe(rec.genSteps, storage, gs); !st) return st.error();
+    if (auto st = rleDecode(gs, a); !st) return st.error();
+    return a;
+}
+
 Result<std::uint32_t> computeDataChecksum(const StoreRecord& rec) {
     Bytes storage[8];
     View  v[8];
