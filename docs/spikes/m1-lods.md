@@ -1,0 +1,119 @@
+# M1 checklist: LODs from the real pipeline (GLUE-4)
+
+Log file: `~/.steam/steam/steamapps/common/MinecraftBedrockGDK/builds/Retail-1.26.5101-Levi/mods/DistantHorizons/logs/dh.log`.
+Every run below ends with explicit PASS/FAIL lines; report each one.
+
+Status: cross-compiled (client + server build, host tests green), **never run in game**. Everything below is a hypothesis
+until you run it. Build + deploy: `scripts/build.sh client && scripts/deploy.sh client` (the block tables are read from
+`<modDir>/data`). Logs: `logs/dh.log`. HUD: F7 toggles it, F8 dumps it to the log.
+
+## Keys
+
+| Key | Action |
+|---|---|
+| F5 | whole pipeline on/off (world driver + hooks + renderer). Turning it on switches far-plane mode to `local-proj-push`. |
+| Shift+F5 | synthetic test feed (pre-GLUE-4 smoke path, still works with the pipeline off) |
+| Ctrl+F5 | core RenderList frustum cull on/off (off = only the renderer's own 5-plane test; use if everything vanishes) |
+| Shift+F7 | chunk ingestion on/off (default on) |
+| F4 / Shift+F4 / Ctrl+F4 | primitive / far-plane mode / near cut-off (now on by default while the pipeline runs) |
+| F6 / Shift+F6 / Ctrl+F6 | material / origin mode / transparent pass |
+
+The old F7-ingest smoke test (`ChunkIngress`) is gone; ingestion is part of the driver.
+
+## Run 1: new singleplayer world
+
+1. Create a NEW world (default overworld, creative, any seed), load it, press **F5**.
+2. Log must show, in this order (copy the whole block back):
+   - `client driver: levels: ci->getLevel()=... getMultiPlayerLevel()=... getLevel()=... (isClientSide=?)` and possibly
+     `getMinecraft(false)->getLevel()=...`  (this settles which accessor returns the server Level in SP)
+   - `client driver: session started: SINGLEPLAYER (DhClientServerWorld)` (if it says REMOTE in SP, the server Level was not
+     found: send the levels line)
+   - `client driver: handles for dimension minecraft:overworld ...`
+   - `store: 0 sections loaded (minecraft:overworld, ...)` BEFORE any `ingest`/chunk activity
+   - `client driver: level [minecraft:overworld] loaded (dimension 0)`
+3. Fly horizontally (creative flight) for ~300 blocks, preferably over land. Expected: coloured LOD terrain beyond the
+   vanilla chunk edge (the near cut-off hides LODs inside the vanilla render distance). Take a screenshot.
+4. HUD (F7) should show: `mode singleplayer`, `world.levels 1`, `tree.enabled >0`, `tree.loading`, `gen.queued`
+   (drains over time as generation completes), `ingest.chunks` rising, `ingest.skipped`, `tick.ms` (single digits),
+   `net.rx/net.tx` 0 in SP, `render.sections`, `render.listed`, `render.drawn`, `render.culled`, `render.cutoff`.
+5. F8 and send the `hud-dump:` line.
+
+PASS/FAIL (Run 1):
+- P1 `session started: SINGLEPLAYER` appears within 3 s of F5 (FAIL: REMOTE or nothing; send the `levels:` line)
+- P2 `store: 0 sections loaded` is logged before the first `ingest` activity
+- P3 `ingest.drains` > 0 within 10 s (FAIL with `drain has been queued ... without running` in the log: the server-thread
+  executor does not tick in this DLL)
+- P4 `ingest.chunks` > 0 within 10 s, and `client ingest: rescan found N already-loaded chunks` with N > 0 (the chunks around
+  spawn that were loaded before F5 are picked up by that rescan, radius 32 chunks)
+- P5 `render.listed` > 0 within 30 s and `render.drawn` > 0 once you are past the vanilla edge (FAIL with listed 0 but
+  `render.sections` > 0: press Ctrl+F5 and report whether it helps)
+- P6 coloured LOD terrain visible beyond the vanilla edge (screenshot)
+- P7 `gen.queued` falls over time (generation works); `world gen:` lines show no repeated errors
+
+Expected around spawn / dimension change: the first 10-30 s only have LODs where chunks exist or generation finished
+(nearest first). After a dimension change the new dimension's chunks noted during the switch are kept and ingested once its
+level has loaded (the old dimension's pending chunks are dropped).
+
+## Run 2: persistence
+
+Quit to menu (log: `client driver: session stopped`, no crash), relaunch, load the same world, press F5.
+Expected: `store: N sections loaded` with N > 0 BEFORE any chunk is ingested, and LODs appear almost immediately
+(from LevelDB, before the tree needs to regenerate anything). Also check that `ingest.skipped` is large on the second visit
+(`ingest.skipped` counts hash skips plus dropped chunks).
+
+PASS/FAIL (Run 2): R1 `store: N sections loaded` with N > 0 before any `ingest` activity; R2 LODs visible within 10 s of F5
+without flying; R3 `ingest.skipped` > 0 after the rescan.
+
+## Run 3 (optional): dimension change and F5 off
+
+Enter the Nether and come back: log `level of dimension N unloaded` then `level [...] loaded (dimension M)`; no stale
+sections of the other dimension. F5 off must stop the session (`session stopped`) without a hang; F5 on restarts it.
+
+## Run 4 (optional): remote server
+
+Join a BDS with the server DLL: expect `session started: REMOTE`, `net: LevelInit for minecraft:overworld -> level key ...`
+(if `sendLevelKeys` is on), `net.rx`/`net.tx` counting up, LODs from received sections. Joining a server WITHOUT the mod:
+LODs only from chunks the client receives (sub-chunk ingestion). NOTE: the client sends `dh:frame` packets to a server
+that may not know them; if joining a vanilla server gets you kicked, tell me.
+
+## What to send back
+
+- the `dh.log` block from F5 up to the first LODs (and everything from `client driver:`, `client ingest:`, `world gen:`,
+  `render:` and `store:` lines)
+- the F8 `hud-dump:` after flying
+- screenshot(s); say which keys you changed (primitive / far mode / Ctrl+F5)
+- crash log if any (see the risks below for where to look)
+
+## Known risks / things only the game can answer
+
+1. Which accessor returns the server Level in singleplayer (see the levels line). Wrong guess = REMOTE mode in SP.
+2. `ClientLevelTickEvent` delivery: if absent the log says `ClientLevelTickEvent not seen, ticking from the render hook`.
+3. Hook results (`hooking ... failed` lines) and the call frequency of `DBChunkStorage::saveLiveChunk` / `BlockChangedEvent`
+   on the client DLL (block edits may not reach the LODs; chunk loads do).
+4. `ll::thread::ServerThreadExecutor` in the client DLL (SP chunk drain and the generator hop through it). If chunks are
+   noted (`ingest.chunks` stays 0) but never drained, this is the suspect.
+5. Matrix layout for the core frustum: if the list is empty or tiny while sections exist, press Ctrl+F5 (core cull off).
+   `render.listed` vs `render.sections` tells you.
+6. World-gen quality: `Features` degrades to Surface (BdsWorldGenerator, logged once). Scratch chunk generation is the
+   least certain part of the port; `world gen:` log lines and `gen.queued` not draining mean it fails.
+7. Exit ordering: the Dimension pointers die with the Level; the session is stopped from `ClientExitLevelEvent`. A crash on
+   leaving the world is most likely the server Level being destroyed before the event.
+
+## Decisions (GLUE-4)
+
+- F5 = the whole pipeline (not just the renderer); Shift+F5 is the old test feed; Shift+F7 = ingestion on/off (on).
+- The core render list culls with the DH far clip (`RenderUtil::farClipPlaneDistanceInBlocks`), not the vanilla far plane.
+- worldMinY/worldMaxY: Java passes `minHeight` and `minHeight + level.getMaxHeight()` where Java's `getMaxHeight()` is the
+  world HEIGHT. `ILevelInfo::maxHeight()` here is already the exclusive top Y (= min + height), so it is passed unchanged
+  (no double add, no quirk reproduced).
+- Near cut-off radius = vanilla render distance (chunks) * 16 * `RenderUtil::overdrawPrevention` (auto table + fast-movement
+  reduction); the FOV-corrected near PLANE is a projection value and not used for the horizontal cut.
+- Chunk updates carry independent snapshot copies of the 3x3 (lightChunk writes into neighbours); at most 12 updates are in
+  flight per level.
+- Store folders: singleplayer `worlds/sp_<world name>_<level id>/<dimension>/` (the level id keeps equal-named worlds apart),
+  remote `worlds/remote/<levelKey or dimension>/` (two servers without level keys share a folder; add the server address
+  when the packet layer exposes it).
+- Already-loaded chunks (F5 pressed in a loaded world, Shift+F7 turned back on): there is no safe public enumeration of a
+  ChunkSource, so a 65x65 chunk square around the player is probed with `getAvailableChunk` on the owner thread. Chunks
+  farther than 32 chunks from the player at that moment are only picked up when they (re)load.
+- `Options` changes are not pushed into a running world yet (`onOptionsChanged` is not wired); toggle F5 to apply.

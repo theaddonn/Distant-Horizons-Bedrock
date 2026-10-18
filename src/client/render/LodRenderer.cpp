@@ -3,6 +3,10 @@
 #include "bedrock_common/FileLogger.h"
 #include "client/hud/DebugHud.h"
 #include "client/spikes/SpikeGfx.h"
+#include "client/world/ClientWorldDriver.h"
+
+#include "bedrock_common/ConfigBridge.h"
+#include "dh/render/RenderUtil.h"
 
 #include "dh/pos/SectionPos.h"
 
@@ -165,6 +169,8 @@ void LodRenderer::renderFrame(BaseActorRenderContext& rc, ViewRenderObject const
     mce::MeshContext& mctx = ctx;
     auto&             cam  = mctx.camera;
 
+    bedrock::ClientWorldDriver::instance().onFrame(); // fallback tick pump (no-op while the tick event runs)
+
     // 1. budgeted uploads
     uploader_.pump(ctx, cfg_.maxUploadsPerFrame);
 
@@ -222,56 +228,124 @@ void LodRenderer::renderFrame(BaseActorRenderContext& rc, ViewRenderObject const
     Frustum5  fr;
     if (cfg_.frustumCull && info.valid) fr = Frustum5::build(proj, view, info.transposed);
 
+    // 3a. the world pipeline's render list (core frustum cull + near-to-far order), or every uploaded section
+    //     (test feed / pipeline off)
+    const bool                camRel = cfg_.origin == OriginMode::CameraRelative;
+    bedrock::RenderListResult list;
+    bedrock::RenderListStatus listStatus = bedrock::RenderListStatus::NoSession;
+    {
+        dh::RenderListParams params;
+        params.isShadowPass = false;
+        // The core's Frustum wants glm matrices in the "DhApiMat4f array" layout, i.e. the TRANSPOSE of the
+        // column-vector maths matrix (Frustum.h). analyzeProjection tells whether Bedrock's matrices are row-vector
+        // (then the glm memory already equals that transpose) or column-vector (then transpose them).
+        const bool  tr     = info.valid && info.transposed;
+        const float lodRad = static_cast<float>(
+            bedrock::ConfigBridge::instance().config().options().client.graphics.quality.lodChunkRenderDistanceRadius
+        );
+        // The vanilla far plane would cull every distant LOD: use the DH far clip (RenderUtil.getFarClipPlane...).
+        const float farBlocks     = renderutil::farClipPlaneDistanceInBlocks(static_cast<std::int32_t>(lodRad));
+        glm::mat4   projFar       = info.valid ? spikes::patchFar(proj, info, cam.mZNear, cam.mZFar, farBlocks) : proj;
+        params.mcModelViewMatrix  = tr ? view : glm::transpose(view);
+        params.dhProjectionMatrix = tr ? projFar : glm::transpose(projFar);
+        // camera-relative mode: the view matrix carries no translation, the core translates by -camera itself;
+        // absolute mode: the view matrix already contains it.
+        params.exactCameraPosition = camRel ? camPos : glm::dvec3(0.0);
+        listStatus = bedrock::ClientWorldDriver::instance().collectRenderList(params, cfg_.coreFrustum, list);
+    }
+    const bool listMode = listStatus != bedrock::RenderListStatus::NoSession;
+    if (listStatus == bedrock::RenderListStatus::Ready && (list.minY != static_cast<int>(cfg_.minYBlocks))) {
+        cfg_.minYBlocks = static_cast<float>(list.minY); // DH y 0 == level min height
+        applyMeshSettings();
+    }
+    dh::hud::set("render.listed", static_cast<std::int64_t>(list.positions.size()));
+
+    // camera speed EMA (blocks/s) for the fast-movement overdraw reduction
+    {
+        const auto now = std::chrono::steady_clock::now();
+        if (haveLastCam_) {
+            const double dt = std::chrono::duration<double>(now - lastCamTime_).count();
+            if (dt > 1e-4 && dt < 1.0) {
+                const double dx = camPos.x - lastCamPos_.x, dy = camPos.y - lastCamPos_.y,
+                             dz = camPos.z - lastCamPos_.z;
+                speedEma_       = speedEma_ * 0.9 + std::sqrt(dx * dx + dy * dy + dz * dz) / dt * 0.1;
+            }
+        }
+        lastCamPos_  = camPos;
+        lastCamTime_ = now;
+        haveLastCam_ = true;
+    }
+
+    // 3b. near cut-off: skip sections entirely inside the area vanilla renders. The radius is the vanilla render
+    //     distance scaled by RenderUtil's overdraw prevention (auto table, fast-movement reduction); the
+    //     FOV-corrected near PLANE (nearClipPlaneInBlocks) is a projection value and is not used here.
     float cutoff2 = -1.0f;
-    if (cfg_.nearCutoff) {
+    if (cfg_.nearCutoff && listMode) {
         float rd = cfg_.vanillaRenderDistanceBlocks;
         if (rd <= 0.0f) {
             rd = vro.mViewData->mRenderDistance;
             if (rd < 64.0f) rd *= 16.0f;
         }
-        float r = rd * cfg_.overdraw;
+        const auto&                cull = bedrock::ConfigBridge::instance().config().options().client.graphics.culling;
+        renderutil::NearClipInputs nci;
+        nci.overdrawPreventionSetting      = cull.overdrawPrevention;
+        nci.reduceOverdrawWithFastMovement = cull.reduceOverdrawWithFastMovement;
+        nci.vanillaChunkRenderDistance     = std::max(1, static_cast<std::int32_t>(std::ceil(rd / 16.0f)));
+        nci.avgCameraSpeedBlocksPerSec     = speedEma_;
+        const float overdraw               = renderutil::overdrawPrevention(nci);
+        float r = std::max(1.0f, static_cast<float>(nci.vanillaChunkRenderDistance) * 16.0f * overdraw) * cfg_.overdraw;
         cutoff2 = r * r;
         if (!loggedCutoff_) {
             DH_LOG_I(
-                "render: near cut-off radius %.1f blocks (mRenderDistance=%.2f)",
+                "render: near cut-off radius %.1f blocks (mRenderDistance=%.2f, overdraw %.2f)",
                 r,
-                vro.mViewData->mRenderDistance
+                vro.mViewData->mRenderDistance,
+                overdraw
             );
             loggedCutoff_ = true;
         }
     }
 
     std::vector<Visible> vis;
-    vis.reserve(uploader_.sections().size());
+    vis.reserve(listMode ? list.positions.size() : uploader_.sections().size());
     std::size_t culledFrustum = 0, culledNear = 0;
-    bool        camRel = cfg_.origin == OriginMode::CameraRelative;
-    for (auto const& [pos, sec] : uploader_.sections()) {
-        if (sec.opaque.empty() && sec.transparent.empty()) continue;
+    auto        consider = [&](std::uint64_t pos, MeshUploader::Section const& sec) {
+        if (sec.opaque.empty() && sec.transparent.empty()) return;
         glm::vec3 t = camRel ? glm::vec3(
                                    static_cast<float>(sec.minX - camPos.x),
                                    static_cast<float>(-camPos.y),
                                    static_cast<float>(sec.minZ - camPos.z)
                                )
-                             : glm::vec3(static_cast<float>(sec.minX), 0.0f, static_cast<float>(sec.minZ));
+                                    : glm::vec3(static_cast<float>(sec.minX), 0.0f, static_cast<float>(sec.minZ));
         if (cutoff2 > 0.0f) {
             double w  = sec::blockWidth(pos);
             double x0 = sec.minX - camPos.x, x1 = x0 + w, z0 = sec.minZ - camPos.z, z1 = z0 + w;
             double fx = std::max(std::fabs(x0), std::fabs(x1)), fz = std::max(std::fabs(z0), std::fabs(z1));
             if (fx * fx + fz * fz <= cutoff2) {
                 ++culledNear;
-                continue;
+                return;
             }
         }
         if (fr.valid && !fr.visible(sec.bmin + t, sec.bmax + t)) {
             ++culledFrustum;
-            continue;
+            return;
         }
         glm::vec3 c  = t + (sec.bmin + sec.bmax) * 0.5f;
         float     d2 = camRel
-                         ? c.x * c.x + c.z * c.z
-                         : static_cast<float>((c.x - camPos.x) * (c.x - camPos.x) + (c.z - camPos.z) * (c.z - camPos.z));
+                                ? c.x * c.x + c.z * c.z
+                                : static_cast<float>((c.x - camPos.x) * (c.x - camPos.x) + (c.z - camPos.z) * (c.z - camPos.z));
         vis.push_back({&sec, t, d2});
+    };
+    if (listStatus == bedrock::RenderListStatus::Ready) {
+        auto const& all = uploader_.sections();
+        for (std::uint64_t pos : list.positions) {
+            auto it = all.find(pos);
+            if (it != all.end()) consider(pos, it->second);
+        }
+    } else if (listStatus == bedrock::RenderListStatus::NoSession) {
+        for (auto const& [pos, sec] : uploader_.sections()) consider(pos, sec);
     }
+    // Unavailable: a session exists but nothing is renderable right now (loading / shutting down): draw nothing.
 
     // 4. draw
     static Texture const none{std::monostate{}};
