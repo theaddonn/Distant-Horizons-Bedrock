@@ -215,6 +215,8 @@ public:
     /// Chunk updates dropped by the hash skip (observability).
     std::uint64_t skippedUnchangedChunks() const { return skipped_.load(); }
     std::uint64_t acceptedChunkUpdates() const { return accepted_.load(); }
+    /// Chunk updates queued on the lod-builder executor that have not finished yet (platform back-pressure).
+    std::int64_t inFlightChunkUpdates() const { return inFlightChunkTasks_.load(); }
 
     // IWorldGenCompleteListener (defaults: no generation)
     bool                      shouldDoWorldGen() override { return false; }

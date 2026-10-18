@@ -3,11 +3,11 @@
 #include "bedrock_common/FileLogger.h"
 #include "bedrock_common/LeviLogger.h"
 #include "client/Version.h"
-#include "client/hooks/ChunkIngress.h"
 #include "client/hud/DebugHud.h"
 #include "client/render/MaterialInjector.h"
 #include "client/render/RenderHooks.h"
 #include "client/spikes/Spikes.h"
+#include "client/world/ClientWorldDriver.h"
 
 #include "dh/Version.h"
 
@@ -41,15 +41,15 @@ bool DistantHorizons::enable() {
     dh::hud::install();
     dh::spikes::install();
     dh::render::installMaterialInjector();
-    dh::ingress::install();
     dh::render::install();
+    dh::bedrock::ClientWorldDriver::instance().install();
     DH_LOG_I("DH enabled");
     return true;
 }
 
 bool DistantHorizons::disable() {
+    dh::bedrock::ClientWorldDriver::instance().uninstall();
     dh::render::uninstall();
-    dh::ingress::uninstall();
     dh::render::uninstallMaterialInjector();
     dh::spikes::uninstall();
     dh::hud::uninstall();
