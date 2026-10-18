@@ -36,7 +36,8 @@ public:
         std::int32_t maxBlockDistance,
         std::size_t  maxCount
     ) override;
-    Result<std::size_t> regenCount(std::int32_t blockX, std::int32_t blockZ, std::int32_t maxBlockDistance) override;
+    Result<std::size_t>
+    regenRecordCount(std::int32_t blockX, std::int32_t blockZ, std::int32_t maxBlockDistance) override;
 
     Result<std::optional<std::int64_t>>                         timestamp(std::uint64_t pos) override;
     Result<std::vector<std::pair<std::uint64_t, std::int64_t>>> timestamps(

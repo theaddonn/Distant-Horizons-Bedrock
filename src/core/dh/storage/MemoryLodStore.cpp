@@ -13,8 +13,11 @@ namespace {
 // with DetailLevel = sectionDetail - 6, i.e. the section's min corner. SQLite
 // evaluates in 64 bit, so the distance is computed in int64 here.
 std::int64_t distanceToMinCorner(std::uint64_t pos, std::int32_t bx, std::int32_t bz) {
-    const std::int64_t dx = static_cast<std::int64_t>(sec::minCornerBlockX(pos)) - bx;
-    const std::int64_t dz = static_cast<std::int64_t>(sec::minCornerBlockZ(pos)) - bz;
+    // Not sec::minCornerBlockX/Z: those wrap in int32 (Java int math), SQL does not.
+    const std::int64_t cx = static_cast<std::int64_t>(sec::x(pos)) * (std::int64_t{1} << sec::detail(pos));
+    const std::int64_t cz = static_cast<std::int64_t>(sec::z(pos)) * (std::int64_t{1} << sec::detail(pos));
+    const std::int64_t dx = cx - bx;
+    const std::int64_t dz = cz - bz;
     return (dx < 0 ? -dx : dx) + (dz < 0 ? -dz : dz);
 }
 
@@ -32,9 +35,9 @@ int MemoryLodStore::flagIndex(StoreFlag f) {
     case StoreFlag::ApplyToChildren:
         return 1;
     case StoreFlag::Regenerate:
+    default:
         return 2;
     }
-    return 0;
 }
 
 void MemoryLodStore::reindex(std::uint64_t pos, std::uint8_t oldFlags, std::uint8_t newFlags) {
@@ -50,6 +53,7 @@ void MemoryLodStore::reindex(std::uint64_t pos, std::uint8_t oldFlags, std::uint
 }
 
 Status MemoryLodStore::put(const StoreRecord& r, StorePart parts) {
+    if (parts == StorePart::None) return Status::ok(); // nothing to write: never creates an empty record
     std::lock_guard lock(mutex_);
     auto            it = records_.find(r.pos);
     if (it == records_.end()) {
@@ -162,7 +166,7 @@ Result<std::vector<std::uint64_t>> MemoryLodStore::positionsToRegen(
     return nearest(flagIndex(StoreFlag::Regenerate), bx, bz, maxBlockDistance, maxCount); // <0 = everything (Java)
 }
 
-Result<std::size_t> MemoryLodStore::regenCount(std::int32_t bx, std::int32_t bz, std::int32_t maxBlockDistance) {
+Result<std::size_t> MemoryLodStore::regenRecordCount(std::int32_t bx, std::int32_t bz, std::int32_t maxBlockDistance) {
     std::lock_guard lock(mutex_);
     const auto&     set = flagged_[static_cast<std::size_t>(flagIndex(StoreFlag::Regenerate))];
     if (maxBlockDistance < 0) return set.size();

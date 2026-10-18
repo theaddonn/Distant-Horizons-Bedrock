@@ -136,8 +136,10 @@ struct ILodStore {
     virtual Result<std::vector<std::uint64_t>>
     positionsToRegen(std::int32_t blockX, std::int32_t blockZ, std::int32_t maxBlockDistance, std::size_t maxCount) = 0;
 
-    /// Count of Regenerate-flagged records within `maxBlockDistance`.
-    virtual Result<std::size_t> regenCount(std::int32_t blockX, std::int32_t blockZ, std::int32_t maxBlockDistance) = 0;
+    /// Number of Regenerate-flagged records within `maxBlockDistance` (negative =
+    /// unlimited). NOTE: Java's getRegenChunkCount returns a 2^(detail+6)-weighted
+    /// sum (chunk count); this is a plain record count, callers weight if needed.
+    virtual Result<std::size_t> regenRecordCount(std::int32_t blockX, std::int32_t blockZ, std::int32_t maxBlockDistance) = 0;
 
     /// lastModifiedMillis for `pos`, nullopt if absent.
     virtual Result<std::optional<std::int64_t>> timestamp(std::uint64_t pos) = 0;
