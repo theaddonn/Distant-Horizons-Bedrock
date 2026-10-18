@@ -16,7 +16,6 @@
 #include "dh/render/FullToRender.h"
 #include "dh/render/RenderDataPoint.h"
 #include "dh/util/Color.h"
-#include "golden_loader.h"
 
 using namespace dh;
 
@@ -758,58 +757,8 @@ TEST_CASE("long column is reduced to maxVerticalSlices") {
     CHECK(dp(h, 0).top == 20);
 }
 
-TEST_CASE("golden f2r") {
-    DH_GOLDEN_SUITE_OR_SKIP(suite, "f2r");
-    // TODO(E2): the golden file is being generated; the shape below is a guess
-    // (in.source{pos,mapping[{block,biome}],columns[{x,z,data[hex]}]}, in.options, out.data[hex], out.voidData[hex]).
-    // Re-check against tools/golden-dumper/README.md once the suite exists. Unknown shapes are skipped, not failed.
-    for (const auto& c : suite.cases) {
-        if (!c.in.contains("source") || !c.out.contains("data") || !c.out.contains("voidData")) {
-            MESSAGE("f2r case '" << c.name << "' has an unexpected shape; skipped");
-            continue;
-        }
-        const auto& s = c.in["source"];
-        if (!s.contains("pos") || !s.contains("mapping") || !s.contains("columns")) continue;
 
-        MapBlockRegistry reg(true);
-        TestClientLevel  level;
-        TransformOptions opt;
-        FullDataSource   src = FullDataSource::createEmpty(test::hexU64(s["pos"]));
-        src.isEmpty          = false;
-        for (const auto& m : s["mapping"]) {
-            src.mapping.addIfAbsent(
-                reg.resolveBiomeOrDefault(m.value("biome", std::string())),
-                reg.resolveBlock(m.value("block", std::string()))
-            );
-        }
-        for (const auto& col : s["columns"]) {
-            src.column(col.value("x", 0), col.value("z", 0)) = test::hexU64Array(col["data"]);
-        }
-        const auto& o             = c.in.contains("options") ? c.in["options"] : nlohmann::json::object();
-        opt.verticalQuality       = static_cast<VerticalQuality>(o.value("verticalQuality", 2));
-        opt.tintWithAvoidedBlocks = o.value("tintWithAvoidedBlocks", true);
-        opt.enableCaveCulling     = o.value("enableCaveCulling", true);
-        opt.caveCullingHeight     = o.value("caveCullingHeight", 60);
-        opt.blocksToAvoid     = o.value("blocksToIgnore", 1) == 1 ? BlocksToAvoid::NonColliding : BlocksToAvoid::None;
-        level.minY            = o.value("minHeight", -64);
-        const BlockSet ign    = resolveCsv(o.value("ignoredRenderBlockCsv", std::string()), reg, true);
-        const BlockSet cave   = resolveCsv(o.value("ignoredRenderCaveBlockCsv", std::string()), reg, true);
-        const BlockSet sub    = resolveCsv(o.value("waterSubSurfaceBlockReplacementCsv", std::string()), reg);
-        const BlockSet surf   = resolveCsv(o.value("waterSurfaceBlockReplacementCsv", std::string()), reg);
-        opt.ignoredBlocks     = &ign;
-        opt.ignoredCaveBlocks = &cave;
-        opt.waterSubSurfaceReplace = &sub;
-        opt.waterSurfaceReplace    = &surf;
-
-        auto r = transformFullDataToRenderSource(src, level, reg, opt);
-        REQUIRE(r.has_value());
-        const auto expected = test::hexU64Array(c.out["data"]);
-        CHECK_MESSAGE(r->data == expected, c.name);
-        CHECK_MESSAGE(r->voidData == test::hexU64Array(c.out["voidData"]), c.name);
-    }
-}
-
-TEST_CASE("air is always ignored (Java pre-seeds the ignore sets with air)") {
+TEST_CASE("null ignore sets behave as {air}") {
     Fixture f;
     f.opt.blocksToAvoid = BlocksToAvoid::None;
     f.setColumn(
@@ -842,4 +791,43 @@ TEST_CASE("resolveCsv expands all states and adds air for unresolvable ignore en
     CHECK(ign.size() == 1);
     CHECK(ign.count(reg.air()) == 1);
     CHECK(reg.resolveAllStates("minecraft:nope").empty());
+}
+
+TEST_CASE("ignore sets are pure membership: seeded air ignored, distinct cave_air is not") {
+    Fixture f;
+    f.opt.blocksToAvoid = BlocksToAvoid::None;
+    const BlockSet ign  = resolveCsv("", f.reg, true);
+    const BlockSet cave = resolveCsv("", f.reg, true);
+    CHECK(ign.count(f.reg.air()) == 1);
+    CHECK(resolveCsv("minecraft:stone", f.reg, false).count(f.reg.air()) == 0);
+    f.opt.ignoredBlocks     = &ign;
+    f.opt.ignoredCaveBlocks = &cave;
+    BlockInfo ca;
+    ca.serial                      = "minecraft:cave_air";
+    ca.isAir                       = true;
+    ca.isSolid                     = false;
+    ca.opacity                     = 0;
+    ca.material                    = BlockMaterial::Air;
+    const BlockInfo* caveAir       = f.reg.addBlock(ca);
+    f.level.colorOverride[caveAir] = 0xFF123456u;
+    f.setColumn(
+        0,
+        0,
+        {
+            {f.reg.air(), 5, 10},
+            {f.stone,     0, 5 }
+    }
+    );
+    f.setColumn(
+        1,
+        0,
+        {
+            {caveAir, 5, 10},
+            {f.stone, 0, 5 }
+    }
+    );
+    auto o = f.run();
+    CHECK(count(o, 0, 0) == 1);
+    REQUIRE(count(o, 1, 0) == 2);
+    CHECK(dp(o, 0, 1, 0).argb == 0xFF123456u);
 }

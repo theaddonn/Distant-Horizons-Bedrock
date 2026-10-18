@@ -15,6 +15,7 @@
 #include "dh/util/ByteIO.h"
 #include "dh/util/Result.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 
@@ -47,6 +48,10 @@ Result<FullDataSource> decode(const StoreRecord& rec, IBlockRegistry& registry);
 /// needs neither `data` nor the other strips. All other columns are {EMPTY_DATA_POINT}
 /// (== clearAllNonAdjData of the full decode). The data checksum is NOT verified.
 Result<FullDataSource> decodeAdjacentOnly(const StoreRecord& rec, Direction dir, IBlockRegistry& registry);
+
+/// Decodes only the per-column GenerationStep array (index x*64+z) from `rec.genSteps`.
+/// Needs no other part. Corrupt/empty blob -> error.
+Result<std::array<std::int8_t, FullDataSource::COLUMN_COUNT>> decodeGenSteps(const StoreRecord& rec);
 
 /// The checksum encode() stores in meta.dataChecksum (FNV-1a 32 over the uncompressed
 /// payloads of data, the four adjacent blobs, genSteps, compressionModes and mapping, each prefixed by its u32 LE

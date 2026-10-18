@@ -32,10 +32,11 @@ public:
         return inst.get();
     }
 
-    const BlockInfo* block(int serial) const { return blocks_.at(static_cast<std::size_t>(serial)); }
-    const BiomeInfo* biome(int serial) const { return biomes_.at(static_cast<std::size_t>(serial)); }
-    static int       serialOf(const BlockInfo* b) { return std::stoi(b->serial.substr(1)); }
-    static int       serialOf(const BiomeInfo* b) { return std::stoi(b->serial.substr(1)); }
+    MapBlockRegistry& registry() { return reg_; }
+    const BlockInfo*  block(int serial) const { return blocks_.at(static_cast<std::size_t>(serial)); }
+    const BiomeInfo*  biome(int serial) const { return biomes_.at(static_cast<std::size_t>(serial)); }
+    static int        serialOf(const BlockInfo* b) { return std::stoi(b->serial.substr(1)); }
+    static int        serialOf(const BiomeInfo* b) { return std::stoi(b->serial.substr(1)); }
 
 private:
     static std::unique_ptr<GoldenRegistry> load() {
@@ -76,7 +77,8 @@ inline std::vector<std::uint64_t> longs(const json& a) {
 
 /// Dumper "Ds" json -> FullDataSource (createWithData semantics: isEmpty = false). Unlisted columns are empty with
 /// defGen/defComp (0 when absent); the mapping is built in id order with IdMap::addAllAllowingDups.
-inline std::unique_ptr<FullDataSource> fromGoldenSource(const json& ds, GoldenRegistry& reg) {
+template <class Reg>
+inline std::unique_ptr<FullDataSource> fromGoldenSource(const json& ds, Reg& reg) {
     auto s     = std::make_unique<FullDataSource>();
     s->pos     = hexU64(ds.at("pos"));
     s->isEmpty = false;
@@ -98,6 +100,24 @@ inline std::unique_ptr<FullDataSource> fromGoldenSource(const json& ds, GoldenRe
         s->columnGenerationStep[i]       = static_cast<std::int8_t>(c.at(1).get<int>());
         s->columnWorldCompressionMode[i] = static_cast<std::int8_t>(c.at(2).get<int>());
         s->columns[i]                    = longs(c.at(3));
+    }
+    return s;
+}
+
+/// propagate: Ds json with an optional `fill {gen, comp, pts}` = the column (genStep, compMode, datapoints) every
+/// UNLISTED column starts with. Without `fill` this is fromGoldenSource.
+inline std::unique_ptr<FullDataSource> fromGoldenSourceFilled(const json& ds, GoldenRegistry& reg) {
+    auto s = fromGoldenSource(ds, reg);
+    if (!ds.contains("fill")) return s;
+    const json&                      fill = ds.at("fill");
+    const std::vector<std::uint64_t> pts  = longs(fill.at("pts"));
+    std::vector<bool>                listed(FullDataSource::COLUMN_COUNT, false);
+    for (const json& c : ds.at("cols")) listed[c.at(0).get<std::size_t>()] = true;
+    for (std::size_t i = 0; i < listed.size(); ++i) {
+        if (listed[i]) continue;
+        s->columnGenerationStep[i]       = static_cast<std::int8_t>(fill.at("gen").get<int>());
+        s->columnWorldCompressionMode[i] = static_cast<std::int8_t>(fill.at("comp").get<int>());
+        s->columns[i]                    = pts;
     }
     return s;
 }

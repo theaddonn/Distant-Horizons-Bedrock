@@ -81,6 +81,8 @@ public:
 
     ListenerId addUpdateListener(UpdateListener l) { return updater_->addListener(std::move(l)); }
     void       removeUpdateListener(ListenerId id) { updater_->removeListener(id); }
+    ListenerId addDeltaListener(DeltaListener l) { return updater_->addDeltaListener(std::move(l)); }
+    void       removeDeltaListener(ListenerId id) { updater_->removeDeltaListener(id); }
 
     std::optional<std::int64_t> timestamp(std::uint64_t pos);
 
@@ -100,6 +102,10 @@ public:
     IClock&                clock() { return clock_; }
     const ProviderOptions& options() const { return options_; }
 
+    /// Marks the provider closed (further calls return nullptr/false) and clears the cache.
+    /// Queued executor tasks capture `this`: callers MUST stop/drain the file-handler and update
+    /// executors (and may call updater().waitQuiescent()) BEFORE destroying the provider.
+    /// close() itself does not wait for queued tasks (a ManualExecutor would never run them).
     void close();
     bool isClosed() const { return shutdown_.load(); }
 

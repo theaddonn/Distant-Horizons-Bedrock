@@ -6,6 +6,8 @@
 #include "dh/storage/SourceProvider.h"
 
 #include <algorithm>
+#include <chrono>
+#include <thread>
 #include <utility>
 
 namespace dh {
@@ -14,18 +16,44 @@ SourceUpdater::SourceUpdater(SourceProvider& provider, const UpdaterOptions& opt
 : provider_(provider),
   options_(options) {}
 
+namespace {
+struct InFlight {
+    std::atomic<std::size_t>& n;
+    explicit InFlight(std::atomic<std::size_t>& c) : n(c) { n.fetch_add(1); }
+    ~InFlight() { n.fetch_sub(1); }
+};
+} // namespace
+
 Result<bool> SourceUpdater::update(std::shared_ptr<const FullDataSource> input) {
     if (!input) return Error(ErrorCode::InvalidArgument, "null input");
     if (shutdown_.load()) return false;
+    InFlight inFlight(inFlight_);
 
-    // A lock is necessary to prevent two threads from writing to the same position at once,
-    // otherwise only the second update would apply and the LOD ends up with holes (Java :101).
-    auto guard = locks_.lock(input->pos);
-    return updateLocked(*input);
+    Result<bool> r(false);
+    {
+        // A lock is necessary to prevent two threads from writing to the same position at once,
+        // otherwise only the second update would apply and the LOD ends up with holes (Java :101).
+        auto guard = locks_.lock(input->pos);
+        r          = updateLocked(*input);
+    }
+    // Listeners run after the position lock is released, so a listener may call update() for
+    // the same position (Java's ReentrantLock allowed that; KeyedLock does not).
+    if (r && *r) {
+        notifyListeners(input->pos);
+        std::vector<std::pair<ListenerId, DeltaListener>> snapshot;
+        {
+            std::lock_guard lock(listenerMutex_);
+            snapshot = deltaListeners_;
+        }
+        for (auto& l : snapshot)
+            if (l.second) l.second(input);
+    }
+    return r;
 }
 
 Result<bool> SourceUpdater::updateLocked(const FullDataSource& input) {
     if (shutdown_.load()) return false;
+    InFlight inFlight(inFlight_);
 
     const std::uint64_t pos = input.pos;
 
@@ -41,8 +69,7 @@ Result<bool> SourceUpdater::updateLocked(const FullDataSource& input) {
     if (!*modified) return false;
 
     // Only update sky lighting at the lowest level, everything above gets it via downsampling
-    // (FullDataUpdaterV2:148). Block lights were populated at the chunk stage; sky light must be
-    // recalculated here so overhangs / floating islands do not end up with 0 sky light.
+    // (FullDataUpdaterV2:148).
     if (sec::detail(pos) == sec::SECTION_BLOCK_DETAIL_LEVEL) {
         bakeDataSourceSkyLight(*recipient, options_.maxSkyLight);
     }
@@ -52,14 +79,17 @@ Result<bool> SourceUpdater::updateLocked(const FullDataSource& input) {
     recipient->lastModifiedUnixMs = now;
     if (recipient->createdUnixMs == 0) recipient->createdUnixMs = now;
 
-    // Save to the store.
     auto rec = encode(*recipient, options_.codec);
     if (!rec) return rec.error();
     if (Status st = provider_.store().put(*rec); !st) return st.error();
 
     provider_.publish(recipient);
+    return true;
+}
 
-    // Listeners (registration order), after the save, only on change.
+void SourceUpdater::notifyListeners(std::uint64_t pos) {
+    InFlight inFlight(inFlight_);
+    // Registration order; copies, so (un)registering from a listener is safe.
     std::vector<UpdateListener> snapshot;
     {
         std::lock_guard lock(listenerMutex_);
@@ -69,7 +99,10 @@ Result<bool> SourceUpdater::updateLocked(const FullDataSource& input) {
     for (auto& l : snapshot) {
         if (l) l(pos);
     }
-    return true;
+}
+
+void SourceUpdater::waitQuiescent() const {
+    while (inFlight_.load() != 0) std::this_thread::sleep_for(std::chrono::milliseconds(1));
 }
 
 std::shared_ptr<UpdateFuture> SourceUpdater::updateAsync(std::shared_ptr<const FullDataSource> input) {
@@ -101,6 +134,18 @@ ListenerId SourceUpdater::addListener(UpdateListener listener) {
     const ListenerId id = nextListenerId_++;
     listeners_.emplace_back(id, std::move(listener));
     return id;
+}
+
+ListenerId SourceUpdater::addDeltaListener(DeltaListener listener) {
+    std::lock_guard  lock(listenerMutex_);
+    const ListenerId id = nextListenerId_++;
+    deltaListeners_.emplace_back(id, std::move(listener));
+    return id;
+}
+
+void SourceUpdater::removeDeltaListener(ListenerId id) {
+    std::lock_guard lock(listenerMutex_);
+    std::erase_if(deltaListeners_, [id](const auto& p) { return p.first == id; });
 }
 
 void SourceUpdater::removeListener(ListenerId id) {
