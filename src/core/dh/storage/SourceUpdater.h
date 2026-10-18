@@ -34,6 +34,9 @@ class SourceProvider;
 
 using UpdateListener = std::function<void(std::uint64_t pos)>;
 using ListenerId     = std::uint64_t;
+/// Fired by update()/updateAsync() (NOT by the propagator) with the incoming input when it changed the
+/// stored section: Java updateDataSourcesAsync(data).thenRun(...) sends only this delta to clients.
+using DeltaListener = std::function<void(const std::shared_ptr<const FullDataSource>& input)>;
 
 /// One-shot completion handle (Java CompletableFuture<Void>). First complete() wins.
 class UpdateFuture {
@@ -111,6 +114,8 @@ public:
     std::shared_ptr<UpdateFuture> updateAsync(std::shared_ptr<const FullDataSource> input);
 
     ListenerId addListener(UpdateListener listener);
+    ListenerId addDeltaListener(DeltaListener listener);
+    void       removeDeltaListener(ListenerId id);
     /// Note: an update that is already in flight may still invoke a just-removed listener (it
     /// works on a snapshot). Call waitQuiescent() before destroying the listener's target.
     void removeListener(ListenerId id);
@@ -140,6 +145,7 @@ private:
 
     std::mutex                                         listenerMutex_;
     ListenerId                                         nextListenerId_ = 1;
+    std::vector<std::pair<ListenerId, DeltaListener>>  deltaListeners_;
     std::vector<std::pair<ListenerId, UpdateListener>> listeners_; ///< ascending id = registration order
 };
 
