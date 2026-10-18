@@ -11,11 +11,15 @@
 //   * reload on provider update (queueReload / attachToProvider) re-uploads pos + 4 neighbours
 //   * cancellation: a load cancelled before it runs never uploads
 //   * render list: near-to-far order, culled sections absent, never-cull flag
-//   * 200 random seeds over radius / player position / quality for the tiling + teleport invariants
+//   * random seeds (16, or 200 with DH_GOLDEN_SLOW) over radius / player position / quality for the tiling +
+//     teleport invariants
+//   * empty data: ONE empty upload, canRender() true, requested for retrieval (Java semantics)
+//   * a disposed section's late upload callback never removes the replacement section's buffers (removeIf)
 #include <doctest.h>
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <map>
 #include <memory>
 #include <random>
@@ -563,42 +567,152 @@ TEST_CASE("LodRenderSection: a load cancelled before it runs never uploads") {
     CHECK_FALSE(s->uploadRenderDataToGpuAsync()); // one build at a time
     f.renderLoader.runAll();
     CHECK(f.sink.pendingCount() == 1);
-    s->dispose();
+    // dispose with the upload pending: removeIf(pos, ourId) frees the (pending) buffers right away ...
     const std::size_t removesBefore = f.sink.removes().size();
+    s->dispose();
+    CHECK_EQ(f.sink.removes().size(), removesBefore + 1);
+    CHECK_FALSE(s->gpuUploadInProgress());
+    // ... and the late callback's removeIf is stale (nothing newer to remove), never a second remove
+    const std::size_t staleBefore = f.sink.staleRemoves().size();
     f.sink.completeAll();
     CHECK_FALSE(s->canRender());
-    CHECK_FALSE(s->gpuUploadInProgress());
-    CHECK(f.sink.removes().size() > removesBefore);
+    CHECK_EQ(f.sink.removes().size(), removesBefore + 1);
+    CHECK_EQ(f.sink.staleRemoves().size(), staleBefore + 1);
     CHECK_FALSE(s->uploadRenderDataToGpuAsync());
 }
 
-TEST_CASE("LodRenderSection: empty data never renders, is re-queued every tick, upload failure keeps state") {
-    Fx f(32);
+TEST_CASE("LodRenderSection: empty data uploads ONCE as an empty section (Java), renders nothing, is requested") {
+    // Java: provider.get -> createEmpty, transformer -> sized empty ColumnRenderSource, makeLodRenderData skips
+    // every column, LodRenderSection uploads an EMPTY container -> canRender() TRUE (never re-queued).
+    FakeRetrievalQueue queue;
+    LodQuadTreeDeps    deps;
+    deps.retrievalQueue      = &queue;
+    deps.positionsToRetrieve = [](Pos pos, std::int8_t) -> std::optional<std::vector<Pos>> {
+        return std::vector<Pos>{pos};
+    };
+    Fx f(32, {0, 0}, std::move(deps));
     f.data.available = std::set<Pos>{}; // nothing has data
     const BlockPos2D a(0, 0);
     f.round(a);
-    CHECK(f.sink.uploads().empty());
-    CHECK(f.enabledSet().empty());
-    const int calls = f.data.getCalls;
+    REQUIRE_FALSE(f.sink.uploads().empty());
+    for (auto& u : f.sink.uploads()) {
+        CHECK(u.buffers.empty()); // "render nothing" uploads
+    }
+    const std::size_t uploadsAfterFirst = f.sink.uploads().size();
+    const int         calls             = f.data.getCalls;
     f.round(a);
-    CHECK(f.data.getCalls > calls); // Java re-adds every unloaded section to the load list each tick
+    f.round(a);
+    CHECK_EQ(f.sink.uploads().size(), uploadsAfterFirst); // exactly one upload per section
+    CHECK_EQ(f.data.getCalls, calls);                     // nothing is re-loaded on later ticks
 
-    // give one leaf data; a dropped upload (ok = false) leaves it unrenderable, the next tick retries
+    // the empty leaf is renderable and enabled (its parent hands over to 4 empty-but-renderable children)
     const Pos leaf = sec::encode(6, 0, 0);
-    f.data.available->insert(leaf);
+    auto      v    = f.tree->tryGetValue(leaf);
+    REQUIRE(v.has_value());
+    CHECK((*v)->canRender());
+    CHECK((*v)->getRenderingEnabled());
+    CHECK_FALSE((*v)->hasOpaque());
+    checkTiling(f, a, "empty world still tiles");
+    for (auto& e : f.enabledSet()) CHECK((sec::detail(e) == 6 || sec::detail(e) == 7));
+
+    // ... and, being an enableDeleteChildren node, it was submitted for retrieval (world gen / download)
+    bool leafRequested = false;
+    for (auto& [pos, genDetail] : queue.submitted) leafRequested |= pos == leaf;
+    CHECK(leafRequested);
+    CHECK(f.tree->canRegenerate()); // only block-detail positions are missing
+
+    // a dropped upload (ok = false) leaves a section unrenderable and the next tick retries it
+    const Pos other = sec::encode(6, 3, 3);
+    auto      o     = f.tree->tryGetValue(other);
+    REQUIRE(o.has_value());
+    (*o)->renderDataDirty.store(true);
     f.tree->tryTick(a);
     f.renderLoader.runAll();
-    REQUIRE_EQ(f.sink.uploads().size(), 1u);
-    CHECK_EQ(f.sink.uploads()[0].sectionPos, leaf);
+    REQUIRE_EQ(f.sink.pendingCount(), 1u);
     f.sink.completeAll(false);
-    auto v = f.tree->tryGetValue(leaf);
-    REQUIRE(v.has_value());
-    CHECK_FALSE((*v)->canRender());
-    CHECK_FALSE((*v)->gpuUploadInProgress());
+    CHECK((*o)->canRender()); // the old (empty) buffers keep rendering
+    CHECK((*o)->renderDataDirty.load());
+    CHECK_FALSE((*o)->gpuUploadInProgress());
     f.round(a);
-    CHECK((*v)->canRender());
-    f.tree->tryTick(a); // the enable decision uses canRender() as it was when the tick ran
-    CHECK(f.enabledSet() == std::set<Pos>{leaf});
+    CHECK_FALSE((*o)->renderDataDirty.load());
+}
+
+TEST_CASE("LodQuadTree: a recursing root is never rendered (:676-682)") {
+    Fx               f(32);
+    const BlockPos2D a(0, 0);
+    f.tree->tryTick(a);
+    f.renderLoader.runAll();
+    // answer only the root uploads: the roots can render but must not be enabled
+    for (auto& u : f.sink.uploads()) {
+        if (u.onDone && sec::detail(u.sectionPos) == f.tree->treeRootDetailLevel) {
+            auto cb  = std::move(u.onDone);
+            u.onDone = nullptr;
+            cb(true);
+        }
+    }
+    f.tree->tryTick(a);
+    CHECK(f.enabledSet().empty());
+    auto root = f.tree->tryGetValue(sec::encode(f.tree->treeRootDetailLevel, 0, 0));
+    REQUIRE(root.has_value());
+    CHECK((*root)->canRender());
+    CHECK_FALSE((*root)->getRenderingEnabled());
+}
+
+TEST_CASE("LodRenderSection: a disposed section's late upload never wipes the replacement's buffers (b3)") {
+    // Batching sink scenario: A uploads (pending), A is disposed, replacement B at the same pos uploads and is
+    // applied, then A's upload callback fires ok. Java closed A's own container; here removeIf(pos, A.id) must
+    // be ignored because B's upload is newer.
+    Fx               f(32);
+    const BlockPos2D a(0, 0);
+    f.settle(a);
+
+    std::vector<LodQuadTree::Section> enabled;
+    f.tree->collectEnabled(enabled);
+    REQUIRE_FALSE(enabled.empty());
+    auto      sectionA = enabled.front();
+    const Pos pos      = sectionA->pos;
+
+    // A re-uploads (pending in the batching sink)
+    sectionA->renderDataDirty.store(true);
+    REQUIRE(sectionA->uploadRenderDataToGpuAsync());
+    f.renderLoader.runAll();
+    REQUIRE_EQ(f.sink.pendingCount(), 1u);
+    const IVertexSink::UploadId idA = f.sink.newestId(pos);
+
+    // A is disposed while its upload is pending: removeIf(pos, idA) frees A's buffers (newest == idA)
+    const std::size_t removesBefore = f.sink.removes().size();
+    sectionA->dispose();
+    CHECK_EQ(f.sink.removes().size(), removesBefore + 1);
+    CHECK_EQ(f.sink.newestId(pos), 0u);
+
+    // replacement B at the same pos uploads and is applied
+    auto sectionB = std::make_shared<LodRenderSection>(pos, f.tree->shared(), f.ctx);
+    REQUIRE(sectionB->uploadRenderDataToGpuAsync());
+    f.renderLoader.runAll();
+    const IVertexSink::UploadId idB = f.sink.newestId(pos);
+    CHECK(idB > idA);
+    for (auto& u : f.sink.uploads()) {
+        if (u.onDone && u.id == idB) {
+            auto cb  = std::move(u.onDone);
+            u.onDone = nullptr;
+            cb(true);
+        }
+    }
+    CHECK(sectionB->canRender());
+
+    // A's stale callback fires now: it must not remove B's buffers
+    const std::size_t removesBeforeStale = f.sink.removes().size();
+    f.sink.completeAll(true);
+    CHECK_EQ(f.sink.removes().size(), removesBeforeStale);
+    CHECK_EQ(f.sink.staleRemoves().size(), 1u);
+    CHECK_EQ(f.sink.newestId(pos), idB);
+    CHECK(sectionB->canRender());
+    CHECK_FALSE(sectionA->canRender());
+
+    // B's own dispose frees B
+    sectionB->dispose();
+    CHECK_EQ(f.sink.newestId(pos), 0u);
+    CHECK_EQ(f.sink.removes().size(), removesBeforeStale + 1);
 }
 
 TEST_CASE("LodQuadTree: retrieval queuing is near-to-far, split requeues children, failures requeue") {
@@ -649,7 +763,8 @@ TEST_CASE("LodQuadTree: retrieval queuing is near-to-far, split requeues childre
 }
 
 TEST_CASE("LodQuadTree: 200 random seeds keep the tiling / teleport invariants") {
-    constexpr std::uint32_t kSeedCount = 200;
+    // 16 seeds by default (~8 s under ASan); the full 200 with DH_GOLDEN_SLOW set
+    const std::uint32_t kSeedCount = std::getenv("DH_GOLDEN_SLOW") != nullptr ? 200u : 16u;
     for (std::uint32_t seed = 1; seed <= kSeedCount; seed++) {
         std::mt19937 rng(seed);
         INFO("seed ", seed);

@@ -32,7 +32,7 @@ void RenderList::build(const tree::LodQuadTree& tree, const RenderListParams& pa
     tree.collectEnabled(tempProcessNodeList_);
     build(
         tempProcessNodeList_,
-        tree.getCenterBlockPos(),
+        tree.renderCenterBlockPos(),
         enableFrustumCulling ? frustum : nullptr,
         params.isShadowPass
     );
