@@ -24,7 +24,7 @@ target("dh_core_tests")
     add_defines("DOCTEST_CONFIG_SUPER_FAST_ASSERTS")
     if is_mode("debug") then
         add_cxflags("-fsanitize=address,undefined", "-fno-omit-frame-pointer")
-        add_ldflags("-fsanitize=address,undefined")
+        add_ldflags("-fsanitize=address,undefined", {force = true})
         add_defines("DH_DEBUG=1")
     end
     set_rundir("$(projectdir)")
