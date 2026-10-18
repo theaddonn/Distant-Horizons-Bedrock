@@ -27,6 +27,10 @@ public final class Bootstrap
 				.on("getWaterBlockStateWrapper", a -> Wrappers.block(4))
 				.on("getPlainsBiomeWrapper", a -> Wrappers.biome(0))
 				.on("deserializeBlockStateWrapper", a -> parseBlock((String) a[0]))
+				.on("getRendererIgnoredBlocks", a -> Wrappers.csvSet(Wrappers.ignoredRenderBlockCsv, true))
+				.on("getRendererIgnoredCaveBlocks", a -> Wrappers.csvSet(Wrappers.ignoredRenderCaveBlockCsv, true))
+				.on("getWaterSurfaceReplacementBlocks", a -> Wrappers.csvSet(Wrappers.waterSurfaceBlockReplacementCsv, false))
+				.on("getWaterSubsurfaceReplacementBlocks", a -> Wrappers.csvSet(Wrappers.waterSubSurfaceBlockReplacementCsv, false))
 				.on("deserializeBiomeWrapper", a -> parseBiome((String) a[0]))
 				.build();
 		SingletonInjector.INSTANCE.bind(IWrapperFactory.class, factory);
@@ -37,7 +41,10 @@ public final class Bootstrap
 	private static IBlockStateWrapper parseBlock(String s)
 	{
 		if (s.startsWith("B")) { return Wrappers.block(Integer.parseInt(s.substring(1))); }
-		throw new IllegalArgumentException("bad block serial " + s);
+		// snow layers are looked up as "<name>_STATE_{layers:N}"; only minecraft:snow has them (like 1.13+), minecraft:snow_layer does not
+		if (s.startsWith("minecraft:snow_STATE_{layers:")) { return Wrappers.byResourceName(s); }
+		if (s.contains("_STATE_")) { return Wrappers.block(0); }
+		return Wrappers.byResourceName(s);
 	}
 
 	private static IBiomeWrapper parseBiome(String s)
