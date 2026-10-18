@@ -98,7 +98,7 @@ struct Session {
     // chunk ingestion
     std::mutex                         pendingMutex;
     std::map<PendingKey, PendingChunk> pending;
-    std::atomic<bool>                  drainInFlight{false};
+    std::atomic<bool>                  rescan{false}; ///< scan the loaded chunks around the player (owner thread)
     std::atomic<std::uint64_t>         noted{0}, ingested{0}, unchanged{0}, skipped{0}, deferred{0};
 
     SteadyClock::time_point lastHud  = SteadyClock::now();
@@ -122,7 +122,7 @@ struct ClientWorldDriver::Impl {
     std::atomic<std::int64_t> lastEventTickMs{0};
     std::mutex                gameMutex; ///< serialises onClientTick between the event and the render fallback
 
-    SteadyClock::time_point nextStartAttempt{};
+    std::atomic<std::int64_t> nextStartAttemptMs{0}; ///< steady-clock ms; written by setPipeline (render thread)
 
     // ---- session ------------------------------------------------------------------------------
     std::shared_mutex        life; ///< shared: render thread; exclusive: session start/stop, level unload
@@ -151,11 +151,18 @@ struct ClientWorldDriver::Impl {
     void scheduleIngest(Session& s);
     void drain(Session& s);
     void clearPending(Session& s);
+    void requestRescan(Session& s) { s.rescan.store(true); }
+    void teardownSession(Session& s);
 };
 
 /// Hooks/events call into the active driver through these (nullptr when no session accepts chunks).
 extern std::atomic<ClientWorldDriver::Impl*> gIngestTarget;
 extern std::atomic<int>                      gBusy;
+/// Drain bookkeeping is process-global (not per session): a queued server-thread task must be able to clear it even
+/// when it finds no session.
+extern std::atomic<bool>          gDrainInFlight;
+extern std::atomic<std::int64_t>  gDrainQueuedMs; ///< 0 = not waiting to start
+extern std::atomic<std::uint64_t> gDrains;        ///< drains actually executed
 
 struct BusyGuard {
     BusyGuard() { ++gBusy; }

@@ -1,5 +1,8 @@
 # M1 checklist: LODs from the real pipeline (GLUE-4)
 
+Log file: `~/.steam/steam/steamapps/common/MinecraftBedrockGDK/builds/Retail-1.26.5101-Levi/mods/DistantHorizons/logs/dh.log`.
+Every run below ends with explicit PASS/FAIL lines; report each one.
+
 Status: cross-compiled (client + server build, host tests green), **never run in game**. Everything below is a hypothesis
 until you run it. Build + deploy: `scripts/build.sh client && scripts/deploy.sh client` (the block tables are read from
 `<modDir>/data`). Logs: `logs/dh.log`. HUD: F7 toggles it, F8 dumps it to the log.
@@ -35,12 +38,31 @@ The old F7-ingest smoke test (`ChunkIngress`) is gone; ingestion is part of the 
    `net.rx/net.tx` 0 in SP, `render.sections`, `render.listed`, `render.drawn`, `render.culled`, `render.cutoff`.
 5. F8 and send the `hud-dump:` line.
 
+PASS/FAIL (Run 1):
+- P1 `session started: SINGLEPLAYER` appears within 3 s of F5 (FAIL: REMOTE or nothing; send the `levels:` line)
+- P2 `store: 0 sections loaded` is logged before the first `ingest` activity
+- P3 `ingest.drains` > 0 within 10 s (FAIL with `drain has been queued ... without running` in the log: the server-thread
+  executor does not tick in this DLL)
+- P4 `ingest.chunks` > 0 within 10 s, and `client ingest: rescan found N already-loaded chunks` with N > 0 (the chunks around
+  spawn that were loaded before F5 are picked up by that rescan, radius 32 chunks)
+- P5 `render.listed` > 0 within 30 s and `render.drawn` > 0 once you are past the vanilla edge (FAIL with listed 0 but
+  `render.sections` > 0: press Ctrl+F5 and report whether it helps)
+- P6 coloured LOD terrain visible beyond the vanilla edge (screenshot)
+- P7 `gen.queued` falls over time (generation works); `world gen:` lines show no repeated errors
+
+Expected around spawn / dimension change: the first 10-30 s only have LODs where chunks exist or generation finished
+(nearest first). After a dimension change the new dimension's chunks noted during the switch are kept and ingested once its
+level has loaded (the old dimension's pending chunks are dropped).
+
 ## Run 2: persistence
 
 Quit to menu (log: `client driver: session stopped`, no crash), relaunch, load the same world, press F5.
 Expected: `store: N sections loaded` with N > 0 BEFORE any chunk is ingested, and LODs appear almost immediately
-(from LevelDB, before the tree needs to regenerate anything). Also check that `ingest.skipped` is large (unchanged-chunk
-hashes) on the second visit.
+(from LevelDB, before the tree needs to regenerate anything). Also check that `ingest.skipped` is large on the second visit
+(`ingest.skipped` counts hash skips plus dropped chunks).
+
+PASS/FAIL (Run 2): R1 `store: N sections loaded` with N > 0 before any `ingest` activity; R2 LODs visible within 10 s of F5
+without flying; R3 `ingest.skipped` > 0 after the rescan.
 
 ## Run 3 (optional): dimension change and F5 off
 
@@ -88,6 +110,10 @@ that may not know them; if joining a vanilla server gets you kicked, tell me.
   reduction); the FOV-corrected near PLANE is a projection value and not used for the horizontal cut.
 - Chunk updates carry independent snapshot copies of the 3x3 (lightChunk writes into neighbours); at most 12 updates are in
   flight per level.
-- Remote store folder: `worlds/multiplayer/<levelKey or dimension>` (two servers without level keys share a folder; add the
-  server address when the packet layer exposes it).
+- Store folders: singleplayer `worlds/sp_<world name>_<level id>/<dimension>/` (the level id keeps equal-named worlds apart),
+  remote `worlds/remote/<levelKey or dimension>/` (two servers without level keys share a folder; add the server address
+  when the packet layer exposes it).
+- Already-loaded chunks (F5 pressed in a loaded world, Shift+F7 turned back on): there is no safe public enumeration of a
+  ChunkSource, so a 65x65 chunk square around the player is probed with `getAvailableChunk` on the owner thread. Chunks
+  farther than 32 chunks from the player at that moment are only picked up when they (re)load.
 - `Options` changes are not pushed into a running world yet (`onOptionsChanged` is not wired); toggle F5 to apply.

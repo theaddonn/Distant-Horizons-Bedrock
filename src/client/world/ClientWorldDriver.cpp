@@ -41,6 +41,9 @@ namespace dh::bedrock {
 
 std::atomic<ClientWorldDriver::Impl*> gIngestTarget{nullptr};
 std::atomic<int>                      gBusy{0};
+std::atomic<bool>                     gDrainInFlight{false};
+std::atomic<std::int64_t>             gDrainQueuedMs{0};
+std::atomic<std::uint64_t>            gDrains{0};
 
 namespace {
 
@@ -58,7 +61,9 @@ std::int64_t nowMs() {
 }
 
 std::filesystem::path levelDir(Session& s, dh::ILevelHandle& h) {
-    return s.paths.worldDataDir(s.singleplayer ? s.worldName : std::string("multiplayer"))
+    // "sp_<name>_<level id>": the level id (world folder) keeps two worlds with the same display name apart; "remote"
+    // can never equal an "sp_..." folder.
+    return s.paths.worldDataDir(s.singleplayer ? "sp_" + s.worldName : std::string("remote"))
          / sanitizePathComponent(std::string(h.dhIdentifier()));
 }
 
@@ -148,7 +153,7 @@ void ClientWorldDriver::Impl::install() {
     joinListener = bus.emplaceListener<ll::event::ClientJoinLevelEvent>([this](auto&) {
         try {
             DH_LOG_I("level: join");
-            nextStartAttempt = SteadyClock::now();
+            nextStartAttemptMs.store(0);
         } catch (...) {}
     });
     exitListener = bus.emplaceListener<ll::event::ClientExitLevelEvent>([this](auto&) {
@@ -185,7 +190,7 @@ void ClientWorldDriver::Impl::setPipeline(bool on) {
     DH_LOG_I("client driver: pipeline %s", on ? "on" : "off");
     render::setEnabled(on);
     if (on) {
-        nextStartAttempt = SteadyClock::now();
+        nextStartAttemptMs.store(0);
         dh::hud::set("pipeline", "on");
         // a session starts from the next game tick (needs a local player)
     } else {
@@ -242,8 +247,10 @@ bool ClientWorldDriver::Impl::startSession() {
     s->ingestLevel  = s->singleplayer ? server : static_cast<::Level*>(cl);
     s->worldName    = "world";
     if (s->singleplayer) {
-        s->worldName = server->getLevelData().mLevelName.get();
-        if (s->worldName.empty()) s->worldName = "world";
+        std::string name = server->getLevelData().mLevelName.get();
+        if (name.empty()) name = "world";
+        std::string id = server->getLevelId();
+        s->worldName   = id.empty() ? name : name + "_" + id;
     }
 
     // --- pools, serializer, transport ---------------------------------------------------------
@@ -350,48 +357,75 @@ bool ClientWorldDriver::Impl::startSession() {
 void ClientWorldDriver::Impl::stopSession(const char* why) {
     std::lock_guard gameLock(gameMutex); // not while a client tick is inside the session
     if (!session) return;
-    try {
-        DH_LOG_I("client driver: stopping session (%s)", why);
-        Session& s = *session;
-        s.stopping.store(true);
+    DH_LOG_I("client driver: stopping session (%s)", why);
+    Session& s = *session;
+    s.stopping.store(true);
 
-        // 1. ingestion hooks off, wait for threads inside a hook / drain
+    // Every step has its own try/catch so a failure never skips the ordered steps after it.
+    auto step = [](const char* name, auto&& fn) {
+        try {
+            fn();
+        } catch (...) {
+            DH_LOG_E("client driver: exception in stop step '%s'", name);
+        }
+    };
+
+    // 1. ingestion hooks off, wait for threads inside a hook / drain
+    step("hooks off", [&] {
         gIngestTarget.store(nullptr);
         while (gBusy.load() != 0) std::this_thread::sleep_for(1ms);
         clearPending(s);
-
-        // 2. worker: finishes the step in flight (it may be loading a level), then exits
+        gDrainInFlight.store(false);
+    });
+    // 2. worker: finishes the step in flight (it may be loading a level), then exits
+    step("worker", [&] {
         s.worker->shutdown();
         s.worker->join();
-
-        // 3. nothing renders from the world any more; close everything in the documented order
-        std::unique_lock lk(life);
-        s.world->close(); // levels: modules/trees -> save flush -> drain -> provider (Level.h)
+    });
+    // 3. cancel world generation so a stopping integrated server cannot stall the close on the generator's hop TTL
+    step("cancel generation", [&] {
+        if (!s.world) return;
+        for (dh::AbstractLevel* level : s.world->allLoadedLevels())
+            if (level && level->isServerLevel() && level->isClientLevel())
+                if (auto* gen = static_cast<dh::DhClientServerLevel*>(level)->serverside().chunkGenerator())
+                    gen->cancelAll();
+    });
+    // 4. nothing renders from the world any more; close everything in the documented order
+    std::unique_lock lk(life);
+    step("world close", [&] {
+        if (s.world) s.world->close(); // levels: modules/trees -> save flush -> drain -> provider (Level.h)
+    });
+    step("world destroy", [&] {
         s.ticker.reset();
         s.world.reset(); // ClientNetworkState detaches the transport listener
+    });
+    step("transport", [&] {
         if (s.transport) {
             s.transport->clientDisconnect();
             s.transport->shutdown();
             s.transport.reset();
         }
-        s.pools->shutdown();
-        s.pools->picker().joinAll();
-        s.pools.reset();
-        s.handles.clear();
-        s.serializer.reset();
-        session.reset();
-        lk.unlock();
+    });
+    step("pools", [&] {
+        if (s.pools) {
+            s.pools->shutdown();
+            s.pools->picker().joinAll();
+            s.pools.reset();
+        }
+    });
+    s.handles.clear();
+    s.serializer.reset();
+    session.reset();
+    lk.unlock();
 
+    step("renderer", [&] {
         render::renderer().sink().requestClear();
         render::testfeed::reset();
         dh::hud::set("mode", "none");
         dh::hud::set("world.levels", 0);
         dh::hud::set("tree.enabled", 0);
-        DH_LOG_I("client driver: session stopped");
-    } catch (...) {
-        DH_LOG_E("client driver: exception during stopSession");
-        session.reset();
-    }
+    });
+    DH_LOG_I("client driver: session stopped");
 }
 
 //------//
@@ -437,9 +471,9 @@ void ClientWorldDriver::Impl::onClientTick() {
     if (!gl) return;
     try {
         if (!session) {
-            if (SteadyClock::now() < nextStartAttempt) return;
+            if (nowMs() < nextStartAttemptMs.load()) return;
             if (!startSession()) {
-                nextStartAttempt = SteadyClock::now() + 2s; // no local player yet / failure: retry quietly
+                nextStartAttemptMs.store(nowMs() + 2000); // no local player yet / failure: retry quietly
                 return;
             }
         }
@@ -527,6 +561,7 @@ bool ClientWorldDriver::Impl::loadLevels(Session& s, int dim) {
     s.activeMinY.store(c->info().minHeight());
     s.activeMaxY.store(c->info().maxHeight());
     s.loadedDim.store(dim);
+    requestRescan(s); // chunks that were already loaded before the level existed
     DH_LOG_I("client driver: level [%s] loaded (dimension %d)", std::string(c->dhIdentifier()).c_str(), dim);
     return true;
 }
@@ -539,8 +574,9 @@ void ClientWorldDriver::Impl::unloadLevels(Session& s, int dim) {
     if (c) s.world->unloadLevel(*c);
     if (sv) s.world->unloadLevel(*sv);
     {
-        std::lock_guard lock(s.pendingMutex);
-        s.pending.clear();
+        std::lock_guard lock(s.pendingMutex); // keep chunks noted for the NEW dimension
+        for (auto it = s.pending.begin(); it != s.pending.end();)
+            it = it->first.dim == dim ? s.pending.erase(it) : std::next(it);
     }
     DH_LOG_I("client driver: level of dimension %d unloaded", dim);
 }
@@ -556,6 +592,16 @@ void ClientWorldDriver::Impl::updateHud(Session& s) {
     dh::hud::set("ingest.chunks", static_cast<std::int64_t>(s.ingested.load()));
     dh::hud::set("ingest.skipped", static_cast<std::int64_t>(s.skipped.load() + s.unchanged.load()));
     dh::hud::set("ingest.on", ingestion.load() ? "on" : "off");
+    dh::hud::set("ingest.drains", static_cast<std::int64_t>(gDrains.load()));
+    {
+        const std::int64_t       q = gDrainQueuedMs.load();
+        static std::atomic<bool> warned{false};
+        if (q != 0 && nowMs() - q > 2000 && !warned.exchange(true))
+            DH_LOG_W(
+                "client ingest: a chunk drain has been queued on the server thread for >2 s without running "
+                "(ServerThreadExecutor not ticking in this DLL?)"
+            );
+    }
     if (s.transport) {
         dh::hud::set("net.rx", static_cast<std::int64_t>(s.transport->framesReceived()));
         dh::hud::set("net.tx", static_cast<std::int64_t>(s.transport->framesSent()));
@@ -604,9 +650,17 @@ bool ClientWorldDriver::pipeline() const { return impl_->pipeline.load(); }
 void ClientWorldDriver::setIngestion(bool on) {
     Impl& m = *impl_;
     m.ingestion.store(on);
-    if (m.session && !m.session->stopping.load()) {
-        if (on) gIngestTarget.store(&m);
-        else gIngestTarget.store(nullptr);
+    {
+        std::lock_guard gl(m.gameMutex); // not while stopSession tears the session down
+        if (m.session && !m.session->stopping.load()) {
+            if (on) {
+                gDrainInFlight.store(false);
+                m.requestRescan(*m.session); // chunks loaded while ingestion was off
+                gIngestTarget.store(&m);
+            } else {
+                gIngestTarget.store(nullptr);
+            }
+        }
     }
     DH_LOG_I("client driver: chunk ingestion %s (Shift+F7)", on ? "on" : "off");
     dh::hud::set("ingest.on", on ? "on" : "off");

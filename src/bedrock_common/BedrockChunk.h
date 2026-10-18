@@ -15,6 +15,7 @@
 #include "dh/platform/IChunk.h"
 
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 class LevelChunk;
@@ -74,11 +75,12 @@ private:
     std::int32_t     chunkX_, chunkZ_, minY_, maxY_;
 
     mutable std::vector<const dh::BlockInfo*> blocks_;
-    std::vector<const dh::BiomeInfo*>         biomes_; ///< filled by snapshot(); empty = query the chunk
-    std::vector<std::uint8_t>                 skyLight_;
-    std::vector<std::uint8_t>                 blockLight_;
-    bool                                      blockLightCorrect_ = false;
-    bool                                      skyLightCorrect_   = false;
+    std::shared_ptr<const std::vector<const dh::BiomeInfo*>>
+                              biomes_; ///< filled by snapshot() (shared by copies); null = query the chunk
+    std::vector<std::uint8_t> skyLight_;
+    std::vector<std::uint8_t> blockLight_;
+    bool                      blockLightCorrect_ = false;
+    bool                      skyLightCorrect_   = false;
 
     mutable bool                           boundsValid_                    = false;
     mutable std::int32_t                   minNonEmpty_                    = 0;

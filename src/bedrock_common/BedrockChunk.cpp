@@ -62,7 +62,7 @@ void BedrockChunk::snapshot() {
     (void)minNonEmptyHeight();
     (void)solidHeightMapValue(0, 0);
     (void)worldBlockLightPosList();
-    if (!biomes_.empty()) return;
+    if (biomes_) return;
     std::vector<const dh::BiomeInfo*> out(static_cast<std::size_t>(16) * 16 * static_cast<std::size_t>(maxY_ - minY_));
     const Biome*                      lastBiome = nullptr;
     const dh::BiomeInfo*              lastInfo  = nullptr;
@@ -81,14 +81,14 @@ void BedrockChunk::snapshot() {
                 }
                 out[index(x, y, z)] = lastInfo;
             }
-    biomes_ = std::move(out);
+    biomes_ = std::make_shared<const std::vector<const dh::BiomeInfo*>>(std::move(out));
 }
 
 const dh::BiomeInfo* BedrockChunk::biomeAt(int relX, std::int32_t y, int relZ) const {
     DH_DEBUG_ASSERT(isValidRelXZ(relX, relZ), "relX/relZ out of range");
     if (y < minY_) y = minY_;
     if (y >= maxY_) y = maxY_ - 1;
-    if (!biomes_.empty()) return biomes_[index(relX, y, relZ)];
+    if (biomes_) return (*biomes_)[index(relX, y, relZ)];
     ChunkBlockPos pos{
         static_cast<uchar>(relX),
         ChunkLocalHeight{static_cast<short>(y - minY_)},
