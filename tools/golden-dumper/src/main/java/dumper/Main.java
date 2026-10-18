@@ -38,6 +38,9 @@ public final class Main
 		reg(new TreeMathSuite());
 		reg(new NetSuite());
 		reg(new GenPosSuite());
+		reg(new F2rSuite());
+		reg(new MeshSuite());
+		reg(new PropagateSuite());
 	}
 
 	public static void main(String[] args) throws Exception
@@ -66,6 +69,7 @@ public final class Main
 			}
 			System.out.println(s.name() + ": " + cases.size() + " cases, " + f.length() + " bytes, " + (System.currentTimeMillis() - t0) + " ms");
 		}
+		System.exit(0); // config listener timers are non-daemon
 	}
 
 	/** "pos" expands to its shards (pos, pos_1, ...) so `run.sh pos` regenerates all of them. */

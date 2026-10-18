@@ -31,9 +31,15 @@ public final class DumpClientLevel
 		}
 	}
 
-	public static IClientLevelWrapper create()
+	public static IClientLevelWrapper create() { return create(-64, 320, false, false); }
+	
+	public static IClientLevelWrapper create(int minHeight, int maxHeight, boolean hasCeiling, boolean isEnd)
 	{
+		com.seibel.distanthorizons.core.wrapperInterfaces.world.IDimensionTypeWrapper dim = Stub.of(com.seibel.distanthorizons.core.wrapperInterfaces.world.IDimensionTypeWrapper.class)
+				.val("hasCeiling", hasCeiling).val("isTheEnd", isEnd).build();
 		return Stub.of(IClientLevelWrapper.class)
+				.val("getMinHeight", minHeight).val("getMaxHeight", maxHeight).val("hasCeiling", hasCeiling).val("getDimensionType", dim)
+				.val("getDhIdentifier", "dump").val("hasSkyLight", true)
 				.on("getBlockColor", a -> hashColor(((Wrappers.DumpBlockState) a[3]).serial, ((Wrappers.DumpBiome) a[1]).serial))
 				.on("getDirtBlockColor", a -> hashColor(2, 0))
 				.on("getShade", a -> shade((EDhDirection) a[0]))
