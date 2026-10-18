@@ -2,8 +2,21 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
 
 namespace dh {
+
+/// FNV-1a 32-bit over the serial string. Used wherever Java hashed a wrapper
+/// object (chunk hashes, deterministic colours in tests). Stable across runs
+/// and platforms; not equal to Java's String.hashCode.
+constexpr std::uint32_t hashSerial(std::string_view serial) {
+    std::uint32_t hash = 2166136261u;
+    for (char c : serial) {
+        hash ^= static_cast<std::uint8_t>(c);
+        hash *= 16777619u;
+    }
+    return hash;
+}
 
 /// Material classes used by the render data point (4 bits). Mirrors Java
 /// EDhApiBlockMaterial; the numeric values are part of the vertex format.
