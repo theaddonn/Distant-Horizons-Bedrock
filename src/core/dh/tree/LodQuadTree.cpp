@@ -170,7 +170,7 @@ std::int8_t DetailLevelMath::calcExpectedDetailLevel(
     double blockDistance = playerPos.dist(targetBlockPosX, targetBlockPosZ);
 
     // Don't allow zooming for LODs that will be missing child nodes (holes / missing LODs).
-    const bool allowZooming = sec::detail(targetSectionPos) < LodQuadTree::kHighestDownsampleDetailLevel;
+    const bool allowZooming = sec::detail(targetSectionPos) < kHighestDownsampleDetailLevel;
     if (allowZooming) {
         // LODs visible through a zoomed camera appear closer: use the magnified distance
         if (zoom.isZoomed()
@@ -192,20 +192,6 @@ std::int8_t DetailLevelMath::calcExpectedDetailLevel(
 //=============//
 // LodQuadTree //
 //=============//
-
-namespace {
-std::int64_t packPos(BlockPos2D p) {
-    return static_cast<std::int64_t>(
-        (static_cast<std::uint64_t>(static_cast<std::uint32_t>(p.x)) << 32) | static_cast<std::uint32_t>(p.z)
-    );
-}
-BlockPos2D unpackPos(std::int64_t v) {
-    return BlockPos2D(
-        static_cast<std::int32_t>(static_cast<std::uint64_t>(v) >> 32),
-        static_cast<std::int32_t>(static_cast<std::uint32_t>(static_cast<std::uint64_t>(v)))
-    );
-}
-} // namespace
 
 std::int32_t LodQuadTree::viewDiameterInBlocks(const Options& options) {
     return wmul(wmul(options.client.graphics.quality.lodChunkRenderDistanceRadius, lod::CHUNK_WIDTH), 2);
@@ -229,7 +215,9 @@ LodQuadTree::LodQuadTree(
   options_(&options),
   ctx_(ctx),
   deps_(std::move(deps)) {
-    lastPlayerPos_.store(packPos(initialPlayerBlockPos));
+    retrieval_->positionsToRetrieve = deps_.positionsToRetrieve;
+    shared_->setLastPlayerPos(initialPlayerBlockPos);
+    centerBlockPosAtomic_.store(TreeShared::pack(getCenterBlockPos()));
     updateDetailLevelVariables();
 }
 
@@ -245,62 +233,21 @@ void LodQuadTree::collectEnabled(std::vector<Section>& out) const {
     out.insert(out.end(), enabledSections_.begin(), enabledSections_.end());
 }
 
-BlockPos2D LodQuadTree::lastTickPlayerPos() const { return unpackPos(lastPlayerPos_.load()); }
-
-DetailLevelMath LodQuadTree::detailLevelMath() const {
-    std::lock_guard lock(detailMutex_);
-    return detailMath_;
-}
-
-CameraZoom LodQuadTree::cameraZoom() const {
-    std::lock_guard lock(detailMutex_);
-    return zoom_;
-}
-
-void LodQuadTree::setCameraZoom(const CameraZoom& zoom) {
-    std::lock_guard lock(detailMutex_);
-    zoom_ = zoom;
-}
-
-std::int8_t LodQuadTree::calcExpectedDetailLevel(BlockPos2D playerPos, sec::Pos sectionPos) const {
-    DetailLevelMath m;
-    CameraZoom      z;
-    {
-        std::lock_guard lock(detailMutex_);
-        m = detailMath_;
-        z = zoom_;
-    }
-    return m.calcExpectedDetailLevel(playerPos, sectionPos, z);
-}
-
-std::int8_t LodQuadTree::calcExpectedDetailLevel(
-    BlockPos2D   playerPos,
-    std::int32_t targetBlockPosX,
-    std::int32_t targetBlockPosZ
-) const {
-    DetailLevelMath m;
-    CameraZoom      z;
-    {
-        std::lock_guard lock(detailMutex_);
-        m = detailMath_;
-        z = zoom_;
-    }
-    return m.calcExpectedDetailLevel(playerPos, targetBlockPosX, targetBlockPosZ, z);
-}
-
 void LodQuadTree::updateDetailLevelVariables() {
     const QualityOptions& q = options_->client.graphics.quality;
-    std::lock_guard       lock(detailMutex_);
-    detailMath_ = DetailLevelMath::compute(
-        q.horizontalQuality,
-        q.maxHorizontalResolution,
-        blockRenderDistanceDiameter,
-        treeRootDetailLevel
+    shared_->set(
+        DetailLevelMath::compute(
+            q.horizontalQuality,
+            q.maxHorizontalResolution,
+            blockRenderDistanceDiameter,
+            treeRootDetailLevel
+        ),
+        shared_->zoom()
     );
 }
 
 LodQuadTree::Section LodQuadTree::makeSection(sec::Pos pos) {
-    return std::make_shared<LodRenderSection>(pos, *this, ctx_);
+    return std::make_shared<LodRenderSection>(pos, shared_, ctx_);
 }
 
 //=============//
@@ -319,13 +266,9 @@ void LodQuadTree::tryTick(BlockPos2D playerPos) {
 
     // this shouldn't be updated while the tree is being iterated through
     updateDetailLevelVariables();
-    lastPlayerPos_.store(packPos(playerPos));
-    {
-        // tick-thread snapshots (Java read the live Config / CameraZoom.INSTANCE during the walk)
-        std::lock_guard dlock(detailMutex_);
-        tickMath_ = detailMath_;
-        tickZoom_ = zoom_;
-    }
+    shared_->setLastPlayerPos(playerPos);
+    // tick-thread snapshots (Java read the live Config / CameraZoom.INSTANCE during the walk)
+    shared_->snapshot(tickMath_, tickZoom_);
 
     tickAborted_.store(false);
     updateAllRenderSections(playerPos);
@@ -353,11 +296,11 @@ void LodQuadTree::updateAllRenderSections(BlockPos2D playerPos) {
                 }
                 {
                     // a removed position may be larger than the generated positions it contains
-                    std::lock_guard rlock(retrievalMutex_);
-                    std::erase_if(missingGenerationPosSet_, [&](sec::Pos genPos) {
+                    std::lock_guard rlock(retrieval_->mutex);
+                    std::erase_if(retrieval_->missing, [&](sec::Pos genPos) {
                         return sec::contains(removedPos, genPos);
                     });
-                    std::erase_if(queuedGenerationPosSet_, [&](sec::Pos genPos) {
+                    std::erase_if(retrieval_->queued, [&](sec::Pos genPos) {
                         return sec::contains(removedPos, genPos);
                     });
                 }
@@ -377,6 +320,8 @@ void LodQuadTree::updateAllRenderSections(BlockPos2D playerPos) {
     //=======================//
     // walk through the tree //
     //=======================//
+
+    centerBlockPosAtomic_.store(TreeShared::pack(getCenterBlockPos()));
 
     RootPosIterator rootPosIterator = rootNodePosIterator();
     while (rootPosIterator.hasNext()) {
@@ -768,7 +713,7 @@ void LodQuadTree::runRetrievalQueuing(BlockPos2D playerPos, const std::vector<Se
     for (const Section& section : worldGenSections) {
         // since this section wants to render, check if it needs any generation to do so
         if (!section->queuedMissingSectionsForRetrieval.exchange(true)) {
-            tryQueuePosForRetrieval(section->pos); // can be quite slow
+            retrieval_->tryQueuePosForRetrieval(section->pos); // can be quite slow
         }
     }
 
@@ -782,8 +727,8 @@ void LodQuadTree::startQueuedRetrievalTasks(BlockPos2D playerPos) {
     // sort the nodes from nearest to farthest (ties keep the set's ascending pos order)
     std::vector<sec::Pos> sortedMissingPosList;
     {
-        std::lock_guard lock(retrievalMutex_);
-        sortedMissingPosList.assign(missingGenerationPosSet_.begin(), missingGenerationPosSet_.end());
+        std::lock_guard lock(retrieval_->mutex);
+        sortedMissingPosList.assign(retrieval_->missing.begin(), retrieval_->missing.end());
     }
     std::stable_sort(sortedMissingPosList.begin(), sortedMissingPosList.end(), [&](sec::Pos posA, sec::Pos posB) {
         return sec::manhattanBlockDistance(posA, playerPos) < sec::manhattanBlockDistance(posB, playerPos);
@@ -823,14 +768,14 @@ void LodQuadTree::startQueuedRetrievalTasks(BlockPos2D playerPos) {
         }
         if (positionQueued) {
             {
-                std::lock_guard lock(retrievalMutex_);
-                queuedGenerationPosSet_.insert(missingPos);
-                missingGenerationPosSet_.erase(missingPos);
+                std::lock_guard lock(retrieval_->mutex);
+                retrieval_->queued.insert(missingPos);
+                retrieval_->missing.erase(missingPos);
             }
-            std::shared_ptr<std::atomic<bool>> alive = alive_;
-            genFuture->onComplete([this, alive, missingPos](const RetrievalResult& result) {
-                if (!alive->load()) return;
-                onRetrievalComplete(missingPos, result);
+            // captures the shared state only: completing after the tree is gone is harmless
+            std::shared_ptr<RetrievalState> state = retrieval_;
+            genFuture->onComplete([state, missingPos](const RetrievalResult& result) {
+                state->onRetrievalComplete(missingPos, result);
             });
         }
     }
@@ -850,18 +795,20 @@ void LodQuadTree::startQueuedRetrievalTasks(BlockPos2D playerPos) {
                 highDetailRequestPresent = false;
             }
         }
-        canRegenerate_.store(!highDetailRequestPresent);
+        retrieval_->canRegenerate.store(!highDetailRequestPresent);
     } else {
         // Java also estimated the regen chunk count from the DB here (not ported)
-        canRegenerate_.store(true);
+        retrieval_->canRegenerate.store(true);
     }
-    estimatedRemainingChunks_.store(totalWorldGenChunkCount);
+    retrieval_->estimatedRemainingChunks.store(totalWorldGenChunkCount);
+    // Java fullDataSourceProvider.setCanRegenerate / setEstimatedRemainingRetrievalChunkCount
+    deps_.retrievalQueue->setCanRegenerate(retrieval_->canRegenerate.load());
 }
 
-void LodQuadTree::onRetrievalComplete(sec::Pos missingPos, const RetrievalResult& result) {
+void LodQuadTree::RetrievalState::onRetrievalComplete(sec::Pos missingPos, const RetrievalResult& result) {
     {
-        std::lock_guard lock(retrievalMutex_);
-        queuedGenerationPosSet_.erase(missingPos);
+        std::lock_guard lock(mutex);
+        queued.erase(missingPos);
     }
     switch (result.kind) {
     case RetrievalResult::Kind::Success:
@@ -872,40 +819,47 @@ void LodQuadTree::onRetrievalComplete(sec::Pos missingPos, const RetrievalResult
     case RetrievalResult::Kind::Rejected:
     case RetrievalResult::Kind::Failed: {
         // gen task failed / cancelled (Java exceptionally): requeue so we can try again in the future
-        std::lock_guard lock(retrievalMutex_);
-        missingGenerationPosSet_.insert(missingPos);
+        std::lock_guard lock(mutex);
+        missing.insert(missingPos);
         break;
     }
     }
 }
 
+bool LodQuadTree::canRegenerate() const { return retrieval_->canRegenerate.load(); }
+
+std::int64_t LodQuadTree::estimatedRemainingRetrievalChunkCount() const {
+    return retrieval_->estimatedRemainingChunks.load();
+}
+
 void LodQuadTree::onGeneratorPlanChanged(bool generationEnabled) {
     // the generator plan was changed: clear the queues to make sure we get the correct sized generator tasks
     {
-        std::lock_guard lock(retrievalMutex_);
-        missingGenerationPosSet_.clear();
-        queuedGenerationPosSet_.clear();
+        std::lock_guard lock(retrieval_->mutex);
+        retrieval_->missing.clear();
+        retrieval_->queued.clear();
     }
     // don't allow regeneration until the next world gen tick
-    canRegenerate_.store(false);
+    retrieval_->canRegenerate.store(false);
+    if (deps_.retrievalQueue != nullptr) deps_.retrievalQueue->setCanRegenerate(false);
 
     // world gen tasks will need to be re-queued since all the render sections will already have been loaded
     requeueAllRetrievalTasks_.store(generationEnabled);
 }
 
-void LodQuadTree::tryQueuePosForRetrieval(sec::Pos pos) {
-    if (!deps_.positionsToRetrieve) {
+void LodQuadTree::RetrievalState::tryQueuePosForRetrieval(sec::Pos pos) {
+    if (!positionsToRetrieve) {
         return; // Java base provider: getPositionsToRetrieve == null
     }
-    const std::optional<std::vector<sec::Pos>> missingPosList = deps_.positionsToRetrieve(pos, sec::detail(pos));
+    const std::optional<std::vector<sec::Pos>> missingPosList = positionsToRetrieve(pos, sec::detail(pos));
     if (!missingPosList.has_value()) {
         return;
     }
 
-    std::lock_guard lock(retrievalMutex_);
+    std::lock_guard lock(mutex);
     for (const sec::Pos missingPos : *missingPosList) {
-        if (!queuedGenerationPosSet_.contains(missingPos)) {
-            missingGenerationPosSet_.insert(missingPos);
+        if (!queued.contains(missingPos)) {
+            missing.insert(missingPos);
         }
     }
 }
@@ -926,13 +880,13 @@ bool LodQuadTree::isPosInWorldGenRange(
 }
 
 std::size_t LodQuadTree::missingRetrievalCount() const {
-    std::lock_guard lock(retrievalMutex_);
-    return missingGenerationPosSet_.size();
+    std::lock_guard lock(retrieval_->mutex);
+    return retrieval_->missing.size();
 }
 
 std::size_t LodQuadTree::queuedRetrievalCount() const {
-    std::lock_guard lock(retrievalMutex_);
-    return queuedGenerationPosSet_.size();
+    std::lock_guard lock(retrieval_->mutex);
+    return retrieval_->queued.size();
 }
 
 //==========================//

@@ -26,6 +26,8 @@
 // listener (attachToProvider) only pushes the pos onto `sectionsToReload` and the tick thread reloads.
 // The listener captures a shared_ptr to that queue, never `this`, so a listener invoked after
 // removeListener()/destruction is harmless.
+// Likewise the retrieval futures' callbacks capture only the shared RetrievalState, and sections only the
+// shared TreeShared (detail math, zoom, last player pos), never the tree itself.
 
 #include <atomic>
 #include <cstdint>
@@ -52,104 +54,6 @@
 #include "dh/tree/TickNodeHolder.h"
 
 namespace dh::tree {
-
-//============//
-// CameraZoom //
-//============//
-
-/// Port of render/CameraZoom.java (the pure parts). A zoomed camera makes LODs in its cone appear closer;
-/// the tree uses the magnified distance for them.
-struct CameraZoom {
-    static constexpr double NOT_ZOOMED_MAGNIFICATION     = 1.0;
-    static constexpr double MIN_ZOOM_MAGNIFICATION       = 1.5;
-    static constexpr double ZOOM_CONE_PADDING_MULTIPLIER = 1.5;
-
-    /// how many times larger objects appear on screen compared to the player's FOV setting
-    double magnification = NOT_ZOOMED_MAGNIFICATION;
-    /// tangent of half the zoom cone's horizontal angle (slightly wider than the camera's FOV)
-    double coneTanHalfAngle = 0.0;
-    /// the camera's look direction projected onto the XZ plane, normalized
-    double lookDirectionX = 0.0;
-    double lookDirectionZ = 0.0;
-
-    static CameraZoom notZoomed() { return CameraZoom{}; }
-    bool              isZoomed() const { return magnification > NOT_ZOOMED_MAGNIFICATION; }
-
-    /// CameraZoom.coneIntersectsCircle: true if any part of the circle is visible through the zoomed camera
-    /// (2D, XZ plane).
-    bool coneIntersectsCircle(
-        double coneOriginX,
-        double coneOriginZ,
-        double circleCenterX,
-        double circleCenterZ,
-        double circleRadius
-    ) const;
-
-    /// CameraZoom.update() without the wrapper lookups. `projection` is the MC projection (or, when that is
-    /// the identity, the pre-multiplied model-view) in the glm layout used by Frustum.h; `lookAt` is
-    /// MC_RENDER.getLookAtVector(); `fovSettingDegrees` MC_RENDER.getFovSetting().
-    static CameraZoom fromProjection(
-        const glm::mat4&  projection,
-        const glm::vec3&  lookAt,
-        double            fovSettingDegrees,
-        HorizontalQuality horizontalQuality,
-        int               maxZoomQualityIncrease,
-        bool              increaseQualityWhenZoomedIn
-    );
-};
-
-//==================//
-// detail level math //
-//==================//
-
-/// LodQuadTree.updateDetailLevelVariables + calcDetailLevelFromDistance + calcExpectedDetailLevel as a value
-/// type (also what the `treemath` golden suite replays). All detail levels are ABSOLUTE (0 = block); add
-/// SECTION_MINIMUM_DETAIL_LEVEL for section detail levels.
-struct DetailLevelMath {
-    /// used to calculate when a detail drop will occur: horizontalQuality.distanceUnitInBlocks * 16
-    double detailDropOffDistanceUnit = 0.0;
-    /// ln(horizontalQuality.quadraticBase)
-    double detailDropOffLogBase = 0.0;
-    /// smallest numerical detail level that can be rendered (maxHorizontalResolution.detailLevel)
-    std::int8_t maxLeafRenderDetailLevel = 0;
-    /// largest numerical detail level that can be rendered
-    std::int8_t minRootRenderDetailLevel = 0;
-    /// the tree's root detail level (section detail)
-    std::int8_t treeRootDetailLevel = 0;
-
-    /// LodQuadTree.java:1244-1263.
-    static DetailLevelMath compute(
-        HorizontalQuality       horizontalQuality,
-        MaxHorizontalResolution maxHorizontalResolution,
-        std::int32_t            blockRenderDistanceDiameter,
-        std::int8_t             treeRootDetailLevel
-    );
-
-    /// LodQuadTree.java:1265-1271: clamp(maxDetail, (int)(ln(d / unit) / logBase), ROOT_SECTION_DETAIL_LEVEL).
-    std::int8_t calcDetailLevelFromDistance(double blockDistance) const {
-        return calcDetailLevelFromDistance(blockDistance, maxLeafRenderDetailLevel);
-    }
-    std::int8_t calcDetailLevelFromDistance(double blockDistance, std::int8_t maxDetailLevel) const;
-
-    /// LodQuadTree.java:1209-1242.
-    std::int8_t calcExpectedDetailLevel(BlockPos2D playerPos, sec::Pos sectionPos, const CameraZoom& zoom) const;
-    std::int8_t calcExpectedDetailLevel(
-        BlockPos2D        playerPos,
-        std::int32_t      targetBlockPosX,
-        std::int32_t      targetBlockPosZ,
-        const CameraZoom& zoom
-    ) const;
-
-private:
-    std::int8_t calcExpectedDetailLevel(
-        BlockPos2D        playerPos,
-        sec::Pos          targetSectionPos,
-        std::int32_t      targetBlockPosX,
-        std::int32_t      targetBlockPosZ,
-        double            targetBlockRadius,
-        const CameraZoom& zoom
-    ) const;
-};
 
 //=============//
 // LodQuadTree //
@@ -184,8 +88,7 @@ public:
 
     /// LodQuadTree.java:170: nodes are re-checked after moving FullDataSourceV2.WIDTH blocks.
     static constexpr std::int32_t kBlockDistanceForNodeClearing = lod::FULL_DATA_WIDTH;
-    /// FullDataUpdatePropagatorV2.HIGHEST_DOWNSAMPLE_DETAIL_LEVEL: sections at/above never zoom.
-    static constexpr std::int8_t kHighestDownsampleDetailLevel = sec::SECTION_MINIMUM_DETAIL_LEVEL + 6;
+    static constexpr std::int8_t  kHighestDownsampleDetailLevel = DetailLevelMath::kHighestDownsampleDetailLevel;
     /// FullDataUpdatePropagatorV2.NUMBER_OF_PARENT_UPDATE_TASKS_PER_THREAD.
     static constexpr std::int32_t kParentUpdateTasksPerThread = 10;
 
@@ -215,14 +118,18 @@ public:
     void collectEnabled(std::vector<Section>& out) const;
 
     /// The player position of the last tick (what Java's worker threads read live from Minecraft).
-    BlockPos2D lastTickPlayerPos() const;
+    BlockPos2D lastTickPlayerPos() const { return shared_->lastPlayerPos(); }
+    /// getCenterBlockPos() as published by the last tick, readable from any thread (RenderList's sort centre;
+    /// QuadTree::getCenterBlockPos itself is only safe on the tick thread).
+    BlockPos2D renderCenterBlockPos() const { return TreeShared::unpack(centerBlockPosAtomic_.load()); }
 
-    DetailLevelMath detailLevelMath() const;
-    CameraZoom      cameraZoom() const;
+    DetailLevelMath detailLevelMath() const { return shared_->math(); }
+    CameraZoom      cameraZoom() const { return shared_->zoom(); }
     /// Zoom magnification hook (Java CameraZoom.INSTANCE.update(renderState) every frame).
-    void setCameraZoom(const CameraZoom& zoom);
+    void setCameraZoom(const CameraZoom& zoom) { shared_->setZoom(zoom); }
 
-    const RenderSectionContext& context() const { return ctx_; }
+    const RenderSectionContext&       context() const { return ctx_; }
+    std::shared_ptr<const TreeShared> shared() const { return shared_; }
 
     //=============//
     // tick update //
@@ -237,9 +144,13 @@ public:
     //====================//
 
     /// Expected ABSOLUTE detail level of the section (uses the current detail math + camera zoom).
-    std::int8_t calcExpectedDetailLevel(BlockPos2D playerPos, sec::Pos sectionPos) const;
+    std::int8_t calcExpectedDetailLevel(BlockPos2D playerPos, sec::Pos sectionPos) const {
+        return shared_->calcExpectedDetailLevel(playerPos, sectionPos);
+    }
     std::int8_t
-    calcExpectedDetailLevel(BlockPos2D playerPos, std::int32_t targetBlockPosX, std::int32_t targetBlockPosZ) const;
+    calcExpectedDetailLevel(BlockPos2D playerPos, std::int32_t targetBlockPosX, std::int32_t targetBlockPosZ) const {
+        return shared_->calcExpectedDetailLevel(playerPos, targetBlockPosX, targetBlockPosZ);
+    }
 
     //==========================//
     // external render requests //
@@ -265,10 +176,12 @@ public:
 
     std::size_t missingRetrievalCount() const;
     std::size_t queuedRetrievalCount() const;
-    /// Java fullDataSourceProvider.setCanRegenerate(...) value: false while block-detail LODs are missing.
-    bool canRegenerate() const { return canRegenerate_.load(); }
+    /// Java fullDataSourceProvider.setCanRegenerate(...) value (LodQuadTree.java:942-959): false while a
+    /// coarser-than-block section is still missing ("don't let any regeneration happen until all low-detail
+    /// LODs have finished generating"); true when every missing position is block detail or nothing is missing.
+    bool canRegenerate() const;
     /// Java setEstimatedRemainingRetrievalChunkCount (missing positions only, see header).
-    std::int64_t estimatedRemainingRetrievalChunkCount() const { return estimatedRemainingChunks_.load(); }
+    std::int64_t estimatedRemainingRetrievalChunkCount() const;
 
     /// WorldGenUtil.isPosInWorldGenRange.
     static bool isPosInWorldGenRange(
@@ -282,14 +195,31 @@ public:
     // base methods //
     //==============//
 
-    /// Disposes every section and detaches from the provider. Shut down the retrieval queue / executors that
-    /// may still call back into the tree BEFORE calling this (their futures capture the tree).
+    /// Disposes every section and detaches from the provider. Retrieval futures only capture the shared
+    /// RetrievalState (safe after destruction); the per-tick queuing task on `retrievalQueueExecutor` captures
+    /// the tree behind an alive flag, so drain/stop that executor BEFORE destroying the tree.
     void close();
 
 private:
     struct ReloadQueue {
         std::mutex           mutex;
         std::deque<sec::Pos> positions;
+    };
+
+    /// Java missingGenerationPosSet / queuedGenerationPosSet (+ the HUD values). Shared with the retrieval
+    /// futures' callbacks so a completion after the tree is gone only touches this object.
+    struct RetrievalState {
+        mutable std::mutex        mutex;
+        std::set<sec::Pos>        missing; ///< ordered: deterministic near-to-far sort ties
+        std::set<sec::Pos>        queued;
+        std::atomic<bool>         canRegenerate{true};
+        std::atomic<std::int64_t> estimatedRemainingChunks{0};
+        PositionsToRetrieveFn     positionsToRetrieve;
+
+        /// LodQuadTree.tryQueuePosForRetrieval :1020-1037
+        void tryQueuePosForRetrieval(sec::Pos pos);
+        /// genFuture.exceptionally / thenAccept :905-926
+        void onRetrievalComplete(sec::Pos missingPos, const RetrievalResult& result);
     };
 
     void updateDetailLevelVariables();
@@ -315,8 +245,6 @@ private:
     void queueWorldGen(BlockPos2D playerPos);
     void runRetrievalQueuing(BlockPos2D playerPos, const std::vector<Section>& worldGenSections);
     void startQueuedRetrievalTasks(BlockPos2D playerPos);
-    void tryQueuePosForRetrieval(sec::Pos pos);
-    void onRetrievalComplete(sec::Pos missingPos, const RetrievalResult& result);
 
     Section makeSection(sec::Pos pos);
 
@@ -327,13 +255,13 @@ private:
     std::mutex        treeTickMutex_;
     std::atomic<bool> tickAborted_{false};
 
-    mutable std::mutex detailMutex_;
-    DetailLevelMath    detailMath_;
-    CameraZoom         zoom_;
+    /// detail math / zoom / last player pos, shared with the sections
+    std::shared_ptr<TreeShared> shared_ = std::make_shared<TreeShared>();
     /// snapshots taken at the start of a tick, read by the walk (tick thread only)
-    DetailLevelMath           tickMath_;
-    CameraZoom                tickZoom_;
-    std::atomic<std::int64_t> lastPlayerPos_{0}; ///< packed x (high 32) / z (low 32)
+    DetailLevelMath tickMath_;
+    CameraZoom      tickZoom_;
+    /// getCenterBlockPos() published for other threads (TreeShared::pack)
+    std::atomic<std::int64_t> centerBlockPosAtomic_{0};
 
     std::shared_ptr<ReloadQueue> sectionsToReload_ = std::make_shared<ReloadQueue>();
     SourceProvider*              attachedProvider_ = nullptr;
@@ -343,11 +271,7 @@ private:
     std::atomic<bool>                  queueThreadRunning_{false};
     std::shared_ptr<std::atomic<bool>> alive_ = std::make_shared<std::atomic<bool>>(true);
 
-    mutable std::mutex        retrievalMutex_;
-    std::set<sec::Pos>        missingGenerationPosSet_; ///< ordered: deterministic near-to-far sort ties
-    std::set<sec::Pos>        queuedGenerationPosSet_;
-    std::atomic<bool>         canRegenerate_{true};
-    std::atomic<std::int64_t> estimatedRemainingChunks_{0};
+    std::shared_ptr<RetrievalState> retrieval_ = std::make_shared<RetrievalState>();
 
     TickNodeHolder tickNodeHolder_;
 
