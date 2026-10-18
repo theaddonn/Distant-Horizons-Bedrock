@@ -12,12 +12,12 @@
 namespace dh {
 
 struct WorldGenerator::Job {
-    std::uint64_t        id = 0;
-    GenerateRequest      request;
-    ChunkCallback        onChunk;
-    DoneCallback         onDone;
-    std::vector<IChunk*> chunks;
-    bool                 done = false; ///< guarded by WorldGenerator::mutex_
+    std::uint64_t                        id = 0;
+    GenerateRequest                      request;
+    ChunkCallback                        onChunk;
+    DoneCallback                         onDone;
+    std::vector<std::shared_ptr<IChunk>> chunks;
+    bool                                 done = false; ///< guarded by WorldGenerator::mutex_
 };
 
 namespace {
@@ -25,8 +25,9 @@ namespace {
 /// Java AdjacentChunkHolder: the generated chunks addressable by chunk position.
 class AdjacentChunkHolder {
 public:
-    explicit AdjacentChunkHolder(const std::vector<IChunk*>& chunks) {
-        for (IChunk* c : chunks) byPos_.emplace(std::make_pair(c->chunkX(), c->chunkZ()), c); // first one wins
+    explicit AdjacentChunkHolder(const std::vector<std::shared_ptr<IChunk>>& chunks) {
+        for (const auto& c : chunks)
+            byPos_.emplace(std::make_pair(c->chunkX(), c->chunkZ()), c.get()); // first one wins
     }
     IChunk* at(std::int32_t x, std::int32_t z) const {
         auto it = byPos_.find({x, z});
@@ -119,13 +120,13 @@ void WorldGenerator::generate(
         request.widthChunks,
         request.mode,
         targetStepFor(request.mode),
-        [this, job](IChunk& chunk) {
+        [this, job](std::shared_ptr<IChunk> chunk) {
             {
                 std::lock_guard lock(mutex_);
                 if (job->done) return;
-                job->chunks.push_back(&chunk);
+                job->chunks.push_back(chunk);
             }
-            if (job->onChunk) job->onChunk(chunk);
+            if (job->onChunk) job->onChunk(*chunk);
         },
         [this, job, pool](bool /*ok*/) {
             // Java .handle(): process whatever arrived, success or not
@@ -141,7 +142,7 @@ void WorldGenerator::generate(
 }
 
 void WorldGenerator::process(const std::shared_ptr<Job>& job) {
-    std::vector<IChunk*> chunks;
+    std::vector<std::shared_ptr<IChunk>> chunks;
     {
         std::lock_guard lock(mutex_);
         if (job->done) return; // cancelled by close()
@@ -152,9 +153,9 @@ void WorldGenerator::process(const std::shared_ptr<Job>& job) {
     auto result = std::make_shared<FullDataSource>(FullDataSource::createEmpty(job->request.sectionPos));
 
     LightingOptions light;
-    light.maxSkyLight = options_.maxSkyLight;
+    light.generateSkyLight = false; // baked per section by the updater (detail 6)
 
-    for (IChunk* chunk : chunks) {
+    for (const auto& chunk : chunks) {
         std::array<IChunk*, 8> nearby{};
         std::size_t            n = 0;
         for (int dx = -1; dx <= 1; ++dx) {
@@ -163,7 +164,9 @@ void WorldGenerator::process(const std::shared_ptr<Job>& job) {
                 if (IChunk* nb = holder.at(chunk->chunkX() + dx, chunk->chunkZ() + dz)) nearby[n++] = nb;
             }
         }
-        lightChunk(*chunk, std::span<IChunk* const>(nearby.data(), n), light);
+        if (!chunk->isDhBlockLightingCorrect()) { // platform drivers normally light (DhChunkGenerator:735-775)
+            lightChunk(*chunk, std::span<IChunk* const>(nearby.data(), n), light);
+        }
 
         if (auto built = createFromChunk(*chunk, options_.build)) {
             (void)updateFromDataSource(*result, *built, options_.update);

@@ -11,8 +11,11 @@
 //                                min < required; here `<` / `>=` is the Java rule, keep BOTH)
 //
 // Deviations from Java:
-//   * IRetrievalQueue has no setCanRegenerate / lowestDataDetail; the regenerate flag lives in the provider
-//     (setCanRegenerate / canRegenerate) and the queue's lowest detail is injected (setQueueLowestDataDetail).
+//   * IRetrievalQueue has no lowestDataDetail; it is injected (setQueueLowestDataDetail). setCanRegenerate is
+//     forwarded to the queue (Java :233-241) and also mirrored in the provider (canRegenerate()).
+//   * Not ported: setEstimatedRemainingRetrievalChunkCount (HUD estimate), DelayedDataSourceSaveCache.
+//   * Destruction order: LodRequestModule -> retrieval queue -> provider. Queue futures hold callbacks into the
+//     provider; shut the queue down (module.close()) before destroying the provider.
 //   * canQueueRetrievalNow: WorldChunkUpdateManager.getTotalQueuedCount is an injected callback; the
 //     DelayedDataSourceSaveCache is not ported (the provider saves synchronously through the updater).
 //   * The retrieval queue is not owned (raw pointer); the caller keeps it alive until clearRetrievalQueue().
@@ -103,7 +106,7 @@ public:
     void        removeRetrievalRequestIf(std::function<bool(std::uint64_t)> removeIf);
     std::size_t queuedRetrievalCount() const;
 
-    void setCanRegenerate(bool v) { canRegenerate_.store(v); }
+    void setCanRegenerate(bool v);
     bool canRegenerate() const { return canRegenerate_.load(); }
 
     void addWorldGenCompleteListener(IWorldGenCompleteListener* l);

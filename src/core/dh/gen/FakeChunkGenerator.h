@@ -4,7 +4,7 @@
 //
 // queue() posts one task onto the injected executor (ManualExecutor in tests, so the test decides when a batch
 // runs); the task creates the chunks row-major (x outer, z inner), delivers them through onChunk, then done(true).
-// Chunks are retained by the generator until it is destroyed (WorldGenerator needs them alive until processed).
+// Chunks are delivered as shared_ptr (the consumer keeps them alive; the generator keeps none).
 // cancelAll() cancels every batch that has not run yet: done(false) fires before cancelAll() returns.
 
 #include "dh/platform/IChunkGenerator.h"
@@ -51,7 +51,7 @@ public:
 
     std::size_t chunksCreated() const {
         std::lock_guard lock(mutex_);
-        return chunks_.size();
+        return created_;
     }
     std::size_t pendingBatches() const {
         std::lock_guard lock(mutex_);
@@ -122,14 +122,13 @@ private:
         }
         for (std::int32_t x = 0; x < batch->width; ++x) {
             for (std::int32_t z = 0; z < batch->width; ++z) {
-                auto chunk = std::make_unique<TestChunk>(batch->minX + x, batch->minZ + z, minY_, maxY_, air_, biome_);
+                auto chunk = std::make_shared<TestChunk>(batch->minX + x, batch->minZ + z, minY_, maxY_, air_, biome_);
                 chunk->fillLayers(minY_, groundY_, ground_);
-                TestChunk* raw = chunk.get();
                 {
                     std::lock_guard lock(mutex_);
-                    chunks_.push_back(std::move(chunk));
+                    ++created_;
                 }
-                if (batch->onChunk) batch->onChunk(*raw);
+                if (batch->onChunk) batch->onChunk(std::move(chunk));
             }
         }
         finishBatch(batch, true);
@@ -158,9 +157,9 @@ private:
     const BiomeInfo* biome_;
     std::int32_t     groundY_, minY_, maxY_;
 
-    mutable std::mutex                      mutex_;
-    std::vector<std::shared_ptr<Batch>>     pending_;
-    std::vector<std::unique_ptr<TestChunk>> chunks_;
+    mutable std::mutex                  mutex_;
+    std::vector<std::shared_ptr<Batch>> pending_;
+    std::size_t                         created_ = 0;
 };
 
 } // namespace dh

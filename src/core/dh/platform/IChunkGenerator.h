@@ -10,8 +10,14 @@
 //
 // Contract:
 //   * queue() is non-blocking. `onChunk` is invoked once per generated chunk
-//     (any thread; the IChunk is valid only for the duration of the call),
-//     then `done(ok)` exactly once: ok=false if the batch failed or was
+//     (any thread) with a shared_ptr<IChunk>: the consumer may keep it (Java
+//     kept the wrappers in a list and lit/built them after the batch; lighting
+//     needs the 3x3 neighbourhood), so the chunk stays alive for as long as the
+//     consumer holds the pointer. shared_ptr was chosen over a release callback
+//     because the Bedrock drivers (SingleplayerGenDriver, BdsWorldGenerator)
+//     just hand over the scratch-chunk wrapper they allocate anyway and need no
+//     extra batch bookkeeping; drivers must not reuse/mutate a delivered chunk.
+//     Then `done(ok)` exactly once: ok=false if the batch failed or was
 //     cancelled (some onChunk calls may still have happened).
 //   * widthChunks x widthChunks chunks starting at (minChunkX, minChunkZ).
 //   * isBusy() lets the queue throttle (Java: in-progress > thread count).
@@ -20,6 +26,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string_view>
 
@@ -101,7 +108,7 @@ constexpr std::optional<GenerationStep> generationStepFromName(std::string_view 
 }
 
 struct IChunkGenerator {
-    using ChunkCallback = std::function<void(IChunk&)>;
+    using ChunkCallback = std::function<void(std::shared_ptr<IChunk>)>;
     using DoneCallback  = std::function<void(bool ok)>;
 
     virtual ~IChunkGenerator() = default;

@@ -23,6 +23,7 @@
 //   * the chunk-gen-time rolling average holds max(numThreads, 1) * 500 samples;
 //     Java sized it Runtime.availableProcessors() * 500 (no such query here).
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -53,6 +54,8 @@ public:
     std::size_t                      waitingTaskCount() const override;
     std::size_t                      inProgressTaskCount() const override;
     void                             shutdown(bool interruptRunning) override;
+    void                             setCanRegenerate(bool v) override { canRegenerate_.store(v); }
+    bool                             getCanRegenerate() const override { return canRegenerate_.load(); }
 
     // --- Java config values read live by the queue --------------------------------
     void           setNumThreads(int numThreads);
@@ -81,6 +84,7 @@ public:
 private:
     struct Impl;
     std::shared_ptr<Impl> impl_;
+    std::atomic<bool>     canRegenerate_{false};
 };
 
 } // namespace dh
