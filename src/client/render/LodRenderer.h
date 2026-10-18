@@ -1,0 +1,107 @@
+#pragma once
+
+// Stage-A LOD renderer: owns the MeshUploader (the IVertexSink the core uploads into), the draw settings and the
+// per-frame draw loop (budgeted upload pump, frustum + near cut-off culling, opaque then transparent draws with a
+// per-section world-matrix translate). Render thread only, except sink() which any thread may use.
+// All the unknowns R0-R3 are toggles in Config (see docs/spikes/stage-a-render.md).
+
+#include "client/render/MeshUploader.h"
+
+#include <glm/glm.hpp>
+
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
+
+class BaseActorRenderContext;
+class IClientInstance;
+struct ViewRenderObject;
+
+namespace dh::render {
+
+enum class MaterialChoice : int { Selection = 0, MeshFallback = 1, Dh = 2 };
+enum class OriginMode : int { CameraRelative = 0, Absolute = 1 };
+enum class FarMode : int { Off = 0, LocalProjPush = 1, ZFarOverride = 2 };
+
+/// Primitive / winding choices cycled by F4.
+struct PrimChoice {
+    Primitive   prim;
+    bool        flip;
+    bool        doubleSided;
+    char const* name;
+};
+inline constexpr PrimChoice kPrimChoices[] = {
+    {Primitive::QuadList,     false, false, "QuadList"                 },
+    {Primitive::TriangleList, false, false, "TriangleList"             },
+    {Primitive::TriangleList, true,  false, "TriangleList-flipped"     },
+    {Primitive::TriangleList, false, true,  "TriangleList-double-sided"},
+    {Primitive::QuadList,     false, true,  "QuadList-double-sided"    },
+};
+inline constexpr int kPrimChoiceCount = static_cast<int>(sizeof(kPrimChoices) / sizeof(kPrimChoices[0]));
+
+struct LodRendererConfig {
+    MaterialChoice material   = MaterialChoice::Selection;
+    OriginMode     origin     = OriginMode::CameraRelative;
+    int            primChoice = 0; ///< index into kPrimChoices
+    FarMode        farMode    = FarMode::Off;
+    float          farBlocks  = 20000.0f; ///< far plane used by LocalProjPush / ZFarOverride
+
+    std::size_t maxUploadsPerFrame = 8;
+    bool        frustumCull        = true;
+    bool        drawTransparent    = true;
+
+    /// Near cut-off: skip a section whose horizontal footprint lies entirely within
+    /// vanillaRenderDistanceBlocks * overdraw of the camera. vanillaRenderDistanceBlocks <= 0: take it from
+    /// ViewRenderData::mRenderDistance (values < 64 are treated as chunks). Off by default during bring-up so the test
+    /// feed (placed around the player) is visible.
+    bool  nearCutoff                  = false;
+    float vanillaRenderDistanceBlocks = 0.0f;
+    float overdraw                    = 1.0f;
+
+    float skyBrightness = 1.0f;   ///< CPU light stand-in input (0 night .. 1 day)
+    float minYBlocks    = -64.0f; ///< DH y 0 maps to this Bedrock y
+};
+
+class LodRenderer {
+public:
+    LodRenderer();
+
+    /// The sink the core pipeline (G2) uploads into.
+    MeshUploader&       sink() { return uploader_; }
+    MeshUploader const& sink() const { return uploader_; }
+
+    LodRendererConfig& config() { return cfg_; }
+
+    /// Re-applies the conversion-related config (primitive, light, y offset) to the uploader.
+    void applyMeshSettings();
+
+    /// Called from the LevelRendererCamera::$render hook after the vanilla world has been drawn.
+    void renderFrame(BaseActorRenderContext& rc, ViewRenderObject const& vro, IClientInstance& ci);
+
+    /// Last camera position seen by renderFrame (block coordinates); false before the first frame.
+    bool lastCameraPos(glm::dvec3& out) const;
+
+    /// Cycle helpers used by the key handler (log the new value).
+    void cycleMaterial();
+    void cycleOrigin();
+    void cyclePrimitive();
+    void cycleFarMode();
+    void toggleNearCutoff();
+    void toggleTransparent();
+
+    char const* materialName() const;
+    char const* farModeName() const;
+
+private:
+    LodRendererConfig cfg_;
+    MeshUploader      uploader_;
+
+    std::atomic<bool>   haveCam_{false};
+    std::atomic<double> camX_{0}, camY_{0}, camZ_{0};
+    double              emaMs_           = 0;
+    bool                loggedFirstDraw_ = false;
+    bool                loggedCutoff_    = false;
+    bool                warnedDh_        = false;
+};
+
+} // namespace dh::render
