@@ -1,6 +1,7 @@
 #include "client/DistantHorizons.h"
 
 #include "bedrock_common/FileLogger.h"
+#include "bedrock_common/LeviLogger.h"
 #include "client/Version.h"
 #include "client/hooks/ChunkIngress.h"
 #include "client/hud/DebugHud.h"
@@ -26,7 +27,7 @@ DistantHorizons& DistantHorizons::getInstance() {
 }
 
 bool DistantHorizons::load() {
-    dh::bedrock::initLog();
+    dh::bedrock::installCoreLogger();
     DH_LOG_I("DH loaded v%s build %s (core %s)", dh::kModVersion, dh::kGitSha, dh::coreVersion());
     return true;
 }
