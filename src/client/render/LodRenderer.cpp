@@ -207,6 +207,7 @@ void LodRenderer::renderFrame(BaseActorRenderContext& rc, ViewRenderObject const
     dh::hud::set("render.sections", static_cast<std::int64_t>(stats.liveSections));
     dh::hud::set("render.pending", static_cast<std::int64_t>(stats.pending));
     dh::hud::set("render.bytes", static_cast<std::int64_t>(stats.liveBytes));
+    dh::hud::set("render.staleRemoves", static_cast<std::int64_t>(stats.staleRemoves));
     if (!material) {
         static int warned = 0;
         if (warned++ < 3) DH_LOG_W("render: material '%s' invalid, nothing drawn", materialName());
