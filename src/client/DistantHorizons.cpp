@@ -3,6 +3,7 @@
 #include "bedrock_common/FileLogger.h"
 #include "bedrock_common/LeviLogger.h"
 #include "client/Version.h"
+#include "client/hooks/ChunkIngress.h"
 #include "client/hud/DebugHud.h"
 #include "client/spikes/Spikes.h"
 
@@ -37,11 +38,13 @@ bool DistantHorizons::enable() {
     exitListener = bus.emplaceListener<ll::event::ClientExitLevelEvent>([](auto&) { DH_LOG_I("level: exit"); });
     dh::hud::install();
     dh::spikes::install();
+    dh::ingress::install();
     DH_LOG_I("DH enabled");
     return true;
 }
 
 bool DistantHorizons::disable() {
+    dh::ingress::uninstall();
     dh::spikes::uninstall();
     dh::hud::uninstall();
     auto& bus = ll::event::EventBus::getInstance();
