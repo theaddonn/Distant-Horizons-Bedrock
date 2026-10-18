@@ -13,7 +13,6 @@
 #include "dh/fulldata/Merge.h"
 #include "dh/fulldata/OcclusionCuller.h"
 #include "dh/pos/SectionPos.h"
-#include "golden_loader.h"
 
 using namespace dh;
 
@@ -650,25 +649,5 @@ TEST_CASE("merge fuzz: parent-from-children invariants") {
                         firstUse.push_back(fdp::id(d));
         for (std::size_t i = 0; i < firstUse.size(); i++) REQUIRE(firstUse[i] == static_cast<int>(i));
         CHECK(firstUse.size() == parent->mapping.size());
-    }
-}
-
-//========//
-// golden //
-//========//
-
-TEST_CASE("merge golden: merge_same / merge_up / downsample / cull") {
-    // STUB: the Java golden suites are generated in parallel (WP-M). Until tests/golden/<suite>.gv.json exists
-    // these skip. Once they land, replace this body with real case replay (format defined by the dumper).
-    for (const char* name : {"merge_same", "merge_up", "downsample", "cull"}) {
-        auto s = dh::test::loadGolden(name);
-        if (!s) {
-            MESSAGE("golden suite '" << std::string(name) << "' not found; skipping (STUB)");
-            continue;
-        }
-        MESSAGE(
-            "golden suite '" << std::string(name) << "' present with " << s->cases.size()
-                             << " cases; replay not implemented yet"
-        );
     }
 }
