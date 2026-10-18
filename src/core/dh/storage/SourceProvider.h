@@ -100,6 +100,10 @@ public:
     IClock&                clock() { return clock_; }
     const ProviderOptions& options() const { return options_; }
 
+    /// Marks the provider closed (further calls return nullptr/false) and clears the cache.
+    /// Queued executor tasks capture `this`: callers MUST stop/drain the file-handler and update
+    /// executors (and may call updater().waitQuiescent()) BEFORE destroying the provider.
+    /// close() itself does not wait for queued tasks (a ManualExecutor would never run them).
     void close();
     bool isClosed() const { return shutdown_.load(); }
 

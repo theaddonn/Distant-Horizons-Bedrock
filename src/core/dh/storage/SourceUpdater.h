@@ -94,19 +94,32 @@ public:
     SourceUpdater(SourceProvider& provider, const UpdaterOptions& options);
 
     /// Java updateDataSource: locks input.pos, merges, bakes sky light iff the section detail is 6,
-    /// saves, then fires the listeners if the data changed. Returns whether it changed.
-    /// Returns false (no-op) after close().
+    /// saves, publishes, then (after releasing the lock) fires the listeners if the data changed. Returns whether it
+    /// changed. Returns false (no-op) after close().
     Result<bool> update(std::shared_ptr<const FullDataSource> input);
 
-    /// Same but the caller already holds locks().lock(input.pos) (propagator).
+    /// Same but the caller already holds locks().lock(input.pos) (propagator). Does NOT fire
+    /// listeners: when it returns true the caller must call notifyListeners(pos) AFTER releasing
+    /// the position lock (a listener may call update() for the same pos).
     Result<bool> updateLocked(const FullDataSource& input);
+
+    /// Fires the update listeners in registration order. Never call with a position lock held.
+    void notifyListeners(std::uint64_t pos);
 
     /// Java updateDataSourceAsync: runs update() on the async executor. A rejected/closed executor
     /// completes the future immediately with `false` (Java: completedFuture(null)).
     std::shared_ptr<UpdateFuture> updateAsync(std::shared_ptr<const FullDataSource> input);
 
     ListenerId addListener(UpdateListener listener);
-    void       removeListener(ListenerId id);
+    /// Note: an update that is already in flight may still invoke a just-removed listener (it
+    /// works on a snapshot). Call waitQuiescent() before destroying the listener's target.
+    void removeListener(ListenerId id);
+
+    /// Updates currently running (inside update/updateLocked/notifyListeners).
+    std::size_t inFlightUpdates() const { return inFlight_.load(); }
+    /// Blocks until no update is running. Does not wait for queued-but-unstarted async updates
+    /// (stop/drain the executor first) and must not be called from a listener.
+    void waitQuiescent() const;
 
     KeyedLock<std::uint64_t>& locks() { return locks_; }
 
@@ -121,8 +134,9 @@ private:
     UpdaterOptions           options_;
     KeyedLock<std::uint64_t> locks_;
 
-    std::atomic<bool>        shutdown_{false};
-    std::atomic<std::size_t> pendingAsync_{0};
+    std::atomic<bool>                shutdown_{false};
+    std::atomic<std::size_t>         pendingAsync_{0};
+    mutable std::atomic<std::size_t> inFlight_{0};
 
     std::mutex                                         listenerMutex_;
     ListenerId                                         nextListenerId_ = 1;

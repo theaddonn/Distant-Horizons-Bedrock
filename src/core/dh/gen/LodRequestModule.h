@@ -9,6 +9,9 @@
 //                     wait); here tick() is exactly one iteration and the caller owns the timer.
 //   LodRequestSet     the de-duplicating missing/queued position sets + nearest-first queuing loop.
 //
+// Destruction order: LodRequestModule (stops/shuts down the queue) -> retrieval queue -> provider; a
+// LodRequestSet must outlive the queue (pending futures call back into it).
+//
 // Deviations: the module owns the queue through a factory (Java AbstractLodRequestState supplier) and shuts
 // it down with IRetrievalQueue::shutdown(true); the read-only gate (DhApiWorldProxy.tryGetReadOnly) is an
 // injected predicate; the progress-message thread of AbstractLodRequestState is not ported.
@@ -69,8 +72,11 @@ public:
     void addMissing(std::uint64_t pos);
     bool isMissing(std::uint64_t pos) const;
     bool isQueued(std::uint64_t pos) const;
-    /// Java requeueAllRetrievalTasks housekeeping: forget everything.
+    /// Forget everything.
     void clear();
+    /// Java LodQuadTree.onConfigValueSet: clear() and setCanRegenerate(false) (the requester then re-adds
+    /// every section's missing positions).
+    void onConfigChanged(GeneratedProvider& provider);
 
     std::size_t missingCount() const;
     std::size_t queuedCount() const;
@@ -81,7 +87,9 @@ public:
     /// Java startQueuedRetrievalTasks: walks sortedMissing; stops when !provider.canQueueRetrievalNow();
     /// skips positions rejected by `posInRange`; queues the rest. A finished task leaves the queued set;
     /// Split queues the 4 children; Rejected/Failed put the position back into the missing set.
-    /// Ends with provider.setCanRegenerate(false) (Java :990). Returns the number of newly queued positions.
+    /// Afterwards sets the regenerate gate like LodQuadTree :938-985: missing list empty -> true; otherwise
+    /// true only if some missing position is at the block detail level (6) ("no low-detail LOD still missing").
+    /// Returns the number of newly queued positions.
     std::size_t startQueued(
         GeneratedProvider&                        provider,
         BlockPos2D                                target,
