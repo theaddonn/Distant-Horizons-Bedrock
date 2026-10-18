@@ -383,9 +383,10 @@ TEST_CASE("ColumnRenderView: subView, copyFrom and changeVerticalSizeFrom") {
     // mismatched column counts are rejected
     CHECK_FALSE(dv.changeVerticalSizeFrom(swide));
 
-    // source wider than destination: copyFrom rejects, changeVerticalSizeFrom is the WP-E1 stub
+    // source wider than destination: copyFrom rejects, changeVerticalSizeFrom reduces (WP-E1,
+    // covered by render_reduce_test.cpp)
     CHECK_FALSE(sv.copyFrom(dv, 0));
-    CHECK_FALSE(sv.changeVerticalSizeFrom(dv));
+    CHECK(sv.changeVerticalSizeFrom(dv));
 
     // subView past the end yields an empty view
     auto bad = sv.subView(1 << 20, 1);

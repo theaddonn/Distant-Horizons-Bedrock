@@ -8,6 +8,8 @@
 
 namespace dh {
 
+class ReducingList;
+
 /// Port of Java ColumnRenderView: a window onto one or more columns of a ColumnRenderSource.
 /// Non-owning; the parent source must outlive it. Not thread safe.
 ///
@@ -58,10 +60,12 @@ struct ColumnRenderView {
     /// Returns false (nothing written) when Java would throw IllegalArgumentException.
     bool copyFrom(const ColumnRenderView& source, int outputDataIndexOffset);
 
-    /// Java changeVerticalSizeFrom. Returns false where Java throws IllegalArgumentException.
-    /// TODO(WP-E1): the reducing path (this.maxVerticalSliceCount < source.maxVerticalSliceCount)
-    /// needs RenderDataPointReducingList and is not implemented: it returns false and writes nothing.
+    /// Java changeVerticalSizeFrom. Returns false where Java throws IllegalArgumentException
+    /// (including overlapping visible datapoints on the reducing path).
+    /// The shrinking path (this.maxVerticalSliceCount < source.maxVerticalSliceCount) reduces each
+    /// column with a ReducingList; the overload taking one lets callers reuse its buffers.
     bool changeVerticalSizeFrom(const ColumnRenderView& source);
+    bool changeVerticalSizeFrom(const ColumnRenderView& source, ReducingList& reducingList);
 };
 
 /// Port of Java ColumnRenderSource (data container only).
