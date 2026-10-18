@@ -34,6 +34,17 @@ const BlockInfo* MapBlockRegistry::resolveBlock(std::string_view serial) {
     return addBlock(std::move(info));
 }
 
+std::vector<const BlockInfo*> MapBlockRegistry::resolveAllStates(std::string_view baseName) {
+    std::vector<const BlockInfo*> out;
+    std::lock_guard               lock(mutex_);
+    for (auto it = blocks_.lower_bound(baseName); it != blocks_.end(); ++it) {
+        const std::string_view serial = it->first;
+        if (serial.substr(0, baseName.size()) != baseName) break;
+        if (serial.size() == baseName.size() || serial[baseName.size()] == '[') out.push_back(it->second.get());
+    }
+    return out;
+}
+
 const BiomeInfo* MapBlockRegistry::resolveBiome(std::string_view serial) {
     {
         std::lock_guard lock(mutex_);

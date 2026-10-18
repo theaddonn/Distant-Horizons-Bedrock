@@ -7,6 +7,7 @@ SRC="$ROOT/bin/DistantHorizons"
 [ -f "$SRC/DistantHorizons.dll" ] || { echo "no build output in $SRC" >&2; exit 1; }
 mkdir -p "$MODS_DIR"
 cp -f "$SRC/DistantHorizons.dll" "$SRC/DistantHorizons.pdb" "$SRC/manifest.json" "$MODS_DIR/"
+mkdir -p "$MODS_DIR/data" && cp -f "$REPO_ROOT/data/"*.json "$MODS_DIR/data/"   # block/biome tables read by the mod
 a=$(sha256sum "$SRC/DistantHorizons.dll" | cut -d' ' -f1)
 b=$(sha256sum "$MODS_DIR/DistantHorizons.dll" | cut -d' ' -f1)
 [ "$a" = "$b" ] || { echo "sha256 mismatch" >&2; exit 1; }
