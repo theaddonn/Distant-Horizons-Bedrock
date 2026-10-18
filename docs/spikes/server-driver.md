@@ -158,3 +158,22 @@ Still to check (reviewer items, abridged):
 * Final save after hooks off: `stop()` unhooks first, so chunks saved during server shutdown are not ingested; consider draining `pending` once
   before unhooking.
 * Hook result convention: `hook()` returning 0 = success is assumed.
+
+## Additional in-game checklist items (from the GLUE-3 review)
+
+- [ ] Packet id identical in both DLLs (derived from the class name text; keep the class in a named namespace). Log the id on the first frame on each side.
+- [ ] Registrar has no unregister: factory/handler dangle if the mod DLL is unloaded — never hot-unload the DLL.
+- [ ] Sub-client id on `sendToClient`; split-screen players share one session per `NetworkIdentifier`.
+- [ ] Frame cap 32 KiB vs `getString(maxLen)` 33 KiB: an oversized frame fails the packet read and may disconnect that client (sender-guarded).
+- [ ] `flushOutbound` sends everything queued per tick — watch `tx` counters and the bandwidth limiter under a burst.
+- [ ] Hot-enable / late start does not open sessions for players already online (they must rejoin).
+- [ ] `saveLiveChunk` fires on unload too; a chunk saved at unload may be `Missing` when re-fetched 100 ms later (self-heals on next load) — consider snapshotting in the hook.
+- [ ] Ingest/snapshot cost on the server thread (up to 16 chunks per section group; ~98k block + biome reads each) — measure ms per group.
+- [ ] `pending` map is coordinate-ordered: a steady re-note flow could starve high coordinates.
+- [ ] Hash recipe: drop the hash commit when `updateFromDataSource` reported no write.
+- [ ] `ServerLevelTickEvent` cadence: once per game tick (20 Hz) or once per dimension?
+- [ ] `createNewChunk` on `WorldGenerator` returns non-null? (fallback ctor path logged)
+- [ ] `Features` currently falls back to `Surface` (logged once) — it is the DEFAULT mode, so the Surface path is the default path.
+- [ ] Scratch `LevelChunk` destructor safety (touches `Dimension`/`Level`?).
+- [ ] Core request handlers read `ServerPlayers::settings` on worker threads unsynchronised (documented) — runtime config changes while players are connected.
+- [ ] Nether coordinate scale uses dimension id 1 = 8.0.
