@@ -6,9 +6,7 @@ Status: cross-compiled, **not yet run in game**. Verifies that a real Bedrock `L
 ## Setup
 
 1. Build + deploy: `scripts/build.sh client && scripts/deploy.sh client`.
-2. The block tables are read at runtime from `<modDir>/data/block_table.json` and `<modDir>/data/biome_table.json`
-   (modDir = `.../mods/DistantHorizons/`). `deploy.sh` does not copy them yet, so once do:
-   `mkdir -p <modDir>/data && cp data/*.json <modDir>/data/`.
+2. The block tables are read at runtime from `<modDir>/data/{block,biome}_table.json` (copied by `deploy.sh`).
 3. Launch the game, load a world (fresh chunks must load AFTER enabling, so enable first, then walk / fly or change
    render distance / re-enter the world).
 
@@ -36,3 +34,19 @@ Possible findings to report back:
 * `(build failed)` suffix: `createFromChunk` returned nothing (column-order corruption).
 * A crash right after F6: most likely a layout assumption (`Block::mSerializationId`, `LevelChunk::mDimension`,
   `Dimension::mHeightRange`); send the crash log.
+
+## Things to check on this run
+
+a. Chunks with `columns=0`: client `onChunkLoaded` fires before sub-chunks arrive; we would need `onSubChunkLoaded`.
+b. SP double-fire: log the thread id and `lc.mDimension.mId` to tell server-Level chunks from client-Level chunks.
+c. `getBlock` on chunks with missing sub-chunks must not crash.
+d. Y-offset sanity: bedrock at y=-64 and a known surface block in a flat world.
+e. Biome name format from the `biome not in biome_table.json` log lines (expect `minecraft:plains`).
+f. Per-chunk ms (target: a few ms).
+g. Border sky light 14 vs 15 (the no-neighbour quirk of `lightChunk`).
+
+## Known limitations
+
+* `TableClientLevel::shade` uses the Overworld constants (Nether 0.9 is a TODO).
+* `tintFaces` is parsed but not used yet (the whole block colour is tinted).
+* Any exception inside the hook is swallowed and logged as `chunk ingress: exception swallowed`.
