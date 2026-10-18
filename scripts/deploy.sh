@@ -1,8 +1,24 @@
 #!/usr/bin/env bash
 # Usage: scripts/deploy.sh client  -- copy bin/DistantHorizons/* into the game's mods dir (keeps config/, logs/).
+#        BDS_DIR=/path/to/bedrock_server scripts/deploy.sh server
+#                                  -- copy bin/DistantHorizonsServer/* + data/*.json into <BDS_DIR>/plugins/DistantHorizonsServer.
 set -euo pipefail
 source "$(dirname "$0")/common.sh"
-[ "${1:-client}" = client ] || { echo "only 'client' is supported" >&2; exit 2; }
+if [ "${1:-client}" = server ]; then
+  : "${BDS_DIR:?set BDS_DIR to the Bedrock Dedicated Server directory (with LeviLamina installed)}"
+  SRC="$ROOT/bin/DistantHorizonsServer"
+  DST="$BDS_DIR/plugins/DistantHorizonsServer"
+  [ -f "$SRC/DistantHorizonsServer.dll" ] || { echo "no build output in $SRC (run scripts/build.sh server)" >&2; exit 1; }
+  mkdir -p "$DST/data"
+  cp -f "$SRC/DistantHorizonsServer.dll" "$SRC/DistantHorizonsServer.pdb" "$SRC/manifest.json" "$DST/"
+  cp -f "$ROOT/data/"*.json "$DST/data/"   # block/biome tables read by the server driver
+  a=$(sha256sum "$SRC/DistantHorizonsServer.dll" | cut -d' ' -f1)
+  b=$(sha256sum "$DST/DistantHorizonsServer.dll" | cut -d' ' -f1)
+  [ "$a" = "$b" ] || { echo "sha256 mismatch" >&2; exit 1; }
+  echo "deployed DistantHorizonsServer.dll sha256=$a -> $DST"
+  exit 0
+fi
+[ "${1:-client}" = client ] || { echo "usage: $0 client|server" >&2; exit 2; }
 SRC="$ROOT/bin/DistantHorizons"
 [ -f "$SRC/DistantHorizons.dll" ] || { echo "no build output in $SRC" >&2; exit 1; }
 mkdir -p "$MODS_DIR"

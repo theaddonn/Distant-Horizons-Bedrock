@@ -21,12 +21,19 @@ class LevelChunk;
 
 namespace dh::bedrock {
 
-class BedrockChunk final : public dh::IChunk {
+class BedrockChunk : public dh::IChunk {
 public:
     /// False for dimensions whose height is not a positive multiple of 16 (callers skip those chunks).
     static bool heightSupported(LevelChunk& chunk);
 
     BedrockChunk(LevelChunk& chunk, BlockSerializer& serializer);
+    ~BedrockChunk() override = default;
+
+    /// Materialises everything that would otherwise read the LevelChunk lazily (blocks, biomes, bounds,
+    /// height maps, light-source list). After this the wrapper never touches the LevelChunk again, so it is
+    /// safe to hand to a worker thread while the game keeps mutating the chunk. Call on the thread that owns
+    /// the chunk. Used by the server glue (live chunks, BdsWorldGenerator results).
+    void snapshot();
 
     std::int32_t chunkX() const override { return chunkX_; }
     std::int32_t chunkZ() const override { return chunkZ_; }
@@ -67,6 +74,7 @@ private:
     std::int32_t     chunkX_, chunkZ_, minY_, maxY_;
 
     mutable std::vector<const dh::BlockInfo*> blocks_;
+    std::vector<const dh::BiomeInfo*>         biomes_; ///< filled by snapshot(); empty = query the chunk
     std::vector<std::uint8_t>                 skyLight_;
     std::vector<std::uint8_t>                 blockLight_;
     bool                                      blockLightCorrect_ = false;
