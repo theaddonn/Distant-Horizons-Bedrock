@@ -72,7 +72,7 @@ pairCount x { varint blockStringIndex, varint biomeStringIndex }   // pair i = i
 String table order = first use while walking ids 0.., block before biome. Unknown serials
 resolve through `resolveBlockOrAir` / `resolveBiomeOrDefault` with a warning; ids stay aligned
 even if two serials resolve to the same object. Counts are bounded by the remaining payload
-size and by 2^24 pairs.
+size; `stringCount <= 2^25`, `pairCount <= 2^24`, and `stringCount > 0` requires `pairCount > 0`.
 
 ## Meta
 
@@ -81,10 +81,13 @@ size and by 2^24 pairs.
 `createdMillis` / `lastModifiedMillis` from `createdUnixMs` / `lastModifiedUnixMs`.
 Decoded flags are always concrete (`true`/`false`, never `nullopt`).
 
-`dataChecksum` = FNV-1a 32 (offset 2166136261, prime 16777619) over, for the five blobs
-`data, adj N, S, W, E`, their uncompressed payloads (after the 2 framing bytes), each
-preceded by its payload length as 4 bytes LE. Full `decode` verifies it;
-`decodeAdjacentOnly` does not (it may run without `data`).
+`dataChecksum` = FNV-1a 32 (offset 2166136261, prime 16777619) over, for the eight blobs
+`data, adj N, S, W, E, genSteps, compressionModes, mapping` (in that order), their uncompressed
+payloads (after the 2 framing bytes), each preceded by its payload length as 4 bytes LE.
+Full `decode` verifies it; `decodeAdjacentOnly` does not (it may run without `data`).
+
+Decode trusts the per-blob header (`formatVersion`, `compression`) and ignores
+`meta.dataFormatVersion` / `meta.compressionMode`, which are informational copies.
 
 ## Wire envelope (`writeRecord` / `readRecord`, big-endian)
 

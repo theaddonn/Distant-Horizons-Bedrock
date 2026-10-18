@@ -85,7 +85,7 @@ std::uint32_t fnvUpdate(std::uint32_t h, View data) {
     return h;
 }
 
-std::uint32_t checksumOf(const View (&payloads)[5]) {
+std::uint32_t checksumOf(const View (&payloads)[8]) {
     std::uint32_t h = 2166136261u;
     for (const View& p : payloads) {
         const auto      n = static_cast<std::uint32_t>(p.size());
@@ -326,18 +326,30 @@ Result<Bytes> encodeMapping(const IdMap& m) {
 Status decodeMapping(View p, IBlockRegistry& reg, IdMap& out) {
     std::size_t off = 0;
     auto        n   = varint::readVarint(p, off);
-    if (!n || *n > p.size() - off) return corrupt("codec: bad mapping string count");
-    std::vector<std::string_view> table;
-    table.reserve(*n);
+    if (!n || *n > p.size() - off || *n > 2ull * kMaxMapping) return corrupt("codec: bad mapping string count");
+    // Pass 1 (no allocation): skip the strings, read pairCount, reject amplification before building the table.
+    const std::size_t tableStart = off;
     for (std::uint32_t i = 0; i < *n; ++i) {
         auto len = varint::readVarint(p, off);
         if (!len || *len > p.size() - off) return corrupt("codec: bad mapping string");
-        table.emplace_back(reinterpret_cast<const char*>(p.data() + off), *len);
         off += *len;
     }
     auto pc = varint::readVarint(p, off);
     if (!pc || *pc > kMaxMapping || static_cast<std::uint64_t>(*pc) * 2 > p.size() - off)
         return corrupt("codec: bad mapping pair count");
+    if (*n > 2ull * *pc) return corrupt("codec: mapping has more strings than its pairs can use");
+    const std::size_t pairsStart = off;
+
+    // Pass 2: now bounded by 2 * pairCount <= remaining bytes.
+    std::vector<std::string_view> table;
+    table.reserve(*n);
+    off = tableStart;
+    for (std::uint32_t i = 0; i < *n; ++i) {
+        auto len = varint::readVarint(p, off);
+        table.emplace_back(reinterpret_cast<const char*>(p.data() + off), *len);
+        off += *len;
+    }
+    off = pairsStart;
 
     std::vector<const BlockInfo*> blockCache(table.size(), nullptr);
     std::vector<const BiomeInfo*> biomeCache(table.size(), nullptr);
@@ -407,7 +419,7 @@ Result<FullDataSource> decodeImpl(const StoreRecord& rec, IBlockRegistry& reg, s
         if (auto st = unframe(rec.data, storage[3], data); !st) return st.error();
         for (std::size_t i = 0; i < 4; ++i)
             if (auto st = unframe(rec.adjacent[i], storage[4 + i], adj[i]); !st) return st.error();
-        const View payloads[5] = {data, adj[0], adj[1], adj[2], adj[3]};
+        const View payloads[8] = {data, adj[0], adj[1], adj[2], adj[3], gs, cm, mp};
         if (checksumOf(payloads) != rec.meta.dataChecksum) return corrupt("codec: data checksum mismatch");
         if (auto st = decodeRegion(data, kInterior, mapSize, out); !st) return st.error();
         for (std::size_t i = 0; i < 4; ++i)
@@ -449,7 +461,11 @@ Result<StoreRecord> encode(const FullDataSource& src, const CodecOptions& opt) {
         if (auto st = encodeRegion(src, stripRegion(static_cast<AdjDirection>(i)), mapSize, payloads[1 + i]); !st)
             return st.error();
 
-    const View views[5]   = {payloads[0], payloads[1], payloads[2], payloads[3], payloads[4]};
+    Bytes gsRaw = rleEncode(src.columnGenerationStep);
+    Bytes cmRaw = rleEncode(src.columnWorldCompressionMode);
+    auto  mpRaw = encodeMapping(src.mapping);
+    if (!mpRaw) return mpRaw.error();
+    const View views[8]   = {payloads[0], payloads[1], payloads[2], payloads[3], payloads[4], gsRaw, cmRaw, *mpRaw};
     rec.meta.dataChecksum = checksumOf(views);
 
     auto data = frame(payloads[0], opt);
@@ -460,10 +476,10 @@ Result<StoreRecord> encode(const FullDataSource& src, const CodecOptions& opt) {
         if (!a) return a.error();
         rec.adjacent[i] = std::move(*a);
     }
-    auto gs = frame(rleEncode(src.columnGenerationStep), opt);
+    auto gs = frame(gsRaw, opt);
     if (!gs) return gs.error();
     rec.genSteps = std::move(*gs);
-    auto cm      = frame(rleEncode(src.columnWorldCompressionMode), opt);
+    auto cm      = frame(cmRaw, opt);
     if (!cm) return cm.error();
     rec.compressionModes = std::move(*cm);
     auto mp              = encodeMapping(src.mapping);
@@ -494,11 +510,14 @@ Result<FullDataSource> decodeAdjacentOnly(const StoreRecord& rec, Direction dir,
 }
 
 Result<std::uint32_t> computeDataChecksum(const StoreRecord& rec) {
-    Bytes storage[5];
-    View  v[5];
+    Bytes storage[8];
+    View  v[8];
     if (auto st = unframe(rec.data, storage[0], v[0]); !st) return st.error();
     for (std::size_t i = 0; i < 4; ++i)
         if (auto st = unframe(rec.adjacent[i], storage[1 + i], v[1 + i]); !st) return st.error();
+    if (auto st = unframe(rec.genSteps, storage[5], v[5]); !st) return st.error();
+    if (auto st = unframe(rec.compressionModes, storage[6], v[6]); !st) return st.error();
+    if (auto st = unframe(rec.mapping, storage[7], v[7]); !st) return st.error();
     return checksumOf(v);
 }
 
