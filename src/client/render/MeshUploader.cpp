@@ -79,6 +79,7 @@ MeshUploader::~MeshUploader() {
         for (auto& [k, op] : latest_)
             if (op.onDone) cbs.push_back(std::move(op.onDone));
         latest_.clear();
+        newestId_.clear();
         order_.clear();
     }
     for (auto& cb : cbs) cb(false);
@@ -106,8 +107,14 @@ void MeshUploader::convertInto(MeshBuffers const& b, std::uint64_t pos, MeshSett
 }
 
 void MeshUploader::upload(std::uint64_t sectionPos, MeshBuffers&& buffers, UploadCallback onDone) {
-    MeshSettings  s;
-    std::uint32_t gen;
+    (void)uploadWithId(sectionPos, std::move(buffers), std::move(onDone));
+}
+
+MeshUploader::UploadId
+MeshUploader::uploadWithId(std::uint64_t sectionPos, MeshBuffers&& buffers, UploadCallback onDone) {
+    const UploadId id = ++lastId_;
+    MeshSettings   s;
+    std::uint32_t  gen;
     {
         std::lock_guard lock(mutex_);
         s   = settings_;
@@ -127,26 +134,51 @@ void MeshUploader::upload(std::uint64_t sectionPos, MeshBuffers&& buffers, Uploa
         auto [it, inserted] = latest_.try_emplace(sectionPos);
         if (!inserted) dropped = std::move(it->second.onDone);
         else order_.push_back(sectionPos);
-        it->second = std::move(op);
-        pending_   = latest_.size();
+        it->second            = std::move(op);
+        newestId_[sectionPos] = id;
+        pending_              = latest_.size();
     }
     if (dropped) dropped(false);
+    return id;
 }
 
 void MeshUploader::remove(std::uint64_t sectionPos) {
     UploadCallback dropped;
     {
         std::lock_guard lock(mutex_);
-        auto [it, inserted] = latest_.try_emplace(sectionPos);
-        if (!inserted) dropped = std::move(it->second.onDone);
-        else order_.push_back(sectionPos);
-        Op op;
-        op.isRemove = true;
-        op.pos      = sectionPos;
-        it->second  = std::move(op);
-        pending_    = latest_.size();
+        dropped = removeLocked(sectionPos);
     }
     if (dropped) dropped(false);
+}
+
+void MeshUploader::removeIf(std::uint64_t sectionPos, UploadId id) {
+    UploadCallback dropped;
+    {
+        std::lock_guard lock(mutex_);
+        auto            n = newestId_.find(sectionPos);
+        if (id != 0 && n != newestId_.end() && n->second == id) {
+            dropped = removeLocked(sectionPos);
+        } else {
+            ++staleRemoves_; // a newer upload exists (or the section is already gone): never free the newer mesh
+            return;
+        }
+    }
+    if (dropped) dropped(false);
+}
+
+/// Queues an unconditional remove (caller holds mutex_). Returns the superseded op's callback; fire it unlocked.
+MeshUploader::UploadCallback MeshUploader::removeLocked(std::uint64_t sectionPos) {
+    UploadCallback dropped;
+    newestId_.erase(sectionPos);
+    auto [it, inserted] = latest_.try_emplace(sectionPos);
+    if (!inserted) dropped = std::move(it->second.onDone);
+    else order_.push_back(sectionPos);
+    Op op;
+    op.isRemove = true;
+    op.pos      = sectionPos;
+    it->second  = std::move(op);
+    pending_    = latest_.size();
+    return dropped;
 }
 
 void MeshUploader::requestClear() { clearRequested_ = true; }
@@ -158,6 +190,7 @@ MeshUploader::Stats MeshUploader::stats() const {
     s.liveBytes    = liveBytes_;
     s.liveVertices = liveVertices_;
     s.uploadsTotal = uploadsTotal_;
+    s.staleRemoves = staleRemoves_;
     return s;
 }
 
@@ -344,6 +377,7 @@ std::size_t MeshUploader::pump(ScreenContext& ctx, std::size_t maxUploads) {
             std::lock_guard lock(mutex_);
             for (auto& [k, op] : latest_) op.onDone = nullptr; // sections will be re-uploaded by the core
             latest_.clear();
+            newestId_.clear();
             order_.clear();
             pending_ = 0;
         }
@@ -360,6 +394,7 @@ std::size_t MeshUploader::pump(ScreenContext& ctx, std::size_t maxUploads) {
             for (auto& [k, op] : latest_)
                 if (op.onDone) cbs.push_back(std::move(op.onDone));
             latest_.clear();
+            newestId_.clear();
             order_.clear();
             pending_ = 0;
         }
