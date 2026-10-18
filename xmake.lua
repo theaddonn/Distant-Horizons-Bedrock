@@ -62,3 +62,21 @@ target(mod_name)
     add_headerfiles("src/bedrock_common/**.h", mod_dir .. "/**.h")
     add_files("src/bedrock_common/**.cpp", mod_dir .. "/**.cpp")
     add_includedirs("src")
+
+-- Optional: ILodStore conformance suite against LevelDbLodStore (Windows console exe, wine/Windows).
+--   xmake f ... --store_test=y
+option("store_test")
+    set_default(false)
+    set_showmenu(true)
+option_end()
+
+if has_config("store_test") then
+    target("dh_store_conformance_win")
+        add_rules("dh.cxx")
+        add_deps("dh_core")
+        add_packages("levilamina")
+        set_kind("binary")
+        add_includedirs("src", "tests", "tests/third_party")
+        add_files("tests/main.cpp", "tests/win/store_conformance_win.cpp", "src/bedrock_common/LevelDbLodStore.cpp")
+        add_defines("DOCTEST_CONFIG_SUPER_FAST_ASSERTS")
+end
