@@ -103,8 +103,10 @@ std::size_t PayloadSender::pendingTransfers() const {
     return queue_.size();
 }
 
-void PayloadSender::tick() {
-    const int    rate   = effectiveRate(playerKBps_ ? playerKBps_() : 0, shared_.bandwidthShare());
+void PayloadSender::tick() { tick(shared_.bandwidthShare()); }
+
+void PayloadSender::tick(int shareKBps) {
+    const int    rate   = effectiveRate(playerKBps_ ? playerKBps_() : 0, shareKBps);
     std::int64_t budget = bytesPerTick(rate);
 
     while (budget > 0) {
@@ -235,6 +237,21 @@ void PayloadReceiver::receiveChunk(const net::FullDataSplitMessage& message) {
     }
     b.bytes.insert(b.bytes.end(), message.buffer.begin(), message.buffer.end());
     b.lastAccessNanos = now;
+
+    // total caps: evict least recently used (never the buffer just written)
+    for (;;) {
+        std::size_t total = 0;
+        for (const auto& [id, buf] : buffers_) total += buf.bytes.size();
+        if (buffers_.size() <= kMaxReceiverBuffers && total <= kMaxReceiverTotalBytes) break;
+        auto victim = buffers_.end();
+        for (auto i = buffers_.begin(); i != buffers_.end(); ++i) {
+            if (i->first == message.bufferId) continue;
+            if (victim == buffers_.end() || i->second.lastAccessNanos < victim->second.lastAccessNanos) victim = i;
+        }
+        if (victim == buffers_.end()) break;
+        buffers_.erase(victim);
+        dropped_.fetch_add(1);
+    }
 }
 
 bool PayloadReceiver::has(std::int32_t bufferId) {

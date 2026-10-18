@@ -89,7 +89,8 @@ private:
         int                              retryAttempts = kMaxRetryAttempts;
     };
 
-    bool sendNext(BlockPos2D target);
+    bool tickLocked(BlockPos2D target, std::vector<std::shared_ptr<Task>>& toCancel);
+    bool sendNext(BlockPos2D target, std::vector<std::shared_ptr<Task>>& toCancel);
     void handleResponse(const std::shared_ptr<Task>& task, std::uint64_t attempt, const NetResponse& response);
     void retryOrFail(const std::shared_ptr<Task>& task, const std::string& why);
     void onTaskCompleted(const std::shared_ptr<Task>& task, const RetrievalResult& result);

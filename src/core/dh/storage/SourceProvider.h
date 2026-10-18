@@ -81,6 +81,8 @@ public:
 
     ListenerId addUpdateListener(UpdateListener l) { return updater_->addListener(std::move(l)); }
     void       removeUpdateListener(ListenerId id) { updater_->removeListener(id); }
+    ListenerId addDeltaListener(DeltaListener l) { return updater_->addDeltaListener(std::move(l)); }
+    void       removeDeltaListener(ListenerId id) { updater_->removeDeltaListener(id); }
 
     std::optional<std::int64_t> timestamp(std::uint64_t pos);
 

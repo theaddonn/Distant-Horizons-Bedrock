@@ -656,6 +656,8 @@ struct StubServer final : ITransportListener {
     std::vector<net::FullDataSourceRequestMessage> requests;
     std::vector<std::uint32_t>                     cancels;
     std::int64_t                                   serverTime = 0;
+    net::SessionConfigValues                       lastClientConfig;
+    int                                            configsReceived = 0;
 
     explicit StubServer(LoopbackLink& l) : link(l) { link.server().setListener(this); }
     ~StubServer() override { link.server().setListener(nullptr); }
@@ -667,6 +669,8 @@ struct StubServer final : ITransportListener {
         REQUIRE(d.has_value());
         auto& m = **d;
         if (m.id() == net::MsgIds::SessionConfig) {
+            lastClientConfig = static_cast<net::SessionConfigMessage&>(m).config;
+            ++configsReceived;
             net::SessionConfigMessage r;
             r.config = cfg;
             link.server().send(s, net::encodeFrame(r));
@@ -989,5 +993,109 @@ TEST_CASE("round trip: real-time update decoded on the client") {
     REQUIRE(*fx.provider.updater().update(src));
     for (int i = 0; i < 20 && !got; ++i) fx.step();
     REQUIRE(got.has_value());
-    CHECK(got->contentEquals(*fx.provider.get(pos)));
+    // only the incoming delta is sent, not the merged section
+    CHECK(got->contentEquals(*dh::decode(*encode(*src), registry().reg)));
+}
+
+TEST_CASE("server: buffer ids are unique across levels") {
+    ServerFx             fx;
+    ServerRequestHandler second(fx.players, fx.provider, fx.work, LevelInfo{"lvl2", "minecraft:the_nether", "key2"});
+    fx.network.addLevel(second);
+    const auto pos = secPos(2, 3);
+    storeSource(fx.store, makeSource(pos, 1, 5000));
+    SessionId a = fx.connect();
+    fx.request(a, 1, pos);
+    net::FullDataSourceRequestMessage m;
+    m.futureId   = 2;
+    m.levelName  = "lvl2";
+    m.sectionPos = static_cast<std::int64_t>(pos);
+    fx.link.client().send(a, net::encodeFrame(m));
+    fx.step(5);
+    auto resp = fx.raw.all<net::FullDataSourceResponseMessage>(net::MsgIds::FullDataSourceResponse);
+    REQUIRE(resp.size() == 2);
+    CHECK(resp[0]->payload->dtoBufferId != resp[1]->payload->dtoBufferId);
+    fx.network.removeLevel(second);
+}
+
+TEST_CASE("server: a duplicate wire futureId is rejected and does not leak a ticket") {
+    ServerFx  fx;
+    SessionId a = fx.connect();
+    fx.request(a, 1, secPos(0, 0));
+    fx.request(a, 1, secPos(5, 5));
+    fx.step(2);
+    CHECK(fx.handler.activeTickets() == 1);
+    REQUIRE(fx.exceptions().size() == 1);
+    CHECK(fx.exceptions()[0]->kind == net::RemoteException::RequestRejected);
+}
+
+TEST_CASE("server: broadcastConfig pushes the new constrained config") {
+    ServerFx  fx;
+    SessionId a = fx.connect();
+    fx.step();
+    const auto before = fx.raw.all<net::SessionConfigMessage>(net::MsgIds::SessionConfig, a).size();
+    fx.players.settings.values.generationRequestRateLimit = 3;
+    fx.network.broadcastConfig();
+    fx.step();
+    auto cfgs = fx.raw.all<net::SessionConfigMessage>(net::MsgIds::SessionConfig, a);
+    REQUIRE(cfgs.size() == before + 1);
+    CHECK(cfgs.back()->config.generationRequestRateLimit == 3);
+}
+
+TEST_CASE("client: setWanted re-sends the config; adaptive speed constrains the configured limit") {
+    ClientFx fx;
+    CHECK(fx.stub.configsReceived == 1);
+    net::SessionConfigValues w;
+    w.playerBandwidthLimit = 30;
+    fx.net.setWanted(w);
+    fx.link.pumpAll();
+    CHECK(fx.stub.configsReceived == 2);
+    CHECK(fx.stub.lastClientConfig.playerBandwidthLimit == 30);
+    CHECK(fx.net.isReady()); // answered again
+
+    fx.net.setAdaptiveTransferSpeed(true); // desired 50 KB/s, configured 30 -> 30
+    fx.link.pumpAll();
+    CHECK(fx.stub.lastClientConfig.playerBandwidthLimit == 30);
+    w.playerBandwidthLimit = 0;
+    fx.net.setWanted(w); // unlimited configured -> the desired rate
+    fx.link.pumpAll();
+    CHECK(fx.stub.lastClientConfig.playerBandwidthLimit == 50);
+}
+
+TEST_CASE("receiver: total buffer count is capped") {
+    ManualClock     clock;
+    PayloadReceiver rx(clock);
+    for (int i = 0; i < 300; ++i) {
+        net::FullDataSplitMessage m;
+        m.bufferId = i;
+        m.isFirst  = true;
+        m.buffer.assign(4, std::byte{1});
+        rx.receiveChunk(m);
+        clock.advanceMillis(1);
+    }
+    CHECK(rx.bufferCount() <= kMaxReceiverBuffers);
+    CHECK(rx.has(299));
+    CHECK_FALSE(rx.has(0));
+}
+
+TEST_CASE("sender: bandwidth share is snapshotted per pass") {
+    LoopbackLink link(32 * 1024);
+    Collector    client;
+    link.client().setListener(&client);
+    BandwidthLimiter shared([] { return 400; });
+    SessionId        s1 = link.connect(), s2 = link.connect();
+    PayloadSender    a(link.server(), s1, [] { return 0; }, shared);
+    PayloadSender    b(link.server(), s2, [] { return 0; }, shared);
+    link.pump();
+    a.sendInChunks(rawPayload(100, 1), [] {}); // finishes in the first tick
+    b.sendInChunks(rawPayload(1'000'000, 2), [] {});
+    const int share = shared.bandwidthShare(); // 200 with both active
+    a.tick(share);
+    b.tick(share); // would be 400 if re-read after a finished
+    link.pump();
+    std::size_t bytes = 0;
+    for (auto& i : client.items)
+        if (i.msg->id() == net::MsgIds::FullDataSplit
+            && static_cast<net::FullDataSplitMessage*>(i.msg.get())->bufferId == 2)
+            bytes += static_cast<net::FullDataSplitMessage*>(i.msg.get())->buffer.size();
+    CHECK(bytes == static_cast<std::size_t>(PayloadSender::bytesPerTick(200)));
 }

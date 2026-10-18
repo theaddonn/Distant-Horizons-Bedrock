@@ -50,6 +50,9 @@ inline constexpr std::int64_t kReceiverExpiryNanos = 30LL * 1'000'000'000LL;
 
 /// A buffer larger than this is dropped (a decoder would reject it anyway).
 inline constexpr std::size_t kMaxPayloadBytes = kCodecMaxBlobBytes;
+/// Caps over all buffers of one receiver; the least recently used buffers are evicted beyond them.
+inline constexpr std::size_t kMaxReceiverBuffers    = 256;
+inline constexpr std::size_t kMaxReceiverTotalBytes = 256u * 1024u * 1024u;
 
 /// The part of Java's FullDataPayload that is not on the wire in the message itself.
 struct FullDataPayload {
@@ -125,6 +128,8 @@ public:
 
     /// One 20 Hz tick: sends up to `bytesPerTick(rate)` payload bytes.
     void tick();
+    /// Same with a caller-supplied bandwidth share (snapshot once per pass over all senders).
+    void tick(int shareKBps);
 
     /// Drops every queued transfer (running onFailure) and leaves the shared limit.
     void close();
