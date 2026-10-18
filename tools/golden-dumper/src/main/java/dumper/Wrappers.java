@@ -25,7 +25,7 @@ public final class Wrappers
 			this.lightEmission = lightEmission; this.materialId = (byte) materialId; this.isIce = isIce;
 		}
 
-		@Override public String getSerialString() { return "B" + this.serial; }
+		@Override public String getSerialString() { return (this.serial >= 17 && this.serial <= 19) ? "minecraft:snow_STATE_{layers:" + (this.serial - 16) + "}" : "B" + this.serial; }
 		@Override public int getOpacity() { return this.opacity; }
 		@Override public int getLightEmission() { return this.lightEmission; }
 		@Override public byte getMaterialId() { return this.materialId; }
@@ -67,7 +67,33 @@ public final class Wrappers
 
 	public static final String[] BLOCK_NAMES = {
 			"air", "stone", "dirt", "grass_block", "water", "ice", "glass", "leaves",
-			"torch", "snow_layer", "poppy", "glowstone", "lava", "stairs", "deepslate", "cave_air", "sand" };
+			"torch", "snow_layer", "poppy", "glowstone", "lava", "stairs", "deepslate", "cave_air", "sand",
+			"snow_layers_1", "snow_layers_2", "snow_layers_3", "snow_block", "lily_pad", "kelp", "seagrass", "barrier" };
+	/** resource names used by the CSV lists / deserialisation (serial -> name) */
+	public static final String[] RESOURCE_NAMES = {
+			"minecraft:air", "minecraft:stone", "minecraft:dirt", "minecraft:grass_block", "minecraft:water", "minecraft:ice", "minecraft:glass", "minecraft:oak_leaves",
+			"minecraft:torch", "minecraft:snow_layer", "minecraft:poppy", "minecraft:glowstone", "minecraft:lava", "minecraft:oak_stairs", "minecraft:deepslate", "minecraft:cave_air", "minecraft:sand",
+			"minecraft:snow_STATE_{layers:1}", "minecraft:snow_STATE_{layers:2}", "minecraft:snow_STATE_{layers:3}", "minecraft:snow_block", "minecraft:lily_pad", "minecraft:kelp", "minecraft:seagrass", "minecraft:barrier" };
+	/** the four renderer CSV lists (stand-ins for the Config strings, which are read through the wrapper factory) */
+	public static String ignoredRenderBlockCsv = "", ignoredRenderCaveBlockCsv = "", waterSurfaceBlockReplacementCsv = "", waterSubSurfaceBlockReplacementCsv = "";
+	
+	/** block by resource name; unknown names give air, like a failed deserialisation */
+	public static DumpBlockState byResourceName(String name)
+	{
+		String n = name.trim();
+		for (int i = 0; i < RESOURCE_NAMES.length; i++) { if (RESOURCE_NAMES[i].equals(n)) { return BLOCKS[i]; } }
+		return BLOCKS[0];
+	}
+	
+	/** CSV -> block set (as WrapperFactory does: each entry deserialised, unknown -> air) */
+	public static it.unimi.dsi.fastutil.objects.ObjectOpenHashSet<com.seibel.distanthorizons.core.wrapperInterfaces.block.IBlockStateWrapper> csvSet(String csv, boolean includeAir)
+	{
+		it.unimi.dsi.fastutil.objects.ObjectOpenHashSet<com.seibel.distanthorizons.core.wrapperInterfaces.block.IBlockStateWrapper> set = new it.unimi.dsi.fastutil.objects.ObjectOpenHashSet<>();
+		if (includeAir) { set.add(BLOCKS[0]); }
+		for (String e : csv.split(",")) { if (!e.trim().isEmpty()) { set.add(byResourceName(e)); } }
+		if (!includeAir) { set.remove(BLOCKS[0]); }
+		return set;
+	}
 	// serial, isAir, opacity, isSolid, isLiquid, lightEmission, materialId, isIce
 	private static final int[][] BLOCK_DEFS = {
 			{ 0, 1, 0, 0, 0, 0, 14, 0 },
@@ -87,8 +113,18 @@ public final class Wrappers
 			{ 14, 0, 16, 1, 0, 0, 7, 0 },
 			{ 15, 1, 0, 0, 0, 0, 14, 0 },
 			{ 16, 0, 16, 1, 0, 0, 9, 0 },
+			{ 17, 0, 1, 0, 0, 0, 8, 0 },
+			{ 18, 0, 2, 0, 0, 0, 8, 0 },
+			{ 19, 0, 3, 0, 0, 0, 8, 0 },
+			{ 20, 0, 16, 1, 0, 0, 8, 0 },
+			{ 21, 0, 0, 0, 0, 0, 13, 0 },
+			{ 22, 0, 1, 0, 0, 0, 13, 0 },
+			{ 23, 0, 1, 0, 0, 0, 13, 0 },
+			{ 24, 0, 0, 1, 0, 0, 0, 0 },
 	};
 	public static final int BLOCK_COUNT = BLOCK_DEFS.length;
+	/** blocks 0..16 existed in wave 1; older suites keep drawing only from these so their golden files stay byte-identical */
+	public static final int CLASSIC_BLOCK_COUNT = 17;
 	public static final int BIOME_COUNT = 4;
 
 	private static final DumpBlockState[] BLOCKS = new DumpBlockState[BLOCK_DEFS.length];
@@ -107,7 +143,7 @@ public final class Wrappers
 		List<Object> l = new ArrayList<>();
 		for (DumpBlockState b : BLOCKS)
 		{
-			l.add(new Obj().p("serial", b.serial).p("name", BLOCK_NAMES[b.serial]).p("isAir", b.isAir).p("opacity", b.opacity)
+			l.add(new Obj().p("serial", b.serial).p("name", BLOCK_NAMES[b.serial]).p("resourceName", RESOURCE_NAMES[b.serial]).p("isAir", b.isAir).p("opacity", b.opacity)
 					.p("isSolid", b.isSolid).p("isLiquid", b.isLiquid).p("lightEmission", b.lightEmission)
 					.p("materialId", (int) b.materialId).p("isIce", b.isIce));
 		}

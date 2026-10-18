@@ -1,0 +1,90 @@
+diff --git a/src/main/java/com/ddf/materialbintool/materials/CompiledMaterialDefinition.java b/src/main/java/com/ddf/materialbintool/materials/CompiledMaterialDefinition.java
+index 89d8249..6ef7581 100644
+--- a/src/main/java/com/ddf/materialbintool/materials/CompiledMaterialDefinition.java
++++ b/src/main/java/com/ddf/materialbintool/materials/CompiledMaterialDefinition.java
+@@ -17,6 +17,7 @@ public class CompiledMaterialDefinition {
+     public boolean hasParentName;
+     public String parentName;
+ 
++    public int v26Extra; // u16 between propertyFields and passes (v26)
+     public Map<String, SamplerDefinition> samplerDefinitionMap;
+     public Map<String, PropertyField> propertyFieldMap;
+     public transient Map<String, Pass> passMap;
+@@ -90,6 +91,7 @@ public class CompiledMaterialDefinition {
+             propertyFieldMap.put(name, propertyField);
+         }
+ 
++        if (version >= 26) v26Extra = buf.readShortLE() & 0xffff;
+         short passCount = buf.readShortLE();
+         passMap = new LinkedHashMap<>(passCount);
+         for (int i = 0; i < passCount; ++i) {
+@@ -150,6 +152,7 @@ public class CompiledMaterialDefinition {
+             entry.getValue().write(buf, entry.getKey());
+         }
+ 
++        if (version >= 26) buf.writeShortLE(v26Extra);
+         buf.writeShortLE(passMap.size());
+         for (Map.Entry<String, Pass> entry : passMap.entrySet()) {
+             buf.writeStringLE(entry.getKey());
+@@ -186,7 +189,8 @@ public class CompiledMaterialDefinition {
+         public boolean hasDefaultBlendMode;
+         public BlendMode defaultBlendMode;
+ 
+-        public Map<String, String> flagDefaultValues;
++        public Map<String, List<String>> flagDefaultValues; // v26: flag -> allowed values
++        public int v26PassExtra; // u32 before variant list (v26)
+         public List<Variant> variantList;
+ 
+         public Pass() {
+@@ -205,9 +209,12 @@ public class CompiledMaterialDefinition {
+             flagDefaultValues = new LinkedHashMap<>(flagDefaultValueCount);
+             for (int i = 0; i < flagDefaultValueCount; ++i) {
+                 String key = buf.readStringLE();
+-                String value = buf.readStringLE();
+-                flagDefaultValues.put(key, value);
++                int n = buf.readShortLE() & 0xffff;
++                List<String> vals = new ArrayList<>(n);
++                for (int k = 0; k < n; ++k) vals.add(buf.readStringLE());
++                flagDefaultValues.put(key, vals);
+             }
++            v26PassExtra = buf.readIntLE();
+ 
+             short variantCount = buf.readShortLE();
+             variantList = new ArrayList<>(variantCount);
+@@ -228,10 +235,12 @@ public class CompiledMaterialDefinition {
+             }
+ 
+             buf.writeShortLE(flagDefaultValues.size());
+-            for (Map.Entry<String, String> entry : flagDefaultValues.entrySet()) {
++            for (Map.Entry<String, List<String>> entry : flagDefaultValues.entrySet()) {
+                 buf.writeStringLE(entry.getKey());
+-                buf.writeStringLE(entry.getValue());
++                buf.writeShortLE(entry.getValue().size());
++                for (String s : entry.getValue()) buf.writeStringLE(s);
+             }
++            buf.writeIntLE(v26PassExtra);
+ 
+             buf.writeShortLE(variantList.size());
+             for (Variant variant : variantList) {
+@@ -244,7 +253,7 @@ public class CompiledMaterialDefinition {
+             if (this == o) return true;
+             if (o == null || getClass() != o.getClass()) return false;
+             Pass pass = (Pass) o;
+-            return hasDefaultBlendMode == pass.hasDefaultBlendMode
++            return hasDefaultBlendMode == pass.hasDefaultBlendMode && v26PassExtra == pass.v26PassExtra
+                     && Objects.equals(bitSet, pass.bitSet)
+                     && Objects.equals(fallback, pass.fallback)
+                     && defaultBlendMode == pass.defaultBlendMode
+diff --git a/src/main/java/com/ddf/materialbintool/materials/definition/ShaderInput.java b/src/main/java/com/ddf/materialbintool/materials/definition/ShaderInput.java
+index 680faab..3ad7ef7 100644
+--- a/src/main/java/com/ddf/materialbintool/materials/definition/ShaderInput.java
++++ b/src/main/java/com/ddf/materialbintool/materials/definition/ShaderInput.java
+@@ -80,7 +80,7 @@ public class ShaderInput {
+         TexCoord6(7, 6),
+         TexCoord7(7, 7),
+         TexCoord8(7, 8),
+-        //Unknown_8_0(8, 0),
++        Unknown_8_0(8, 0),
+         FrontFacing(9, 0);
+ 
+         public byte index;
