@@ -49,6 +49,7 @@ constexpr auto kDrainBudget       = 8ms; ///< wall time per drain on the owning 
 constexpr int  kMaxNotLoadedTries = 20;
 constexpr int  kRemoteDebounceMs  = 750; ///< sub-chunks arrive one by one
 constexpr int  kBlockDebounceMs   = 500;
+constexpr int  kRescanRadius      = 32; ///< chunks probed around the player for already-loaded chunks
 
 bool gHooksInstalled = false;
 
@@ -130,7 +131,7 @@ void ClientWorldDriver::Impl::installHooks() {
         DH_LOG_W("client ingest: hooking DBChunkStorage::saveLiveChunk failed (block edits rely on BlockChangedEvent)");
 
     auto& bus     = ll::event::EventBus::getInstance();
-    blockListener = bus.emplaceListener<ll::event::BlockChangedEvent>([this](ll::event::BlockChangedEvent& e) {
+    blockListener = bus.emplaceListener<ll::event::BlockChangedEvent>([](ll::event::BlockChangedEvent& e) {
         try {
             BusyGuard g;
             auto*     t = gIngestTarget.load();
@@ -192,9 +193,9 @@ void ClientWorldDriver::Impl::scheduleIngest(Session& s) {
     if (s.loadedDim.load() == kNoDimension) return;
     {
         std::lock_guard lock(s.pendingMutex);
-        if (s.pending.empty()) return;
-        const auto now = SteadyClock::now();
-        bool       any = false;
+        const auto      now = SteadyClock::now();
+        bool            any = s.rescan.load();
+        if (s.pending.empty() && !any) return;
         for (const auto& [k, p] : s.pending)
             if (p.due <= now) {
                 any = true;
@@ -202,28 +203,42 @@ void ClientWorldDriver::Impl::scheduleIngest(Session& s) {
             }
         if (!any) return;
     }
-    if (s.drainInFlight.exchange(true)) return;
+    if (gDrainInFlight.exchange(true)) return;
+
+    // The flag is cleared on EVERY exit path (also when the queued task finds no session / no target).
+    struct DrainFlag {
+        ~DrainFlag() {
+            gDrainQueuedMs.store(0);
+            gDrainInFlight.store(false);
+        }
+    };
 
     if (s.singleplayer) {
+        gDrainQueuedMs.store(
+            std::chrono::duration_cast<std::chrono::milliseconds>(SteadyClock::now().time_since_epoch()).count()
+        );
         ll::thread::ServerThreadExecutor::getDefault().execute([] {
+            DrainFlag flag;
             BusyGuard g;
-            auto*     t = gIngestTarget.load();
+            gDrainQueuedMs.store(0); // started
+            auto* t = gIngestTarget.load();
             if (!t || !t->session) return;
+            ++gDrains;
             try {
                 t->drain(*t->session);
             } catch (...) {
                 DH_LOG_E("client ingest: exception swallowed in drain");
             }
-            t->session->drainInFlight.store(false);
         });
     } else {
+        DrainFlag flag;
         BusyGuard g;
+        ++gDrains;
         try {
             drain(s);
         } catch (...) {
             DH_LOG_E("client ingest: exception swallowed in drain");
         }
-        s.drainInFlight.store(false);
     }
 }
 
@@ -238,10 +253,32 @@ void ClientWorldDriver::Impl::drain(Session& s) {
     if (!level || level->isClosed()) return;
     Dimension& dim = *handle->dimension();
 
+    // --- chunks that were already loaded before the level / ingestion existed ----------------------
+    // There is no safe public enumeration of a ChunkSource (MainChunkSource::mChunkMap is private game state), so a
+    // square around the player is probed with getAvailableChunk on this (owner) thread.
+    if (s.rescan.exchange(false)) {
+        const int  pcx0 = s.playerX.load() >> 4, pcz0 = s.playerZ.load() >> 4;
+        const auto due   = SteadyClock::now();
+        int        found = 0;
+        for (int dz = -kRescanRadius; dz <= kRescanRadius; ++dz)
+            for (int dx = -kRescanRadius; dx <= kRescanRadius; ++dx) {
+                if (!dim.getChunkSource().getAvailableChunk(::ChunkPos(pcx0 + dx, pcz0 + dz))) continue;
+                PendingKey k;
+                k.dim = loaded;
+                k.x   = pcx0 + dx;
+                k.z   = pcz0 + dz;
+                std::lock_guard lock(s.pendingMutex);
+                if (s.pending.try_emplace(k, PendingChunk{0, due}).second) ++found;
+            }
+        s.noted += found;
+        DH_LOG_I("client ingest: rescan found %d already-loaded chunks around the player", found);
+    }
+
     // --- take due chunks, nearest to the player first -------------------------------------------
     const std::int64_t room = kMaxInFlight - level->inFlightChunkUpdates();
     if (room <= 0) return;
     const int pcx = s.playerX.load() >> 4, pcz = s.playerZ.load() >> 4;
+    const int desired = s.desiredDim.load();
 
     struct Item {
         std::int64_t dist;
@@ -253,9 +290,15 @@ void ClientWorldDriver::Impl::drain(Session& s) {
         std::lock_guard lock(s.pendingMutex);
         const auto      now = SteadyClock::now();
         for (auto it = s.pending.begin(); it != s.pending.end();) {
-            if (it->first.dim != loaded) { // other dimension: its level is not loaded
-                ++s.skipped;
-                it = s.pending.erase(it);
+            if (it->first.dim != loaded) {
+                // Not the loaded dimension. If it is the dimension the player is entering, keep it for when that level
+                // loads; anything else belongs to a level that will never load.
+                if (it->first.dim != desired) {
+                    ++s.skipped;
+                    it = s.pending.erase(it);
+                } else {
+                    ++it;
+                }
                 continue;
             }
             if (it->second.due <= now) {
@@ -332,6 +375,8 @@ void ClientWorldDriver::Impl::drain(Session& s) {
         for (int dz = -1; dz <= 1; ++dz)
             for (int dx = -1; dx <= 1; ++dx) {
                 if (dx == 0 && dz == 0) continue;
+                // past the budget: only use neighbours that are already snapshotted (border light is a minor loss)
+                if (SteadyClock::now() > deadline && !cache.contains({item.key.x + dx, item.key.z + dz})) continue;
                 Snap& n = snap(item.key.x + dx, item.key.z + dz);
                 if (n.status == Status::Ok) neighbours.push_back(std::make_shared<BedrockChunk>(*n.chunk));
             }
