@@ -28,7 +28,7 @@ std::vector<std::uint64_t> trimmed(std::span<const std::uint64_t> col) {
 } // namespace
 
 TEST_CASE("golden f2r: transformFullDataToRenderSource") {
-    DH_GOLDEN_SUITE_OR_SKIP(s, "f2r.pending");
+    DH_GOLDEN_SUITE_OR_SKIP(s, "f2r");
     gr::RenderRegistry* reg = gr::RenderRegistry::get();
     REQUIRE(reg != nullptr);
     gv::Stats st;

@@ -758,7 +758,7 @@ TEST_CASE("long column is reduced to maxVerticalSlices") {
 }
 
 
-TEST_CASE("air is always ignored (Java pre-seeds the ignore sets with air)") {
+TEST_CASE("null ignore sets behave as {air}") {
     Fixture f;
     f.opt.blocksToAvoid = BlocksToAvoid::None;
     f.setColumn(
@@ -791,4 +791,43 @@ TEST_CASE("resolveCsv expands all states and adds air for unresolvable ignore en
     CHECK(ign.size() == 1);
     CHECK(ign.count(reg.air()) == 1);
     CHECK(reg.resolveAllStates("minecraft:nope").empty());
+}
+
+TEST_CASE("ignore sets are pure membership: seeded air ignored, distinct cave_air is not") {
+    Fixture f;
+    f.opt.blocksToAvoid = BlocksToAvoid::None;
+    const BlockSet ign  = resolveCsv("", f.reg, true);
+    const BlockSet cave = resolveCsv("", f.reg, true);
+    CHECK(ign.count(f.reg.air()) == 1);
+    CHECK(resolveCsv("minecraft:stone", f.reg, false).count(f.reg.air()) == 0);
+    f.opt.ignoredBlocks     = &ign;
+    f.opt.ignoredCaveBlocks = &cave;
+    BlockInfo ca;
+    ca.serial                      = "minecraft:cave_air";
+    ca.isAir                       = true;
+    ca.isSolid                     = false;
+    ca.opacity                     = 0;
+    ca.material                    = BlockMaterial::Air;
+    const BlockInfo* caveAir       = f.reg.addBlock(ca);
+    f.level.colorOverride[caveAir] = 0xFF123456u;
+    f.setColumn(
+        0,
+        0,
+        {
+            {f.reg.air(), 5, 10},
+            {f.stone,     0, 5 }
+    }
+    );
+    f.setColumn(
+        1,
+        0,
+        {
+            {caveAir, 5, 10},
+            {f.stone, 0, 5 }
+    }
+    );
+    auto o = f.run();
+    CHECK(count(o, 0, 0) == 1);
+    REQUIRE(count(o, 1, 0) == 2);
+    CHECK(dp(o, 0, 1, 0).argb == 0xFF123456u);
 }
