@@ -236,3 +236,35 @@ input list/flag; repack and swap in-game. This keeps the reflection (inputs/unif
 5. Which `u_model` slots and properties does the engine really populate for a chunk draw? Is `Instancing=On` selectable from our draw path?
 6. Will an SM5 DXBC from wine's compiler (with `RDEF`/`STAT` and `SHDR`) be accepted by the runtime? (Only relevant under D3D11.)
 7. bgfx attribute id list `[5,1,16,17,...]` - confirm mapping by comparing with vertex-layout declarations in-game before inventing new inputs.
+
+## 9. Stage-B tooling: `build_material.py` (B2 tint, B3 DH_Terrain)
+
+The unpacked JSON (`mbt.jar -u`) stores each blob as structured bgfx fields (`bgfxShaderData`: `uniforms[]`, `hash`, `attrs`,
+`size` = cbuf bytes, `magic`) plus `codeFile` (the bare DXBC/DXIL code); MaterialBinTool serialises the v5 container
+(`VSH/FSH 5`, hash, uniforms, code, 0, attrs, cbuf) on repack - byte-identical to `matbin_inspect.bgfx_build`, which `--verify` uses.
+`tools/shaders/build_material.py` therefore edits the JSON fields and code files of a pass, then runs `mbt.jar -r`.
+
+```
+python3 -I tools/shaders/build_material.py (--tint-only | --new-material --rename NAME [--keep-passes A,B] [--add-prop N=x,y,z,w])
+    --unpacked ~/.cache/dh-tools/unpacked/<Material> --pass <Pass> [--flags K=V,..] --out DIR [--verify]
+    --code Direct3D_SM65:Fragment=ps.dxil ...   [--drop-platforms]
+    [--uniforms Vertex|Fragment=name:type:num:byteOffset:vec4Count,...] [--cbuf Stage=BYTES] [--attrs Stage=a,b,..]
+```
+`--tint-only` keeps name, all passes, uniform tables and inputs (only code, optionally tables). `--new-material` needs `--rename`, keeps
+only the edited pass (plus `--keep-passes`), renames json + output file, adds property fields. `tools/shaders/build_stage_b.sh` runs the
+exact B2 and B3 builds (dxc + fxc_lite + build_material.py) into `artifacts/shaders/{B2,B3}/`; `tools/shaders/roundtrip_artifacts.sh FILE...`
+checks `-u` then `-r` is byte-identical (both outputs pass).
+
+### What `dxc -dumpbin` showed (vanilla SM65, Opaque v0)
+RenderChunk VS inputs: `COLOR0 xyzw, POSITION0 xyz, TEXCOORD0 xy, TEXCOORD1 xy`. RenderChunk VS **outputs == FS inputs**:
+`SV_Position(noperspective)`, `COLOR0`(r1), `TEXCOORD2.xy`+`TEXCOORD1.zw` (packed in r2), `COLOR2`(r3), `TEXCOORD0.xy` (centroid, r4), `TEXCOORD3.xyz` (r5).
+FS bindings: `cb1` FragmentUniforms{FogColor}, `s0/t0` LightMapTexture, `s1/t1` MatTexture (cbuffer is cb0 in the VS, cb1 in the FS: one shared D3D12 root signature,
+no RTS0 part in the blobs). Our B2 FS declares the same 7 inputs in the same order and `dxc` reproduces the identical packed signature
+(checked with `-dumpbin`), so the vanilla VS blob links to it. MeshFallback Opaque: VS in `COLOR0, NORMAL0, POSITION0, TEXCOORD0`; VS out
+`SV_Position, COLOR3(clipPosition), COLOR0(color), COLOR2(fog), COLOR1(light), TEXCOORD0 (centroid), TEXCOORD3(worldPos)`; FS `cb1`, `s0/t0` MatTexture. Our DH_Terrain VS/FS reproduce exactly that.
+
+### Uniform tables used
+- B2: unchanged vanilla tables (FS: `FogColor` 0x12 @0 x1, `s_LightMapTexture` 0x30 slot 0, `s_MatTexture` 0x30 slot 1; cbuf 16) - our FS just doesn't read `FogColor`/lightmap.
+- B3 VS (copy of MeshFallback "group A", cbuf 464): `u_proj` mat4 @0, `u_view` mat4 @64, `FogControl` vec4 @128, `u_model` mat4 num=4 @144 (16 slots), `FogColor` @400, `SubPixelOffset` @416, `UVAnimation` @432, `ZShiftValue` @448.
+  B3 FS (ours): `DhParams` type 0x12 (fragment vec4) @0 x1, cbuf 16; no sampler. New propertyField `DhParams` vec4 default (1,1,1,1).
+  All 24 flag variants get the same blobs/tables (vanilla group-B tables with `OverlayColor`/`TileLightColor` are replaced). SM40/SM50 are dropped from B3 (D3D12 only).
