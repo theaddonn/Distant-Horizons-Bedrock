@@ -122,10 +122,10 @@ TEST_CASE("rdp: comparePriority sign behaviour") {
     const auto highMat = rdp::create(255, 0, 0, 0, 10, 0, 0, 0, BlockMaterial::Water); // bit 63 set
     CHECK(rdp::comparePriority(lowMat, lowMat) == 0);
 
-    // same word except the lowest 3 bits are ignored by the >>7
-    CHECK(rdp::comparePriority(0x1000, 0x1007) == 0);
-    CHECK(rdp::comparePriority(0x1008, 0x1000) == 1);
-    CHECK(rdp::comparePriority(0x1000, 0x1008) == -1);
+    // same word except the lowest 7 bits are ignored by the >>7 (COMPARE_SHIFT = 0b111)
+    CHECK(rdp::comparePriority(0x1000, 0x107F) == 0);
+    CHECK(rdp::comparePriority(0x1080, 0x1000) == 1);
+    CHECK(rdp::comparePriority(0x1000, 0x1080) == -1);
 
     // a negative (material >= 8) word compares lower than a positive one in the signed view:
     // (hi>>7) - (lo>>7) is a huge negative long whose low 32 bits are what Java returns.
@@ -135,9 +135,9 @@ TEST_CASE("rdp: comparePriority sign behaviour") {
     CHECK(rdp::comparePriority(lowMat, highMat) == static_cast<int>(jr - jl));
     CHECK(static_cast<std::int64_t>(highMat) < 0);
 
-    // int truncation: difference of 2^32 collapses to 0 (a Java quirk)
-    CHECK(rdp::comparePriority(std::uint64_t{1} << 35, 0) == 0);
-    CHECK(rdp::comparePriority(std::uint64_t{1} << 34, 0) == INT32_MIN);
+    // int truncation: a shifted difference of 2^32 collapses to 0 (a Java quirk)
+    CHECK(rdp::comparePriority(std::uint64_t{1} << 39, 0) == 0);
+    CHECK(rdp::comparePriority(std::uint64_t{1} << 38, 0) == INT32_MIN);
 }
 
 TEST_CASE("VerticalQuality tables match Java") {
