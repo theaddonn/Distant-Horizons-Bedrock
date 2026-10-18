@@ -114,7 +114,7 @@ std::size_t ClientNetworkState::pendingRequestCount() const {
 
 std::string ClientNetworkState::debugStatus() const {
     std::lock_guard lock(mutex_);
-    if (!connected_) return "NetworkSession closed";
+    if (!connected_ || !closeReason_.empty()) return "NetworkSession closed: " + closeReason_;
     if (support_ == ServerSupport::None && incompatible_.load()) return "Incompatible protocol version";
     switch (support_) {
     case ServerSupport::None:
@@ -139,12 +139,31 @@ void ClientNetworkState::sendConfigMessage(bool blocking) {
         std::lock_guard lock(mutex_);
         m.config = wanted_;
     }
-    if (adaptive_.load()) m.config.playerBandwidthLimit = congestion_.getDesiredRate();
+    if (adaptive_.load()) {
+        // sessionConfig.constrainValue(playerBandwidthLimit, desiredRate): configured (if > 0) and desired, whichever
+        // is lower
+        const int desired             = congestion_.getDesiredRate();
+        const int cfg                 = m.config.playerBandwidthLimit;
+        m.config.playerBandwidthLimit = cfg <= 0 ? desired : std::min(cfg, desired);
+    }
     if (blocking) {
         std::lock_guard lock(mutex_);
         configReceived_ = false;
     }
     send(m);
+}
+
+void ClientNetworkState::setWanted(const net::SessionConfigValues& values) {
+    {
+        std::lock_guard lock(mutex_);
+        wanted_ = values;
+    }
+    sendConfigMessage(true); // Java configAnyChangeListener
+}
+
+void ClientNetworkState::setWorkExecutor(IExecutor* executor) {
+    std::lock_guard lock(mutex_);
+    work_ = executor;
 }
 
 void ClientNetworkState::sendLevelInitRequest(const std::string& dimensionResourceLocation) {
@@ -366,13 +385,24 @@ void ClientNetworkState::onFrame(SessionId, std::span<const std::byte> frame) {
             receiver_.discard(m.payload.dtoBufferId); // not our level (or nobody listens): free the buffer
             break;
         }
-        handler(decodePayload(m.payload), m.payload.beaconBeams);
+        IExecutor* work;
+        {
+            std::lock_guard lock(mutex_);
+            work = work_;
+        }
+        // decoding is heavy: leave the transport thread (ITransport.h) when an executor is configured
+        auto run = [this, handler, payload = m.payload] { handler(decodePayload(payload), payload.beaconBeams); };
+        if (work == nullptr || !work->execute(run)) {
+            if (work == nullptr) run();
+            else receiver_.discard(m.payload.dtoBufferId);
+        }
         break;
     }
     case net::MsgIds::CloseReason: {
         {
             std::lock_guard lock(mutex_);
             configReceived_ = false;
+            closeReason_    = static_cast<net::CloseReasonMessage&>(message).reason;
         }
         failAllPending();
         break;

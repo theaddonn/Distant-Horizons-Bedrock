@@ -8,6 +8,11 @@
 //   ServerRequestHandler   one per level: sync-on-load vs generation requests, request groups
 //   ServerNetwork          ITransportListener: decodes frames and routes them
 //
+// Shutdown order: close() invalidates callbacks by dropping a token without waiting, so quiesce the
+// executors/provider (or destroy the handler from outside their callbacks) before destroying it.
+// An unsupported frame (wrong protocol version or unknown message id) intentionally answers
+// CloseReason + disconnect.
+//
 // Threading: nothing here starts a thread. Slow work (provider reads, payload encoding) goes through
 // the injected `work` executor; the owner calls ServerNetwork::tick() at 20 Hz.
 //
@@ -19,7 +24,7 @@
 // Further deviations: a request for an unknown level gets RequestRejected (Java: silently ignored);
 // sync-on-load requests can be cancelled; a generation that finishes with Failed/Rejected/Split fails
 // the waiting group (Java: waited forever); a group that is still not fully generated after
-// kMaxFulfillRetries retries is rejected (Java: retried without bound).
+// 10 s of retries is rejected (Java: retried without bound).
 
 #include "dh/config/Enums.h"
 #include "dh/gen/GeneratedProvider.h"
@@ -45,7 +50,8 @@
 
 namespace dh::mp {
 
-inline constexpr int kMaxFulfillRetries = 5;
+/// A group whose generation reported done but whose data is still incomplete is re-read for this long.
+inline constexpr int kFulfillRetryWindowMs = 10'000;
 
 /// The server's own (unconstrained) configuration: Config.Server.* and Config.Common.WorldGenerator.*.
 /// `values` uses the session-config layout, so gating and negotiation read the same numbers.
@@ -114,6 +120,8 @@ public:
     const IClock&     clock() const { return clock_; }
     ServerSettings    settings; ///< mutate on the tick thread only
     BandwidthLimiter& bandwidth() { return bandwidth_; }
+    /// Process-wide like Java's static FullDataPayload.lastBufferId: ids stay unique across levels.
+    BufferIdAllocator& bufferIds() { return bufferIds_; }
 
     std::shared_ptr<ServerPlayerState> add(SessionId session, std::string peerName);
     void                               remove(SessionId session);
@@ -132,9 +140,10 @@ public:
     void          removeLeaveListener(std::uint64_t id);
 
 private:
-    ITransport&      transport_;
-    const IClock&    clock_;
-    BandwidthLimiter bandwidth_;
+    ITransport&       transport_;
+    const IClock&     clock_;
+    BandwidthLimiter  bandwidth_;
+    BufferIdAllocator bufferIds_;
 
     mutable std::mutex                                      mutex_;
     std::map<SessionId, std::shared_ptr<ServerPlayerState>> players_;
@@ -220,7 +229,9 @@ private:
     void runSync(const std::shared_ptr<Request>& request, std::int64_t clientTimestamp);
 
     // real-time updates
-    void onSectionUpdated(std::uint64_t pos);
+    void onSectionUpdated(std::shared_ptr<const FullDataSource> delta);
+    int  constrainedGenLimit(SessionId session) const;
+    int  constrainedSyncLimit(SessionId session) const;
 
     // helpers
     std::shared_ptr<Limiters> limitersFor(SessionId session);
@@ -240,7 +251,6 @@ private:
     LevelInfo          level_;
     BeaconSupplier     beacons_;
     CodecOptions       codec_;
-    BufferIdAllocator  bufferIds_;
 
     std::shared_ptr<bool> alive_          = std::make_shared<bool>(true);
     ListenerId            updateListener_ = 0;
@@ -266,6 +276,10 @@ public:
 
     void addLevel(ServerRequestHandler& handler);
     void removeLevel(ServerRequestHandler& handler);
+
+    /// Re-sends the constrained SessionConfig to every ready player. Call after mutating ServerPlayers::settings
+    /// (Java ServerPlayerState.configAnyChangeListener).
+    void broadcastConfig();
 
     /// handlers' tick(), then every player's sender tick. Call at 20 Hz.
     void tick();

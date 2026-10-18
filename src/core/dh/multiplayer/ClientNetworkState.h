@@ -15,6 +15,7 @@
 #include "dh/net/SessionConfig.h"
 #include "dh/platform/IBlockRegistry.h"
 #include "dh/platform/IClock.h"
+#include "dh/platform/IExecutor.h"
 #include "dh/platform/ITransport.h"
 
 #include <atomic>
@@ -111,6 +112,10 @@ public:
     /// Sends our config. `blocking` clears isReady until the answer arrives. With adaptive transfer speed
     /// the playerBandwidthLimit sent is the congestion control's desired rate.
     void sendConfigMessage(bool blocking = true);
+    /// Replaces what we ask for and re-sends it (Java: configAnyChangeListener).
+    void setWanted(const net::SessionConfigValues& values);
+    /// Partial-update payloads are decoded on this executor instead of the transport thread.
+    void setWorkExecutor(IExecutor* executor);
     void sendLevelInitRequest(const std::string& dimensionResourceLocation);
 
     /// Sends a FullDataSourceRequest. Returns its futureId (0 if the frame could not be sent, in which
@@ -163,7 +168,9 @@ private:
     mutable std::mutex                                mutex_;
     net::SessionConfigValues                          wanted_;
     net::SessionConfigValues                          sessionConfig_;
-    SessionId                                         session_          = 0;
+    SessionId                                         session_ = 0;
+    IExecutor*                                        work_    = nullptr;
+    std::string                                       closeReason_;
     bool                                              connected_        = false;
     bool                                              configReceived_   = false;
     ServerSupport                                     support_          = ServerSupport::None;

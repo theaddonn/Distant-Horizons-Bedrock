@@ -116,6 +116,14 @@ void NetworkRequestQueue::onTaskCompleted(const std::shared_ptr<Task>& task, con
 //------------------------------------------------------------------------------
 
 bool NetworkRequestQueue::tick(BlockPos2D target) {
+    // futures are cancelled after tickMutex_ is released: their listeners may call back into the queue
+    std::vector<std::shared_ptr<Task>> toCancel;
+    const bool                         ok = tickLocked(target, toCancel);
+    for (auto& t : toCancel) t->future->cancel();
+    return ok;
+}
+
+bool NetworkRequestQueue::tickLocked(BlockPos2D target, std::vector<std::shared_ptr<Task>>& toCancel) {
     std::lock_guard tickLock(tickMutex_);
     if (closing_.load() || !net_.isReady()) return false;
     {
@@ -139,19 +147,19 @@ bool NetworkRequestQueue::tick(BlockPos2D target) {
         }
         if (!(static_cast<std::size_t>(inProgress) < waiting && inProgress < requestRateLimit())) break;
         if (!rateLimiter_.tryAcquire()) break;
-        if (!sendNext(target)) break;
+        if (!sendNext(target, toCancel)) break;
     }
     return true;
 }
 
-bool NetworkRequestQueue::sendNext(BlockPos2D target) {
+bool NetworkRequestQueue::sendNext(BlockPos2D target, std::vector<std::shared_ptr<Task>>& toCancel) {
     std::shared_ptr<Task> task;
     {
         // nearest first; ties go to the lowest pos key (map order) so the choice is deterministic
         std::lock_guard lock(mutex_);
         std::int32_t    best = 0;
         for (const auto& [pos, t] : tasks_) {
-            if (t->inFlight) continue;
+            if (t->inFlight || std::find(toCancel.begin(), toCancel.end(), t) != toCancel.end()) continue;
             const std::int32_t d = sec::chebyshevSignedDistance(pos, target.x, target.z);
             if (!task || d < best) {
                 task = t;
@@ -162,7 +170,7 @@ bool NetworkRequestQueue::sendNext(BlockPos2D target) {
     if (!task) return false;
 
     if (!sectionInAllowedGenerationRadius(task->pos, target)) {
-        task->future->cancel(); // onTaskCompleted removes it
+        toCancel.push_back(task); // cancelled by tick() once the lock is released; onTaskCompleted removes it
         return true;
     }
 

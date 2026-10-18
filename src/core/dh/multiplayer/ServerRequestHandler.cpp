@@ -136,7 +136,9 @@ void ServerPlayers::setPosition(SessionId session, std::string levelName, BlockP
 }
 
 void ServerPlayers::tickSenders() {
-    for (const auto& p : all()) p->sender.tick();
+    // one share for the whole pass: senders finishing mid-pass must not enlarge the others' share
+    const int share = bandwidth_.bandwidthShare();
+    for (const auto& p : all()) p->sender.tick(share);
 }
 
 std::uint64_t ServerPlayers::addLeaveListener(LeaveListener l) {
@@ -166,8 +168,7 @@ struct ServerRequestHandler::Limiters {
                   session,
                   id,
                   net::RemoteException::RateLimited,
-                  "Full data request rate limit: "
-                      + std::to_string(h.players_.settings.values.generationRequestRateLimit)
+                  "Full data request rate limit: " + std::to_string(h.constrainedGenLimit(session))
               );
           },
           clock
@@ -179,7 +180,7 @@ struct ServerRequestHandler::Limiters {
                   session,
                   id,
                   net::RemoteException::RateLimited,
-                  "Sync on login rate limit: " + std::to_string(h.players_.settings.values.syncOnLoadRateLimit)
+                  "Sync on login rate limit: " + std::to_string(h.constrainedSyncLimit(session))
               );
           },
           clock
@@ -203,6 +204,7 @@ struct ServerRequestHandler::Group {
     bool                                              worldGenComplete = false;
     bool                                              closed           = false;
     int                                               retries          = 0;
+    std::int64_t                                      firstRetryNanos  = 0;
 };
 
 ServerRequestHandler::ServerRequestHandler(
@@ -220,10 +222,10 @@ ServerRequestHandler::ServerRequestHandler(
   beacons_(std::move(beacons)),
   codec_(codec) {
     std::weak_ptr<bool> weak = alive_;
-    updateListener_          = provider_.addUpdateListener([this, weak](std::uint64_t pos) {
-        if (auto a = weak.lock()) onSectionUpdated(pos);
+    updateListener_ = provider_.addDeltaListener([this, weak](const std::shared_ptr<const FullDataSource>& delta) {
+        if (auto a = weak.lock()) onSectionUpdated(delta);
     });
-    leaveListener_           = players_.addLeaveListener([this, weak](SessionId s) {
+    leaveListener_  = players_.addLeaveListener([this, weak](SessionId s) {
         if (auto a = weak.lock()) onPlayerLeft(s);
     });
 }
@@ -232,7 +234,7 @@ ServerRequestHandler::~ServerRequestHandler() { close(); }
 
 void ServerRequestHandler::close() {
     if (closed_.exchange(true)) return;
-    provider_.removeUpdateListener(updateListener_);
+    provider_.removeDeltaListener(updateListener_);
     players_.removeLeaveListener(leaveListener_);
 
     std::vector<std::shared_ptr<Request>> all;
@@ -307,6 +309,15 @@ std::vector<net::BeaconBeam> ServerRequestHandler::beaconsFor(std::uint64_t pos)
 std::int32_t ServerRequestHandler::distanceInChunks(std::uint64_t pos, const ServerPlayerState& player) const {
     const BlockPos2D p = player.position();
     return sec::chebyshevSignedDistance(pos, p.x, p.z) / 16;
+}
+
+int ServerRequestHandler::constrainedGenLimit(SessionId session) const {
+    auto p = players_.find(session);
+    return p ? p->sessionConfig().generationRequestRateLimit : players_.settings.values.generationRequestRateLimit;
+}
+int ServerRequestHandler::constrainedSyncLimit(SessionId session) const {
+    auto p = players_.find(session);
+    return p ? p->sessionConfig().syncOnLoadRateLimit : players_.settings.values.syncOnLoadRateLimit;
 }
 
 ServerHandlerStats ServerRequestHandler::stats() const {
@@ -428,13 +439,19 @@ void ServerRequestHandler::queueWorldGen(
 
 void ServerRequestHandler::enqueueRequest(const std::shared_ptr<Request>& request) {
     std::shared_ptr<Group> group;
-    bool                   created = false;
-    bool                   closed  = false;
+    bool                   created   = false;
+    bool                   closed    = false;
+    bool                   duplicate = false;
     {
         std::lock_guard lock(mutex_);
         if (closed_.load()) {
             closed = true;
         } else {
+            if (groupsByFutureId_.count(request->futureId) != 0 || syncRequests_.count(request->futureId) != 0) {
+                duplicate = true;
+            }
+        }
+        if (!closed && !duplicate) {
             auto& slot = groupsByPos_[request->pos];
             if (!slot) {
                 slot      = std::make_shared<Group>();
@@ -446,8 +463,15 @@ void ServerRequestHandler::enqueueRequest(const std::shared_ptr<Request>& reques
             groupsByFutureId_[request->futureId] = group;
         }
     }
-    if (closed) {
+    if (closed || duplicate) {
         release(*request);
+        if (duplicate)
+            sendException(
+                request->session,
+                request->futureId,
+                net::RemoteException::RequestRejected,
+                "Duplicate request id"
+            );
         return;
     }
     if (created) tryFulfill(group);
@@ -494,11 +518,16 @@ void ServerRequestHandler::onGroupSourceLoaded(
     {
         std::lock_guard lock(mutex_);
         complete = group->worldGenComplete;
-        if (complete) retries = ++group->retries;
+        if (complete) {
+            ++group->retries;
+            if (group->firstRetryNanos == 0) group->firstRetryNanos = players_.clock().steadyNanos();
+            retries = static_cast<int>((players_.clock().steadyNanos() - group->firstRetryNanos) / 1'000'000);
+            // `retries` is now the milliseconds spent retrying
+        }
     }
     if (complete) {
         // generation reported done but the data is still incomplete: look again (Java: unbounded)
-        if (retries > kMaxFulfillRetries) {
+        if (retries > kFulfillRetryWindowMs) {
             failGroup(group, net::RemoteException::RequestRejected, "Section generation did not complete");
         } else {
             tryFulfill(group);
@@ -648,7 +677,7 @@ void ServerRequestHandler::tick() {
         const bool          accepted = work_.execute([this, weak, requests, source, pos] {
             auto a = weak.lock();
             if (!a) return;
-            auto made = makePayload(*source, beaconsFor(pos), bufferIds_.allocate(), codec_);
+            auto made = makePayload(*source, beaconsFor(pos), players_.bufferIds().allocate(), codec_);
             if (!made) {
                 rejectAll(*requests, net::RemoteException::RequestRejected, "Unable to encode the data source");
                 return;
@@ -720,13 +749,21 @@ void ServerRequestHandler::queueSync(
     request->sync     = true;
     request->limiters = std::move(limiters);
     activeTickets_.fetch_add(1);
+    bool duplicate = false;
     {
         std::lock_guard lock(mutex_);
         if (closed_.load()) {
             // released below
+        } else if (groupsByFutureId_.count(futureId) != 0 || syncRequests_.count(futureId) != 0) {
+            duplicate = true;
         } else {
             syncRequests_[futureId] = request;
         }
+    }
+    if (duplicate) {
+        release(*request);
+        sendException(request->session, futureId, net::RemoteException::RequestRejected, "Duplicate request id");
+        return;
     }
     if (closed_.load()) {
         release(*request);
@@ -782,7 +819,7 @@ void ServerRequestHandler::runSync(const std::shared_ptr<Request>& request, std:
         );
         return;
     }
-    auto made = makePayload(*source, beaconsFor(request->pos), bufferIds_.allocate(), codec_);
+    auto made = makePayload(*source, beaconsFor(request->pos), players_.bufferIds().allocate(), codec_);
     if (!made) {
         finish();
         sendException(
@@ -833,11 +870,12 @@ void ServerRequestHandler::runSync(const std::shared_ptr<Request>& request, std:
 // real-time updates (AbstractDhServerLevel.updateDataSourcesAsync)
 //------------------------------------------------------------------------------
 
-void ServerRequestHandler::onSectionUpdated(std::uint64_t pos) {
-    if (closed_.load() || !players_.settings.values.enableRealTimeUpdates) return;
+void ServerRequestHandler::onSectionUpdated(std::shared_ptr<const FullDataSource> delta) {
+    if (closed_.load() || !delta || !players_.settings.values.enableRealTimeUpdates) return;
     std::weak_ptr<bool> weak = alive_;
-    work_.execute([this, weak, pos] {
-        auto a = weak.lock();
+    work_.execute([this, weak, delta = std::move(delta)] {
+        const std::uint64_t pos = delta->pos;
+        auto                a   = weak.lock();
         if (!a) return;
 
         std::vector<std::shared_ptr<ServerPlayerState>> targets;
@@ -849,9 +887,8 @@ void ServerRequestHandler::onSectionUpdated(std::uint64_t pos) {
         }
         if (targets.empty()) return;
 
-        std::shared_ptr<const FullDataSource> source = provider_.get(pos);
-        if (!source) return;
-        auto made = makePayload(*source, beaconsFor(pos), bufferIds_.allocate(), codec_);
+        // Java sends only the incoming delta (updateDataSourcesAsync(data)), not the merged section
+        auto made = makePayload(*delta, beaconsFor(pos), players_.bufferIds().allocate(), codec_);
         if (!made) return;
         auto payload = std::make_shared<const FullDataPayload>(std::move(*made));
         {
@@ -952,6 +989,10 @@ ServerRequestHandler* ServerNetwork::findLevelByDimension(const std::string& dim
     for (auto* l : levels_)
         if (l->level().dimension == dimension) return l;
     return nullptr;
+}
+
+void ServerNetwork::broadcastConfig() {
+    for (const auto& p : players_.readyPlayers()) sendConfig(*p);
 }
 
 void ServerNetwork::tick() {

@@ -38,7 +38,16 @@ Result<bool> SourceUpdater::update(std::shared_ptr<const FullDataSource> input) 
     }
     // Listeners run after the position lock is released, so a listener may call update() for
     // the same position (Java's ReentrantLock allowed that; KeyedLock does not).
-    if (r && *r) notifyListeners(input->pos);
+    if (r && *r) {
+        notifyListeners(input->pos);
+        std::vector<std::pair<ListenerId, DeltaListener>> snapshot;
+        {
+            std::lock_guard lock(listenerMutex_);
+            snapshot = deltaListeners_;
+        }
+        for (auto& l : snapshot)
+            if (l.second) l.second(input);
+    }
     return r;
 }
 
@@ -125,6 +134,18 @@ ListenerId SourceUpdater::addListener(UpdateListener listener) {
     const ListenerId id = nextListenerId_++;
     listeners_.emplace_back(id, std::move(listener));
     return id;
+}
+
+ListenerId SourceUpdater::addDeltaListener(DeltaListener listener) {
+    std::lock_guard  lock(listenerMutex_);
+    const ListenerId id = nextListenerId_++;
+    deltaListeners_.emplace_back(id, std::move(listener));
+    return id;
+}
+
+void SourceUpdater::removeDeltaListener(ListenerId id) {
+    std::lock_guard lock(listenerMutex_);
+    std::erase_if(deltaListeners_, [id](const auto& p) { return p.first == id; });
 }
 
 void SourceUpdater::removeListener(ListenerId id) {
