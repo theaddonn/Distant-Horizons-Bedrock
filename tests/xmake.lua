@@ -20,7 +20,7 @@ target("dh_core_tests")
     set_languages("c++20")
     add_deps("dh_core")
     add_includedirs("third_party", ".")
-    add_files("main.cpp", "unit/**.cpp", "integration/**.cpp")
+    add_files("main.cpp", "unit/**.cpp", "integration/**.cpp", "golden_tests/**.cpp")
     add_defines("DOCTEST_CONFIG_SUPER_FAST_ASSERTS")
     if is_mode("debug") then
         add_cxflags("-fsanitize=address,undefined", "-fno-omit-frame-pointer")
