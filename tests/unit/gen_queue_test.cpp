@@ -571,6 +571,63 @@ TEST_CASE("GenQueue: shutdown(true) closes the generator immediately, aborting r
     CHECK(callbacks == 1);
 }
 
+TEST_CASE("GenQueue: shutdown(true) after a deferred shutdown(false) still closes the generator (Java :795)") {
+    Harness h(4);
+    h.gen.script(3);
+    auto running = h.queue.submit(S(6, 0, 0), 0);
+    h.queue.startAndSetTargetPos(BlockPos2D{32, 32});
+    h.queueExec.runAll();
+    REQUIRE(h.queue.inProgressTaskCount() == 1);
+
+    h.queue.shutdown(false); // defers generator.close() until the lingering task reports back
+    CHECK(running->isCancelled());
+    CHECK(h.gen.closeCount == 0);
+    CHECK(h.gen.inFlight() == 1);
+
+    h.queue.shutdown(true); // must not be swallowed by the "already closing" early return
+    CHECK(h.gen.closeCount == 1);
+    CHECK(h.gen.inFlight() == 0);
+    CHECK(h.queue.inProgressTaskCount() == 0);
+
+    h.pump(); // stale pool tasks, nothing else
+    CHECK(h.gen.closeCount == 1);
+    CHECK(h.gen.calls.size() == 1);
+
+    h.queue.shutdown(true); // and a third call is a no-op
+    h.queue.shutdown(false);
+    CHECK(h.gen.closeCount == 1);
+}
+
+TEST_CASE("GenQueue: destroying the queue after a deferred shutdown(false) closes the generator") {
+    FakeWorldGenerator gen;
+    ManualExecutor     queueExec, pool;
+    ManualClock        clock;
+    gen.script(3);
+    {
+        GenQueue queue(gen, queueExec, pool, 4, clock);
+        auto     running = queue.submit(S(6, 0, 0), 0);
+        queue.startAndSetTargetPos(BlockPos2D{32, 32});
+        queueExec.runAll();
+        REQUIRE(queue.inProgressTaskCount() == 1);
+        queue.shutdown(false);
+        CHECK(gen.closeCount == 0);
+        CHECK(gen.inFlight() == 1);
+    }
+    CHECK(gen.closeCount == 1);
+    CHECK(gen.inFlight() == 0);
+    pool.runAll();
+    queueExec.runAll();
+    CHECK(gen.closeCount == 1);
+}
+
+TEST_CASE("GenQueue: shutdown(false) with nothing running closes the generator at once and stays idempotent") {
+    Harness h(4);
+    h.queue.shutdown(false);
+    CHECK(h.gen.closeCount == 1);
+    h.queue.shutdown(true);
+    CHECK(h.gen.closeCount == 1);
+}
+
 TEST_CASE("GenQueue: destroying the queue shuts it down and stale executor tasks are harmless") {
     FakeWorldGenerator               gen;
     ManualExecutor                   queueExec, pool;
