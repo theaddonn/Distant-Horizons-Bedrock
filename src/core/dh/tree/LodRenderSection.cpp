@@ -3,13 +3,12 @@
 #include <utility>
 
 #include "dh/platform/ILogger.h"
-#include "dh/tree/LodQuadTree.h"
 
 namespace dh::tree {
 
-LodRenderSection::LodRenderSection(sec::Pos pos_, LodQuadTree& quadTree, RenderSectionContext& ctx)
+LodRenderSection::LodRenderSection(sec::Pos pos_, std::shared_ptr<const TreeShared> tree, RenderSectionContext& ctx)
 : pos(pos_),
-  quadTree_(quadTree),
+  tree_(std::move(tree)),
   ctx_(ctx) {}
 
 LodRenderSection::~LodRenderSection() { dispose(); }
@@ -77,30 +76,47 @@ void LodRenderSection::runBuild(const std::shared_ptr<BuildToken>& token) {
         return;
     }
 
-    // uploading happens on the sink's thread; the callback may run inline
-    std::shared_ptr<LodRenderSection> self = shared_from_this();
-    ctx_.sink->upload(pos, std::move(buffers), [self, token, hasOpaque, hasTransparent](bool ok) {
-        self->onUploadDone(ok, hasOpaque, hasTransparent, token);
-    });
+    // Uploading happens on the sink's thread; the callback may run inline, i.e. before uploadWithId has
+    // returned the id. Whoever comes second (callback or the returning call) finishes with the known id.
+    std::shared_ptr<LodRenderSection> self   = shared_from_this();
+    auto                              idSlot = std::make_shared<std::atomic<IVertexSink::UploadId>>(0);
+    auto                              second = std::make_shared<std::atomic<bool>>(false);
+    auto                              result = std::make_shared<std::atomic<bool>>(false);
+    auto                              finish = [self, token, hasOpaque, hasTransparent, idSlot, result]() {
+        self->onUploadDone(result->load(), hasOpaque, hasTransparent, token, idSlot->load());
+    };
+    const IVertexSink::UploadId id =
+        ctx_.sink->uploadWithId(pos, std::move(buffers), [second, result, finish](bool ok) {
+            result->store(ok);
+            if (second->exchange(true)) {
+                finish(); // uploadWithId already returned: the id is known
+            }
+        });
+    idSlot->store(id);
+    lastUploadId_.store(id, std::memory_order_release);
+    if (second->exchange(true)) {
+        finish(); // the callback already ran (inline) and left the result for us
+    }
 }
 
 void LodRenderSection::onUploadDone(
     bool                               ok,
     bool                               hasOpaque,
     bool                               hasTransparent,
-    const std::shared_ptr<BuildToken>& token
+    const std::shared_ptr<BuildToken>& token,
+    IVertexSink::UploadId              uploadId
 ) {
     if (ok) {
-        // LodRenderSection.java:358-367: the new container replaces the old one, upload complete
-        hasOpaque_.store(hasOpaque, std::memory_order_release);
-        hasTransparent_.store(hasTransparent, std::memory_order_release);
-        hasGpuBuffers_.store(true, std::memory_order_release);
-        renderDataDirty.store(false, std::memory_order_release);
-
         if (token->cancelled.load(std::memory_order_acquire) || isDisposed()) {
-            // the section was closed before this point: this buffer would become homeless (Java :370-377)
-            hasGpuBuffers_.store(false, std::memory_order_release);
-            ctx_.sink->remove(pos);
+            // the section was closed before this point: this buffer would become homeless (Java :370-377
+            // closed its own container). removeIf with OUR id leaves a replacement section's buffers alone.
+            ctx_.sink->removeIf(pos, uploadId);
+        } else {
+            // LodRenderSection.java:358-367: the new container replaces the old one, upload complete
+            hasOpaque_.store(hasOpaque, std::memory_order_release);
+            hasTransparent_.store(hasTransparent, std::memory_order_release);
+            hasGpuBuffers_.store(true, std::memory_order_release);
+            renderDataDirty.store(false, std::memory_order_release);
         }
     } else {
         // Java: logged unless it was a shutdown exception; the old container (if any) keeps rendering
@@ -130,11 +146,9 @@ std::optional<LodQuadBuilder> LodRenderSection::getAndBuildRenderData() {
         // nothing needs to be rendered
         return std::nullopt;
     }
-    if (thisRenderSource->isEmpty) {
-        // Java: ColumnRenderBufferBuilder.makeLodRenderData threw IllegalArgumentException on the first
-        // populateColumnView of an empty source; LodRenderSection caught it (line 278) and returned null.
-        return std::nullopt;
-    }
+    // An EMPTY render source (no data stored yet) is built like any other: ColumnRenderSource.createEmpty
+    // sizes its arrays, makeLodRenderData skips every column and the empty upload makes canRender() true
+    // (Java FullDataSourceProviderV2.get :210-213, transformer :123-127, LodRenderSection.java:191-195).
 
     LodQuadBuilder lodQuadBuilder(ctx_.mesh.quad);
 
@@ -178,7 +192,7 @@ LodRenderSection::renderSourceForPos(sec::Pos sectionPos, std::optional<Directio
 
 bool LodRenderSection::isAdjacentPosSameDetailLevel(Direction direction) const {
     const sec::Pos adjPos      = sec::adjacent(pos, direction);
-    std::int8_t    detailLevel = quadTree_.calcExpectedDetailLevel(quadTree_.lastTickPlayerPos(), adjPos);
+    std::int8_t    detailLevel = tree_->calcExpectedDetailLevel(tree_->lastPlayerPos(), adjPos);
     detailLevel                = static_cast<std::int8_t>(detailLevel + sec::SECTION_MINIMUM_DETAIL_LEVEL);
     return detailLevel == sec::detail(pos);
 }
@@ -205,8 +219,11 @@ void LodRenderSection::dispose() {
     }
 
     setRenderingEnabled(false);
-    if (hasGpuBuffers_.exchange(false, std::memory_order_acq_rel) && ctx_.sink != nullptr) {
-        ctx_.sink->remove(pos);
+    const bool hadBuffers = hasGpuBuffers_.exchange(false, std::memory_order_acq_rel);
+    if ((hadBuffers || token) && ctx_.sink != nullptr) {
+        // free our buffers (and our pending upload, if the sink batches); the id keeps a replacement
+        // section's newer upload at this pos intact
+        ctx_.sink->removeIf(pos, lastUploadId_.load(std::memory_order_acquire));
     }
 }
 
