@@ -111,6 +111,7 @@ void UpdatePropagator::parentTask(std::uint64_t parentPos, const std::vector<std
         return;
     }
 
+    bool                            notify = false;
     std::shared_ptr<FullDataSource> parent = provider_.loadFresh(parentPos);
     if (parent) {
         bool parentUpdated = false;
@@ -150,10 +151,13 @@ void UpdatePropagator::parentTask(std::uint64_t parentPos, const std::vector<std
 
             Result<bool> r = updater_.updateLocked(*parent);
             if (!r) logErr("Parent update failed", parentPos, r.error());
+            else if (*r) notify = true;
         }
     }
 
     parentGuard.reset();
+    // listeners run without any position lock held
+    if (notify) updater_.notifyListeners(parentPos);
     endPos(parentPos);
 }
 
@@ -200,6 +204,7 @@ void UpdatePropagator::childTask(std::uint64_t parentPos) {
         return;
     }
 
+    std::vector<std::uint64_t>            notifyPositions;
     std::shared_ptr<const FullDataSource> parent = provider_.get(parentPos);
     if (parent) {
         // apply the parent to each child
@@ -232,6 +237,7 @@ void UpdatePropagator::childTask(std::uint64_t parentPos) {
 
                     Result<bool> r = updater_.updateLocked(*child);
                     if (!r) logErr("Child update failed", childPos, r.error());
+                    else if (*r) notifyPositions.push_back(childPos);
                 }
             }
 
@@ -243,6 +249,7 @@ void UpdatePropagator::childTask(std::uint64_t parentPos) {
     }
 
     parentGuard.reset();
+    for (std::uint64_t p : notifyPositions) updater_.notifyListeners(p);
     endPos(parentPos);
 }
 

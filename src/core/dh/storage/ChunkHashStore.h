@@ -9,7 +9,18 @@
 //   2. src = createFromChunk(...); tracker.notePending(src->pos, chunkPos, newHash);
 //   3. merge into the delayed save cache (mutate inside the first lock, see PORTING.md)
 //   4. when the cache hands over the merged section:
-//        provider.updateAsync(section)->onComplete([&](auto&){ tracker.commit(section->pos); });
+//        provider.updateAsync(section)->onComplete([&](const Result<bool>& r) {
+//            if (r.has_value() && !provider.isClosed()) tracker.commit(section->pos);
+//            else tracker.discard(section->pos);
+//        });
+//      Outcomes of the update future:
+//        Ok(true)   section changed and was saved            -> commit
+//        Ok(false)  section unchanged (already up to date)   -> commit, but ONLY if the provider is
+//                   not closed: updateAsync also completes with Ok(false) when it was rejected or
+//                   the updater was shut down, which must never persist a hash
+//        Error      load/encode/put failed                   -> discard
+//      Never commit on rejection / shutdown / error: the hash would then claim data that was
+//      not written and the chunk would be skipped forever.
 // The platform glue later provides a persistent IChunkHashStore (KV table); MemoryChunkHashStore
 // is the reference implementation and test backend.
 
