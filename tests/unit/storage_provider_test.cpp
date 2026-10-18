@@ -12,6 +12,7 @@
 #include "dh/fulldata/Merge.h"
 #include "dh/platform/IBlockRegistry.h"
 #include "dh/platform/IClock.h"
+#include "dh/platform/ILogger.h"
 #include "dh/pos/SectionPos.h"
 #include "dh/storage/ChunkHashStore.h"
 #include "dh/storage/MemoryLodStore.h"
@@ -63,8 +64,10 @@ struct Fx {
         );
         int id = s->mapping.addIfAbsent(reg.defaultBiome(), block);
         for (int i = 0; i < cols; ++i) {
-            const int cx = i / FullDataSource::WIDTH;
-            const int cz = i % FullDataSource::WIDTH;
+            // full section, or a 2-wide strip (cx = 0..1) so every 2x2 downsample group is fully covered
+            const bool full = cols == FullDataSource::COLUMN_COUNT;
+            const int  cx   = full ? i / FullDataSource::WIDTH : i % 2;
+            const int  cz   = full ? i % FullDataSource::WIDTH : i / 2;
             s->setSingleColumn({fdp::encode(id, height, 60, 0, static_cast<std::uint8_t>(sky))}, cx, cz, 5, 0);
         }
         s->isEmpty = false;
@@ -145,7 +148,7 @@ TEST_CASE("provider: weak cache releases unreferenced sections beyond the LRU") 
 TEST_CASE("provider: getAdj equals clearAllNonAdjData of the full section") {
     Fx   f;
     auto pos = sec::encode(6, 1, 1);
-    auto in  = f.make(6, 1, 1, f.stone, 10, 0, 300);
+    auto in  = f.make(6, 1, 1, f.stone, 10, 0, 120);
     REQUIRE(f.up().update(in));
 
     struct D {
@@ -220,7 +223,7 @@ TEST_CASE("updater: listeners fire only on change, timestamps stamped") {
     auto                       id = f.provider->addUpdateListener([&](std::uint64_t p) { seen.push_back(p); });
 
     f.clock.setMillis(1000);
-    auto in = f.make(6, 0, 0, f.stone, 10, 0, 16);
+    auto in = f.make(6, 0, 0, f.stone, 10, 15, 16); // sky 15 == what the bake produces
     CHECK(f.up().update(in).value_or(false));
     REQUIRE(seen.size() == 1);
     CHECK(seen[0] == pos);
@@ -302,7 +305,7 @@ TEST_CASE("propagator: 4 leaves -> parent equals direct updateFromDataSource, fl
     std::vector<std::shared_ptr<FullDataSource>> leaves;
     const BlockInfo*                             blocks[4] = {f.stone, f.dirt, f.stone, f.dirt};
     for (int i = 0; i < 4; ++i) {
-        leaves.push_back(f.make(6, i & 1, i >> 1, blocks[i], 10 + i * 3, 0, 64));
+        leaves.push_back(f.make(6, i & 1, i >> 1, blocks[i], 10 + i * 3, 0));
         REQUIRE(f.up().update(leaves.back()));
     }
     CHECK(f.store.positionsToPropagateUp(0, 0, 100)->size() == 4);
@@ -327,13 +330,14 @@ TEST_CASE("propagator: 4 leaves -> parent equals direct updateFromDataSource, fl
     CHECK(parent->contentEquals(expected));
     CHECK_FALSE(parent->isEmpty);
 
-    // flags: leaves cleared, parent chain flagged up to (but excluding) ROOT, root unflagged
+    // flags: leaves cleared, parent chain flags consumed along the chain 7..13
     for (std::uint64_t p : order) {
         auto rec = f.store.get(p, StorePart::Meta);
         REQUIRE(rec);
         CHECK_FALSE((*rec)->meta.hasFlag(StoreFlag::ApplyToParent));
     }
-    for (int d = 7; d <= ROOT_SECTION_DETAIL_LEVEL; ++d) {
+    // The chain ends at 13: a single corner column covers only 1 of the 4 columns of a 2x2 group at 14 (gen EMPTY)
+    for (int d = 7; d <= ROOT_SECTION_DETAIL_LEVEL - 1; ++d) {
         auto rec = f.store.get(sec::encode(static_cast<std::int8_t>(d), 0, 0), StorePart::Meta);
         REQUIRE(rec);
         REQUIRE(rec->has_value());
@@ -342,11 +346,10 @@ TEST_CASE("propagator: 4 leaves -> parent equals direct updateFromDataSource, fl
         CHECK_FALSE((*rec)->meta.hasFlag(StoreFlag::Regenerate));
     }
     CHECK(
-        f.store.get(sec::encode(static_cast<std::int8_t>(ROOT_SECTION_DETAIL_LEVEL + 1), 0, 0)).value().has_value()
-        == false
+        f.store.get(sec::encode(static_cast<std::int8_t>(ROOT_SECTION_DETAIL_LEVEL), 0, 0)).value().has_value() == false
     );
-    // listeners saw each ancestor exactly once (7..14)
-    CHECK(fired.size() == 8);
+    // listeners saw each ancestor exactly once (7..13)
+    CHECK(fired.size() == 7);
     CHECK(f.propExec.queueSize() == 0);
     CHECK(prop.updatingCount() == 0);
 
@@ -396,27 +399,28 @@ TEST_CASE("propagator: task cap is 10 x threads and tasks are not duplicated") {
     UpdatePropagator prop(*f.provider, f.propExec, 1);
     CHECK(prop.maxTaskCount() == 10);
     // 40 leaves in 40 distinct parents
-    for (int i = 0; i < 40; ++i) REQUIRE(f.up().update(f.make(6, i * 2, 0, f.stone, 10, 0, 2)));
+    for (int i = 0; i < 40; ++i) REQUIRE(f.up().update(f.make(6, i * 2, 0, f.stone, 10, 0, 4)));
 
     auto s1 = prop.tick(kOrigin);
-    // Java checks "> max" before each add, so max + 1 tasks can be in flight
-    CHECK(s1.parentTasks == 11);
-    CHECK(f.propExec.queueSize() == 11);
-    CHECK(prop.updatingCount() == 11);
+    // The store query is capped at `max` positions (Java getParentPositionsToUpdate(..., max))
+    CHECK(s1.parentTasks == 10);
+    CHECK(f.propExec.queueSize() == 10);
+    CHECK(prop.updatingCount() == 10);
 
-    auto s2 = prop.tick(kOrigin); // queue > max: nothing new
+    // already-queued parents are skipped, the next nearest ones are not (list is capped at max)
+    auto s2 = prop.tick(kOrigin);
     CHECK(s2.parentTasks == 0);
-    CHECK(f.propExec.queueSize() == 11);
+    CHECK(f.propExec.queueSize() == 10);
 
     // tasks hold the nearest parents: x = 0, 2, 4, ... in order
     f.propExec.runAll();
     CHECK(prop.updatingCount() == 0);
-    for (int i = 0; i < 11; ++i) {
+    for (int i = 0; i < 10; ++i) {
         auto rec = f.store.get(sec::encode(7, i, 0), StorePart::Meta);
         REQUIRE(rec);
         CHECK(rec->has_value());
     }
-    CHECK_FALSE(f.store.get(sec::encode(7, 11, 0), StorePart::Meta).value().has_value());
+    CHECK_FALSE(f.store.get(sec::encode(7, 10, 0), StorePart::Meta).value().has_value());
 }
 
 TEST_CASE("propagator: locked parent defers (tryLock), flags kept for the next tick") {
@@ -512,9 +516,9 @@ TEST_CASE("propagator: non-leaf children get ApplyToChildren, detail >= 12 is ne
 TEST_CASE("propagator: deterministic order, nearest parent first") {
     Fx               f;
     UpdatePropagator prop(*f.provider, f.propExec, 1);
-    REQUIRE(f.up().update(f.make(6, 40, 0, f.stone, 10, 0, 2)));
-    REQUIRE(f.up().update(f.make(6, 0, 0, f.stone, 10, 0, 2)));
-    REQUIRE(f.up().update(f.make(6, -10, 0, f.stone, 10, 0, 2)));
+    REQUIRE(f.up().update(f.make(6, 40, 0, f.stone, 10, 0, 4)));
+    REQUIRE(f.up().update(f.make(6, 0, 0, f.stone, 10, 0, 4)));
+    REQUIRE(f.up().update(f.make(6, -10, 0, f.stone, 10, 0, 4)));
     std::vector<std::uint64_t> order;
     f.provider->addUpdateListener([&](std::uint64_t p) {
         if (sec::detail(p) == 7) order.push_back(p);
