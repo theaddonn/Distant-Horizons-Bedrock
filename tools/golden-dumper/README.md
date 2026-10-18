@@ -94,7 +94,7 @@ and if packing succeeded: `getYMax getYMin getAlpha getRed getGreen getBlue getL
 doesDataPointExist hasZeroHeight isVoid_derived setYMin compareDatapointPriority compareDatapointPriority_rev` (`isVoid_derived` = exists && hasZeroHeight;
 no `isVoid` exists in DH).
 `raw_N`: same getters for a random 64-bit `raw` with `other`. `getAlpha` is `(a4 << 4) | 0xF` (4-bit alpha), shorts/bytes dumped as ints.
-`compareDatapointPriority` = `(int)((a>>3) - (b>>3))` (arithmetic shift, 64-bit subtract truncated to int).
+`compareDatapointPriority` = `(int)((a>>7) - (b>>7))` (arithmetic shift, 64-bit subtract truncated to int).
 
 ### config: one case per enum (`in.enum`), `out`: `count`, `constants[]` {name, ordinal, every instance field}, `methods{}`
 EDhApiVerticalQuality (maxVerticalData[] + `calculateMaxNumberOfVerticalSlicesAtDetailLevel_<Q>_detail_-2_to_14`),

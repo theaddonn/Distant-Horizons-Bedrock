@@ -122,15 +122,15 @@ TEST_CASE("rdp: comparePriority sign behaviour") {
     const auto highMat = rdp::create(255, 0, 0, 0, 10, 0, 0, 0, BlockMaterial::Water); // bit 63 set
     CHECK(rdp::comparePriority(lowMat, lowMat) == 0);
 
-    // same word except the lowest 3 bits are ignored by the >>3
+    // same word except the lowest 3 bits are ignored by the >>7
     CHECK(rdp::comparePriority(0x1000, 0x1007) == 0);
     CHECK(rdp::comparePriority(0x1008, 0x1000) == 1);
     CHECK(rdp::comparePriority(0x1000, 0x1008) == -1);
 
     // a negative (material >= 8) word compares lower than a positive one in the signed view:
-    // (hi>>3) - (lo>>3) is a huge negative long whose low 32 bits are what Java returns.
-    const std::int64_t jl = static_cast<std::int64_t>(highMat) >> 3;
-    const std::int64_t jr = static_cast<std::int64_t>(lowMat) >> 3;
+    // (hi>>7) - (lo>>7) is a huge negative long whose low 32 bits are what Java returns.
+    const std::int64_t jl = static_cast<std::int64_t>(highMat) >> 7;
+    const std::int64_t jr = static_cast<std::int64_t>(lowMat) >> 7;
     CHECK(rdp::comparePriority(highMat, lowMat) == static_cast<int>(jl - jr));
     CHECK(rdp::comparePriority(lowMat, highMat) == static_cast<int>(jr - jl));
     CHECK(static_cast<std::int64_t>(highMat) < 0);

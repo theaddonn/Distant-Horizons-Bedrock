@@ -49,7 +49,7 @@ constexpr std::uint64_t Y_MASK             = 0xFFF;
 constexpr std::uint64_t MIN_MAX_Y_MASK     = 0xFFFFFF;
 constexpr std::uint64_t LIGHT_MASK         = 0xF;
 constexpr std::uint64_t MATERIAL_MASK      = 0xF;
-constexpr int           COMPARE_SHIFT      = 3;
+constexpr int           COMPARE_SHIFT      = 7; // Java: 0b111 (RenderDataPointUtil.java:106)
 
 constexpr std::uint64_t MAX_Y_SHIFTED_MASK = Y_MASK << MAX_Y_SHIFT;
 constexpr std::uint64_t MIN_Y_SHIFTED_MASK = Y_MASK << MIN_Y_SHIFT;
