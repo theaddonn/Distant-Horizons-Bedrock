@@ -214,3 +214,44 @@ Config: `generatorPlan` is set through `Config.Common.WorldGenerator.generatorPl
 ## Notes for suite authors
 - Never touch `Config` (directly or through a static initialiser/field of a suite class) before `Bootstrap.init()` has run: `WorldGenPlanConfigEventHandler`, `ConfigHandler` etc. capture singletons in static initialisers.
 - Direct `SingletonInjector` bindings can only be added in `Bootstrap`/`Extra`; per-suite stubs use `Stub.of(Interface.class).on("method", args -> value).build()`.
+
+---
+
+# Wave 2 suites: f2r, mesh, propagate
+
+## Block table additions (serials 17..24, appended to `block_table.gv.json`, which now also has a `resourceName` per block)
+| serial | resourceName | isAir | opacity | isSolid | isLiquid | lightEmission | materialId |
+|---|---|---|---|---|---|---|---|
+| 17 | minecraft:snow_STATE_{layers:1} | 0 | 1 | 0 | 0 | 0 | 8 |
+| 18 | minecraft:snow_STATE_{layers:2} | 0 | 2 | 0 | 0 | 0 | 8 |
+| 19 | minecraft:snow_STATE_{layers:3} | 0 | 3 | 0 | 0 | 0 | 8 |
+| 20 | minecraft:snow_block | 0 | 16 | 1 | 0 | 0 | 8 |
+| 21 | minecraft:lily_pad | 0 | 0 | 0 | 0 | 0 | 13 |
+| 22 | minecraft:kelp | 0 | 1 | 0 | 0 | 0 | 13 |
+| 23 | minecraft:seagrass | 0 | 1 | 0 | 0 | 0 | 13 |
+| 24 | minecraft:barrier | 0 | 0 | 1 | 0 | 0 | 0 |
+
+Resource names for 0..16: `minecraft:` + air, stone, dirt, grass_block, water, ice, glass, oak_leaves, torch, snow_layer, poppy, glowstone, lava, oak_stairs, deepslate, cave_air, sand. Serials 17..19 report `getSerialString()` = their resource name (the snow-layer detection in the transformer needs "layers" in it); all others `B<serial>`. Older suites keep drawing random palettes from serials 0..16 only (their goldens are unchanged).
+
+Extra wrapper-factory stubs: `deserializeBlockStateWrapper` accepts `B<n>` or a resource name (`<name>_STATE_{layers:N}` is only known for `minecraft:snow`; `minecraft:snow_layer_STATE_...` and unknown names give air, like a failed lookup); `getRendererIgnoredBlocks` / `getRendererIgnoredCaveBlocks` = air + CSV, `getWaterSurfaceReplacementBlocks` / `getWaterSubsurfaceReplacementBlocks` = CSV without air; the CSVs are held in `Wrappers.*Csv` (not in Config, so no listener timers fire). Levels come from `DumpClientLevel.create(minHeight, maxHeight, hasCeiling, isEnd)` (hasSkyLight = true). New suites set Config through `setWithoutFiringEvents` to avoid the delayed reload listeners.
+
+## f2r (608 cases: 17 fixture families x 4 variants x 6 option combos = 408, plus 200 `random_N`)
+`FullDataToRenderDataTransformer.transformFullDataToRenderSource(fullSource, clientLevel)`.
+- `in {options, level, source}`: `options {verticalQuality (EDhApiVerticalQuality ordinal), blocksToIgnore (0 NONE, 1 NON_COLLIDING), tintWithAvoidedBlocks, enableCaveCulling, caveCullingHeight, ignoredRenderBlockCsv, ignoredRenderCaveBlockCsv, waterSurfaceBlockReplacementCsv, waterSubSurfaceBlockReplacementCsv}`, `level {minHeight, maxHeight, hasCeiling, isEnd}`, `source` = Ds json (datapoint ids index the palette; `isEmpty:true` only in the `empty_flag` fixtures).
+- Combos (suffix `_c0.._c5`): c0 defaults, minHeight -64; c1 HEIGHT_MAP, NONE, no tint, no cave culling, minHeight 0; c2 HIGH, tint off, culling height 200; c3 LOW, NONE, culling height -20, hasCeiling (disables culling), minHeight 0; c4 EXTREME, isEnd (disables culling); c5 PIXEL_ART with custom CSVs (`ignore=poppy,glass`, `cave=stone`, `surface=kelp,lily_pad`, `subsurface=seagrass`).
+- Fixture families: snow_layers (1..3 layers on grass), snow_block, flowers (incl. under glass), water_ice, lily_kelp (surface / sub-surface replacement), caves (with/without sky light, top/bottom of column), floating_island (void bottom), lava, glass_stack, same_colour (merge), broken_id (id outside the palette), barrier (ignored block, bottom datapoint void air), torch_stairs, leaves, tall_column (needs vertical reduction), mixed_air_gaps, empty_flag.
+- `out {maxVerticalSlices, yOffset, dataTable, dataRuns, voidTable, voidRuns}`: `dataTable[i]` = render datapoints of one column (index 0 highest, trailing zero slots trimmed, each column really has `maxVerticalSlices` slots), `dataRuns` = run-length `[[tableIdx,count],...]` over the 4096 columns (index relX*64+relZ), `voidTable` = distinct per-column void-data longs, `voidRuns` likewise. `maxVerticalSlices = verticalQuality.calculateMaxNumberOfVerticalSlicesAtDetailLevel(dataDetail)`, `yOffset = level minHeight`. Render datapoint minY/maxY are relative to the level's minHeight. Cave culling ceiling = `caveCullingHeight - minHeight`. Textured LODs are off.
+
+## mesh (160 cases: 25 geometries x 4 variants + 60 `random_N`)
+`ColumnRenderBufferBuilder.makeLodRenderData(quadBuilder, centre, level, [N,S,W,E], sameDetail)` with render sources built directly from render datapoints (no f2r).
+- `in {options, level, center, neighbours, sameDetail, dirtColor, shades}`; `options {transparency (0 DISABLED, 1 COMPLETE; also the LodQuadBuilder doTransparency flag), grassSideRendering (0 AS_GRASS, 1 FADE_TO_DIRT, 2 AS_DIRT), enableCaveCulling, caveCullingHeight, brightnessMultiplier, saturationMultiplier (floats; 1.0/1.0 or other), debugRendering (always 0 = OFF)}`, `level.minHeight` (-64 or 0), `neighbours` = `[N (z-1), S (z+1), W (x-1), E (x+1)]` each a render source or `null`, `sameDetail` = `[bool x4]` in that order (passed to the builder as the `isSameDetailLevel` array indexed by compass index N=0,S=1,W=2,E=3; `ColumnBox` ignores it), `dirtColor` = the stub level's `getDirtBlockColor()` (signed ARGB int) and `shades` = `getShade` per direction (UP 1.0, DOWN 0.5, N/S 0.8, W/E 0.6) - both are constants of `DumpClientLevel`.
+- Render source JSON = the f2r `out` shape plus `pos`: `{pos, maxVerticalSlices (4), yOffset, dataTable, dataRuns, voidTable, voidRuns}` (all sources 4 slices, centre at detail level 6, i.e. data detail 0; "coarser" neighbours are sections one detail level higher whose columns are NOT wrapped by the builder, so they act like missing data).
+- Geometries: flat, cliff_x, cliff_z, steps, overhang, floating_slab, water_over_sand, glass_over_stone, water_glass_stack, void_edge, pit, border_lit/unlit/mixed (neighbours with different heights and light), coarser_N, coarser_all, missing_all, missing_some, grass_top, cave_cut, checker, single_column, spire, plateau, lava_glow.
+- `out {opaqueQuads, transparentQuads, opaque:[hex], transparent:[hex]}`: identical vertex format and ordering rules as the `quads` suite (little-endian, 16 bytes/vertex).
+
+## propagate (33 cases)
+The real `FullDataSourceProviderV2` data path on a real SQLite repo (temp file), no threads: the provider/propagator are allocated without constructors, `FullDataUpdaterV2.updateDataSource(input)` (the body of `updateDataSourceAsync`) writes the inputs, then the private `FullDataUpdatePropagatorV2.runParentUpdates` / `runChildUpdates` are called (inline executor, target pos (0,0), `numberOfThreads` pinned to 4 => `maxTasks` 40) repeatedly until `getParentPositionsToUpdate` and `getChildPositionsToUpdate` are both empty. The level has sky light, so detail-6 sections get `bakeDataSourceSkyLight` on every write.
+- `in {maxTasks, phases:[[update...],...]}` with `update {applyToParent:true, applyToChildren: bool|null, regenerateLeaf:null, source}`; `source` = Ds json with an optional `fill {gen, comp, pts}` = the column every unlisted column starts with (leaves are fully generated: uniform base column + 1..3 special column clusters; all leaves of a scenario share one palette). Phases are applied in order, each followed by propagation to quiescence.
+- Scenarios: `aligned_k{2,4,8}` (k x k leaves = 4/16/64 sections sharing parents), `unaligned_k*`, `sparse_k*` (65% of leaves present), `mid_applyToChildren_N` (additionally one detail 8..9 section written with `applyToChildren=true`, which downsamples into its children), `rewrite_N` (second phase rewrites some leaves).
+- `out {phases:[{updateOrder:[pos...], passes}], sections:[{pos, applyToParent, applyToChildren, regenerate, data}]}`: `updateOrder` = positions in the order the data updater saved them (the phase's own updates, then each parent/child rewritten by the passes); `sections` = every stored section after the last phase, sorted by (detail, x, z); the three flags are the stored DB values (`null` possible); `data = {pos, palette, runs:[[count,genStep,compMode,[longs]],...], isEmpty}` where `runs` is run-length over the 4096 columns (index relX*64+relZ).
+- Observed behaviour worth testing: a parent 2x2-merge only keeps columns whose four source columns all have a non-empty genStep; propagation climbs one detail level per pass up to `ROOT_SECTION_DETAIL_LEVEL` (14); the child pass does not downsample into sections of detail >= `HIGHEST_DOWNSAMPLE_DETAIL_LEVEL` (12).
