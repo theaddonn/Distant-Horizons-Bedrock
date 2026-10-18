@@ -79,8 +79,7 @@ public:
     const BiomeInfo* defaultBiome() override { return defaultBiome_; }
 
     /// Base entry (if any) plus every state variant of `baseName` (Java getAllBlockWrappers). O(1) index.
-    /// Matches IBlockRegistry::resolveAllStates once that virtual lands on main (override then implicit).
-    std::vector<const BlockInfo*> resolveAllStates(std::string_view baseName);
+    std::vector<const BlockInfo*> resolveAllStates(std::string_view baseName) override;
 
     /// nullptr if `info` was not produced by this table.
     const BlockColorInfo* colorInfo(const BlockInfo* info) const;
