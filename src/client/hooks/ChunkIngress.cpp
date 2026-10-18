@@ -140,10 +140,10 @@ ll::event::ListenerPtr gExitListener;
 
 void onKeys(ll::event::AfterUIRenderEvent& e) {
     if (e.screenView().getScreenName() != "hud_screen") return;
-    if (dh::input::pressed(VK_F6)) {
+    if (dh::input::pressed(VK_F7) && dh::input::shiftDown()) {
         bool on = !gEnabled.load();
         gEnabled.store(on);
-        DH_LOG_I("ingress: %s (F6)", on ? "on" : "off");
+        DH_LOG_I("ingress: %s (Shift+F7)", on ? "on" : "off");
         dh::hud::set("ingress.on", on ? "on" : "off");
     }
 }
@@ -161,7 +161,7 @@ void install() {
     });
     dh::hud::set("ingress.on", "off");
     dh::hud::set("ingress.chunks", 0);
-    DH_LOG_I("ingress installed (off; F6 toggles chunk -> LOD smoke test)");
+    DH_LOG_I("ingress installed (off; Shift+F7 toggles chunk -> LOD smoke test)");
 }
 
 void uninstall() {

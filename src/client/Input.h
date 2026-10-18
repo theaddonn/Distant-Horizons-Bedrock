@@ -14,3 +14,10 @@ namespace dh::input {
 bool shiftDown();
 
 } // namespace dh::input
+
+namespace dh::input {
+
+/// True while either Ctrl key is held (and the game window is focused).
+bool ctrlDown();
+
+} // namespace dh::input
