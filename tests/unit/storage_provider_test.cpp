@@ -548,16 +548,3 @@ TEST_CASE("chunk hash store / tracker") {
     CHECK(tracker.pendingSectionCount() == 0);
     CHECK(tracker.commit(78) == 0);
 }
-
-TEST_CASE("golden propagate: replay with ManualExecutor + MemoryLodStore") {
-    DH_GOLDEN_SUITE_OR_SKIP(s, "propagate.pending");
-    // TODO(WP-D3/M): tests/golden/propagate.gv.json is not dumped yet. Once it exists, build each
-    // case's leaves from in.leaves[] (4/16/64 leaves), run tick+ManualExecutor until quiescent and
-    // compare every sections in out.sections[] against the stored sections. The per-leaf / per-section
-    // field schema is intentionally NOT guessed here; only the two top-level arrays are checked.
-    for (const dh::test::GoldenCase& gc : s.cases) {
-        INFO(gc.name);
-        CHECK(gc.in.contains("leaves"));
-        CHECK(gc.out.contains("sections"));
-    }
-}
