@@ -26,10 +26,17 @@ enum class GenerationStep : std::int8_t {
 /// Java EDhApiWorldGenerationStep.fromValue (first match wins); nullopt when unknown.
 inline std::optional<GenerationStep> generationStepFromValue(int value) {
     constexpr GenerationStep all[] = {
-        GenerationStep::DownSampled,        GenerationStep::Empty,   GenerationStep::StructureStart,
-        GenerationStep::StructureReference, GenerationStep::Biomes,  GenerationStep::Noise,
-        GenerationStep::Surface,            GenerationStep::Carvers, GenerationStep::LiquidCarvers,
-        GenerationStep::Features,           GenerationStep::Light,
+        GenerationStep::DownSampled,
+        GenerationStep::Empty,
+        GenerationStep::StructureStart,
+        GenerationStep::StructureReference,
+        GenerationStep::Biomes,
+        GenerationStep::Noise,
+        GenerationStep::Surface,
+        GenerationStep::Carvers,
+        GenerationStep::LiquidCarvers,
+        GenerationStep::Features,
+        GenerationStep::Light,
     };
     for (GenerationStep s : all) {
         if (static_cast<int>(s) == value) return s;
@@ -61,10 +68,14 @@ struct AdjRange {
 
 constexpr AdjRange adjRange(AdjDirection d, int width = 64) {
     switch (d) {
-    case AdjDirection::North: return {0, width, 0, 1};
-    case AdjDirection::South: return {0, width, width - 1, width};
-    case AdjDirection::East: return {width - 1, width, 0, width};
-    case AdjDirection::West: return {0, 1, 0, width};
+    case AdjDirection::North:
+        return {0, width, 0, 1};
+    case AdjDirection::South:
+        return {0, width, width - 1, width};
+    case AdjDirection::East:
+        return {width - 1, width, 0, width};
+    case AdjDirection::West:
+        return {0, 1, 0, width};
     }
     return {0, 0, 0, 0};
 }

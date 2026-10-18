@@ -33,7 +33,7 @@ public:
     void addAllAllowingDups(const IdMap& other);
 
     std::size_t size() const { return mPairs.size(); }
-    bool empty() const { return mPairs.empty(); }
+    bool        empty() const { return mPairs.empty(); }
     /// -1 when empty (Java getMaxValidId)
     int maxValidId() const { return static_cast<int>(mPairs.size()) - 1; }
 
@@ -49,19 +49,19 @@ private:
     struct Pair {
         const BiomeInfo* biome;
         const BlockInfo* block;
-        bool operator==(const Pair& o) const { return biome == o.biome && block == o.block; }
+        bool             operator==(const Pair& o) const { return biome == o.biome && block == o.block; }
     };
     struct PairHash {
         std::size_t operator()(const Pair& p) const {
-            const std::uint64_t a = reinterpret_cast<std::uintptr_t>(p.biome);
-            const std::uint64_t b = reinterpret_cast<std::uintptr_t>(p.block);
-            std::uint64_t h = (a * 0x9E3779B97F4A7C15ull) ^ ((b + 0x7F4A7C15ull) * 0xBF58476D1CE4E5B9ull);
-            h ^= h >> 29;
+            const std::uint64_t a  = reinterpret_cast<std::uintptr_t>(p.biome);
+            const std::uint64_t b  = reinterpret_cast<std::uintptr_t>(p.block);
+            std::uint64_t       h  = (a * 0x9E3779B97F4A7C15ull) ^ ((b + 0x7F4A7C15ull) * 0xBF58476D1CE4E5B9ull);
+            h                     ^= h >> 29;
             return static_cast<std::size_t>(h);
         }
     };
 
-    std::vector<Pair> mPairs;
+    std::vector<Pair>                       mPairs;
     std::unordered_map<Pair, int, PairHash> mLookup;
 };
 

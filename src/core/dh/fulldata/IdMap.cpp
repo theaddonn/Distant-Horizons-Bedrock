@@ -4,7 +4,7 @@ namespace dh {
 
 int IdMap::addIfAbsent(const BiomeInfo* biome, const BlockInfo* block) {
     const Pair pair{biome, block};
-    auto it = mLookup.find(pair);
+    auto       it = mLookup.find(pair);
     if (it != mLookup.end()) return it->second;
     const int id = static_cast<int>(mPairs.size());
     mPairs.push_back(pair);
@@ -25,7 +25,7 @@ const BiomeInfo* IdMap::biome(int id) const {
 std::vector<int> IdMap::mergeAndRemap(const IdMap& other) {
     // copy first so merging a map into itself is well defined
     const std::vector<Pair> src = other.mPairs;
-    std::vector<int> remap;
+    std::vector<int>        remap;
     remap.reserve(src.size());
     for (const Pair& p : src) remap.push_back(addIfAbsent(p.biome, p.block));
     return remap;

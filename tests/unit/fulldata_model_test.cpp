@@ -48,15 +48,15 @@ TEST_CASE("fdp: layout offsets") {
 TEST_CASE("fdp: round trip fuzz") {
     std::mt19937_64 rng(42);
     for (int i = 0; i < 100000; ++i) {
-        int id = static_cast<int>(rng() & 0x7FFFFFFF);
-        int h = static_cast<int>(rng() & 0xFFF);
-        int y = static_cast<int>(rng() & 0xFFF);
+        int  id = static_cast<int>(rng() & 0x7FFFFFFF);
+        int  h  = static_cast<int>(rng() & 0xFFF);
+        int  y  = static_cast<int>(rng() & 0xFFF);
         auto bl = static_cast<std::uint8_t>(rng() & 0xF);
         auto sl = static_cast<std::uint8_t>(rng() & 0xF);
         if (i < 16) { // max / min values
             id = (i & 1) ? 0x7FFFFFFF : 0;
-            h = (i & 2) ? 0xFFF : 0;
-            y = (i & 4) ? 0xFFF : 0;
+            h  = (i & 2) ? 0xFFF : 0;
+            y  = (i & 4) ? 0xFFF : 0;
             bl = (i & 8) ? 15 : 0;
             sl = (i & 8) ? 0 : 15;
         }
@@ -68,12 +68,12 @@ TEST_CASE("fdp: round trip fuzz") {
         CHECK(fdp::skyLight(d) == sl);
 
         // setters touch exactly one field
-        const int id2 = static_cast<int>(rng() & 0x7FFFFFFF);
-        const int h2 = static_cast<int>(rng() & 0xFFF);
-        const int y2 = static_cast<int>(rng() & 0xFFF);
-        const auto bl2 = static_cast<std::uint8_t>(rng() & 0xF);
-        const auto sl2 = static_cast<int>(rng() & 0xF);
-        const std::uint64_t s1 = fdp::setId(d, id2);
+        const int           id2 = static_cast<int>(rng() & 0x7FFFFFFF);
+        const int           h2  = static_cast<int>(rng() & 0xFFF);
+        const int           y2  = static_cast<int>(rng() & 0xFFF);
+        const auto          bl2 = static_cast<std::uint8_t>(rng() & 0xF);
+        const auto          sl2 = static_cast<int>(rng() & 0xF);
+        const std::uint64_t s1  = fdp::setId(d, id2);
         CHECK(fdp::id(s1) == id2);
         CHECK(fdp::encode(id2, h, y, bl, sl) == s1);
         CHECK(fdp::encode(id, h2, y, bl, sl) == fdp::setHeight(d, h2));
@@ -112,16 +112,16 @@ TEST_CASE("fdp: Java quirks are preserved") {
 }
 
 TEST_CASE("fdp: remapId") {
-    const int table[] = {5, 9, 2};
-    const std::uint64_t d = fdp::encode(1, 7, 8, 3, 4);
-    const std::uint64_t r = fdp::remapId(d, table);
+    const int           table[] = {5, 9, 2};
+    const std::uint64_t d       = fdp::encode(1, 7, 8, 3, 4);
+    const std::uint64_t r       = fdp::remapId(d, table);
     CHECK(fdp::id(r) == 9);
     CHECK(fdp::encode(9, 7, 8, 3, 4) == r);
 }
 
 TEST_CASE("IdMap: add, lookup, dedupe") {
     Fixture f;
-    IdMap m(77);
+    IdMap   m(77);
     CHECK(m.empty());
     CHECK(m.maxValidId() == -1);
     CHECK(m.block(0) == nullptr);
@@ -148,7 +148,7 @@ TEST_CASE("IdMap: add, lookup, dedupe") {
 
 TEST_CASE("IdMap: mergeAndRemap") {
     Fixture f;
-    IdMap a, b;
+    IdMap   a, b;
     a.addIfAbsent(&f.b0, &f.k0);
     a.addIfAbsent(&f.b0, &f.k1);
     b.addIfAbsent(&f.b0, &f.k1); // exists in a as id 1
@@ -167,7 +167,7 @@ TEST_CASE("IdMap: mergeAndRemap") {
 
 TEST_CASE("IdMap: addAllAllowingDups does not dedupe") {
     Fixture f;
-    IdMap a, b;
+    IdMap   a, b;
     a.addIfAbsent(&f.b0, &f.k0);
     b.addIfAbsent(&f.b0, &f.k0);
     b.addIfAbsent(&f.b0, &f.k1);
@@ -257,7 +257,12 @@ TEST_CASE("FullDataSource: column ordering helpers") {
     CHECK(bad == good);
 
     // even length, reversed fully
-    Col bad4{fdp::encode(0, 1, 1, 0, 0), fdp::encode(1, 1, 2, 0, 0), fdp::encode(2, 1, 3, 0, 0), fdp::encode(3, 1, 4, 0, 0)};
+    Col bad4{
+        fdp::encode(0, 1, 1, 0, 0),
+        fdp::encode(1, 1, 2, 0, 0),
+        fdp::encode(2, 1, 3, 0, 0),
+        fdp::encode(3, 1, 4, 0, 0)
+    };
     FullDataSource::ensureDataColumnOrder(bad4);
     CHECK(fdp::id(bad4[0]) == 3);
     CHECK(fdp::id(bad4[3]) == 0);
@@ -270,18 +275,20 @@ TEST_CASE("FullDataSource: column ordering helpers") {
 TEST_CASE("FullDataSource: clearAllNonAdjData (ported DataSourceRepoTests adjacency expectations)") {
     // Seeded like DataSourceRepoTests: pos irrelevant, java.util.Random(3), 1..31 points per column.
     for (AdjDirection dir : {AdjDirection::North, AdjDirection::South, AdjDirection::East, AdjDirection::West}) {
-        auto src = FullDataSource::createEmpty(0x1234);
+        auto       src = FullDataSource::createEmpty(0x1234);
         JavaRandom r2(3);
         for (int i = 0; i < FullDataSource::COLUMN_COUNT; ++i) {
             const int count = std::abs(r2.nextInt() % 31) + 1;
-            auto& col = src.columns[static_cast<std::size_t>(i)];
+            auto&     col   = src.columns[static_cast<std::size_t>(i)];
             for (int c = 0; c < count; ++c)
-                col.push_back(fdp::encode(c, 1, c, static_cast<std::uint8_t>(c % 15), static_cast<std::uint8_t>((c + 2) % 15)));
+                col.push_back(
+                    fdp::encode(c, 1, c, static_cast<std::uint8_t>(c % 15), static_cast<std::uint8_t>((c + 2) % 15))
+                );
         }
         const auto original = src.columns;
         src.clearAllNonAdjData(dir);
-        const AdjRange r = adjRange(dir);
-        int adjCount = 0;
+        const AdjRange r        = adjRange(dir);
+        int            adjCount = 0;
         for (int x = 0; x < 64; ++x) {
             for (int z = 0; z < 64; ++z) {
                 const auto idx = static_cast<std::size_t>(FullDataSource::relativePosToIndex(x, z));
@@ -328,22 +335,22 @@ TEST_CASE("FullDataSource: contentHash stability and sensitivity") {
     c.columns[5].push_back(1);
     CHECK(c.contentHash() != a.contentHash());
     CHECK_FALSE(c.contentEquals(a));
-    auto d = make();
+    auto d                      = make();
     d.columnGenerationStep[100] = 3;
     CHECK(d.contentHash() != a.contentHash());
-    auto e = make();
+    auto e                            = make();
     e.columnWorldCompressionMode[100] = 1;
     CHECK(e.contentHash() != a.contentHash());
     // column boundaries matter: moving a point between adjacent columns changes the hash
-    auto f = FullDataSource::createEmpty(1);
-    auto g = FullDataSource::createEmpty(1);
+    auto f       = FullDataSource::createEmpty(1);
+    auto g       = FullDataSource::createEmpty(1);
     f.columns[0] = {7};
     g.columns[1] = {7};
     CHECK(f.contentHash() != g.contentHash());
     // mapping and flags are not part of the hash (as in Java)
     BiomeInfo bi{"x"};
     BlockInfo bk{"y"};
-    auto h = make();
+    auto      h = make();
     h.mapping.addIfAbsent(&bi, &bk);
     h.applyToParent = true;
     CHECK(h.contentHash() == a.contentHash());

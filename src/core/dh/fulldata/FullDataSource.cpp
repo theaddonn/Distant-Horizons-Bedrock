@@ -14,12 +14,18 @@ const std::vector<std::uint64_t>* FullDataSource::tryColumn(int x, int z) const 
     return i < 0 ? nullptr : &columns[static_cast<std::size_t>(i)];
 }
 
-void FullDataSource::setSingleColumn(std::vector<std::uint64_t> col, int x, int z, std::int8_t genStep, std::int8_t compMode) {
+void FullDataSource::setSingleColumn(
+    std::vector<std::uint64_t> col,
+    int                        x,
+    int                        z,
+    std::int8_t                genStep,
+    std::int8_t                compMode
+) {
     const int i = tryRelativePosToIndex(x, z);
     if (i < 0) return;
-    const auto idx = static_cast<std::size_t>(i);
-    columns[idx] = std::move(col);
-    columnGenerationStep[idx] = genStep;
+    const auto idx                  = static_cast<std::size_t>(i);
+    columns[idx]                    = std::move(col);
+    columnGenerationStep[idx]       = genStep;
     columnWorldCompressionMode[idx] = compMode;
 }
 
@@ -46,7 +52,7 @@ void FullDataSource::clearAllNonAdjData(AdjDirection dir) {
 
 FullDataSource FullDataSource::createEmpty(std::uint64_t pos) {
     FullDataSource s;
-    s.pos = pos;
+    s.pos     = pos;
     s.mapping = IdMap(pos);
     s.isEmpty = true;
     return s;
@@ -78,8 +84,8 @@ std::uint64_t FullDataSource::contentHash() const {
 }
 
 bool FullDataSource::contentEquals(const FullDataSource& o) const {
-    return pos == o.pos && columns == o.columns && columnGenerationStep == o.columnGenerationStep &&
-           columnWorldCompressionMode == o.columnWorldCompressionMode;
+    return pos == o.pos && columns == o.columns && columnGenerationStep == o.columnGenerationStep
+        && columnWorldCompressionMode == o.columnWorldCompressionMode;
 }
 
 } // namespace dh
