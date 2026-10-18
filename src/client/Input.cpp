@@ -34,3 +34,14 @@ bool shiftDown() {
 }
 
 } // namespace dh::input
+
+namespace dh::input {
+
+bool ctrlDown() {
+    HWND  fg  = GetForegroundWindow();
+    DWORD pid = 0;
+    if (fg) GetWindowThreadProcessId(fg, &pid);
+    return pid == GetCurrentProcessId() && (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+}
+
+} // namespace dh::input

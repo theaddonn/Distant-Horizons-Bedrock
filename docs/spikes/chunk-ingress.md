@@ -12,13 +12,13 @@ Status: cross-compiled, **not yet run in game**. Verifies that a real Bedrock `L
 
 ## Use
 
-* Press **F6** on the HUD screen (no menu/chat open). Log: `ingress: on (F6)`. Press again for `ingress: off`.
-  Off by default; startup line: `ingress installed (off; F6 toggles chunk -> LOD smoke test)`.
+* Press **Shift+F7** on the HUD screen (no menu/chat open). Log: `ingress: on (Shift+F7)`. Press again for `ingress: off`.
+  Off by default; startup line: `ingress installed (off; Shift+F7 toggles chunk -> LOD smoke test)`.
 * HUD (F7 toggles it, F8 dumps to log) shows `ingress.on`, `ingress.chunks` (count processed), `ingress.lastMs`.
 
 ## Expected log (`logs/dh.log`)
 
-    ingress: block table loaded (1531 blocks, 89 biomes)          <- once, on the first chunk after F6
+    ingress: block table loaded (1531 blocks, 89 biomes)          <- once, on the first chunk after Shift+F7
     chunk 12,-4: 256 columns, 9 ids, 3.40 ms                      <- one per loaded chunk
 
 Meaning: `columns` = non-empty columns the builder wrote for that chunk (max 256), `ids` = size of the block/biome id
@@ -32,7 +32,7 @@ Possible findings to report back:
 * `biome not in biome_table.json`: shows the biome-name format actually returned (`Biome::mHash`); if it is not
   `minecraft:<name>` / `<name>`, tell me the logged value.
 * `(build failed)` suffix: `createFromChunk` returned nothing (column-order corruption).
-* A crash right after F6: most likely a layout assumption (`Block::mSerializationId`, `LevelChunk::mDimension`,
+* A crash right after Shift+F7: most likely a layout assumption (`Block::mSerializationId`, `LevelChunk::mDimension`,
   `Dimension::mHeightRange`); send the crash log.
 
 ## Things to check on this run
