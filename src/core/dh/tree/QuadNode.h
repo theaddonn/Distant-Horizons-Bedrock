@@ -331,6 +331,16 @@ public:
 
     bool hasNext() const { return !iteratorNodeQueue_.empty(); }
 
+    /// Drops every queued node that is a strict descendant of `removedPos`. Call before deleting that node's
+    /// children so the iterator never dereferences freed nodes (Java's GC made this a non-issue).
+    void purgeDescendantsOf(sec::Pos removedPos) {
+        auto isDescendant = [&](QuadNode<T>* n) {
+            return sec::detail(n->sectionPos) < sec::detail(removedPos) && sec::contains(removedPos, n->sectionPos);
+        };
+        std::erase_if(iteratorNodeQueue_, isDescendant);
+        std::erase_if(validNodesForDetailLevel_, isDescendant);
+    }
+
     QuadNode<T>* next() {
         if (iteratorDetailLevel_ < leafDetailLevel_ || iteratorNodeQueue_.empty()) {
             assert(false && "QuadTreeNodeIterator: no more elements");

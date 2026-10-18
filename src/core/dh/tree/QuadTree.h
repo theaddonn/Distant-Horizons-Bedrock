@@ -262,6 +262,7 @@ public:
             return lastNode_;
         }
         /// Iterator.remove(): clears the last returned node's value and deletes all of its children.
+        /// The iterator stays valid: queued descendants of the removed node are purged first.
         void remove() {
             if (lastNode_ == nullptr) {
                 assert(false && "No last node found.");
@@ -269,6 +270,9 @@ public:
             }
             Node* node = tree_->setNodeValueCreating(lastNode_->sectionPos);
             if (node != nullptr) {
+                if (current_.has_value()) {
+                    current_->purgeDescendantsOf(lastNode_->sectionPos);
+                }
                 node->deleteAllChildren();
             }
         }
