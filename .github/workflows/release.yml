@@ -10,6 +10,7 @@ jobs:
       matrix:
         target_type:
           - client
+          - server
     steps:
       - uses: actions/checkout@v7
 
@@ -70,6 +71,7 @@ jobs:
       matrix:
         target_type:
           - client
+          - server
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
