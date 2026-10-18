@@ -5,6 +5,7 @@
 #include "client/Version.h"
 #include "client/hooks/ChunkIngress.h"
 #include "client/hud/DebugHud.h"
+#include "client/render/MaterialInjector.h"
 #include "client/spikes/Spikes.h"
 
 #include "dh/Version.h"
@@ -39,11 +40,13 @@ bool DistantHorizons::enable() {
     dh::hud::install();
     dh::spikes::install();
     dh::ingress::install();
+    dh::render::install();
     DH_LOG_I("DH enabled");
     return true;
 }
 
 bool DistantHorizons::disable() {
+    dh::render::uninstall();
     dh::ingress::uninstall();
     dh::spikes::uninstall();
     dh::hud::uninstall();
