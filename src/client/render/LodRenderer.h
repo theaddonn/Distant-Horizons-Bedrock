@@ -10,6 +10,7 @@
 #include <glm/glm.hpp>
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 
@@ -49,12 +50,13 @@ struct LodRendererConfig {
     std::size_t maxUploadsPerFrame = 8;
     bool        frustumCull        = true;
     bool        drawTransparent    = true;
+    bool        coreFrustum        = true; ///< cull in the core RenderList (Ctrl+F5 toggles; off: only Frustum5)
 
     /// Near cut-off: skip a section whose horizontal footprint lies entirely within
     /// vanillaRenderDistanceBlocks * overdraw of the camera. vanillaRenderDistanceBlocks <= 0: take it from
     /// ViewRenderData::mRenderDistance (values < 64 are treated as chunks). Off by default during bring-up so the test
     /// feed (placed around the player) is visible.
-    bool  nearCutoff                  = false;
+    bool  nearCutoff                  = true; ///< applies only while the world pipeline supplies the list
     float vanillaRenderDistanceBlocks = 0.0f;
     float overdraw                    = 1.0f;
 
@@ -100,6 +102,10 @@ private:
     std::atomic<double> camX_{0}, camY_{0}, camZ_{0};
     double              emaMs_           = 0;
     bool                loggedFirstDraw_ = false;
+    glm::dvec3                            lastCamPos_{0};
+    std::chrono::steady_clock::time_point lastCamTime_{};
+    bool                                  haveLastCam_ = false;
+    double                                speedEma_    = 0.0;
     bool                loggedCutoff_    = false;
     bool                warnedDh_        = false;
 };

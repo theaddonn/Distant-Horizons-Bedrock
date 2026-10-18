@@ -4,7 +4,8 @@
 // LevelRendererPlayer::setupCamera (only active in far-plane mode "zfar-override"), plus the key handler. The hooks
 // are installed on enable but are passthrough until F5 turns the renderer on (off at start).
 //
-//   F5 renderer on/off          Shift+F5 test feed on/off
+//   F5 whole pipeline on/off    Shift+F5 test feed on/off    Ctrl+F5 core frustum cull on/off
+//   Shift+F7 chunk ingestion on/off (HUD toggle is plain F7)
 //   F4 primitive/winding cycle  Shift+F4 far-plane mode cycle   Ctrl+F4 near cut-off on/off
 //   F6 material cycle           Shift+F6 origin mode            Ctrl+F6 transparent pass on/off
 //
@@ -22,5 +23,7 @@ void uninstall();
 LodRenderer& renderer();
 
 bool enabled();
+/// Renderer draw on/off (the world driver sets it with the pipeline; F5 goes through ClientWorldDriver::setPipeline).
+void setEnabled(bool on);
 
 } // namespace dh::render

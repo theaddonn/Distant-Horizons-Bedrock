@@ -6,6 +6,7 @@
 #include "client/render/LodRenderer.h"
 #include "client/render/TestFeed.h"
 #include "client/spikes/SpikeGfx.h"
+#include "client/world/ClientWorldDriver.h"
 
 #include "ll/api/event/EventBus.h"
 #include "ll/api/event/client/ClientExitLevelEvent.h"
@@ -112,6 +113,7 @@ void onKeys(ll::event::AfterUIRenderEvent& e) {
         bool  ctrl  = dh::input::ctrlDown();
         auto& r     = *gRenderer;
         if (dh::input::pressed(VK_F5)) {
+            auto& drv = bedrock::ClientWorldDriver::instance();
             if (shift) {
                 glm::dvec3 pos;
                 if (r.lastCameraPos(pos)) {
@@ -123,10 +125,23 @@ void onKeys(ll::event::AfterUIRenderEvent& e) {
                 } else {
                     DH_LOG_W("render: test feed needs one rendered frame first; press F5, then Shift+F5");
                 }
+            } else if (ctrl) {
+                r.config().coreFrustum = !r.config().coreFrustum;
+                DH_LOG_I("render: core RenderList frustum cull -> %s (Ctrl+F5)", r.config().coreFrustum ? "on" : "off");
             } else {
-                gEnabled = !gEnabled;
-                DH_LOG_I("render: Stage-A renderer %s (F5)", gEnabled ? "on" : "off");
+                // F5 = the whole pipeline: world driver (hooks -> DH world -> quad tree) + renderer
+                const bool on = !drv.pipeline();
+                if (on && r.config().farMode == FarMode::Off) {
+                    r.config().farMode = FarMode::LocalProjPush; // LODs live beyond the vanilla far plane
+                    DH_LOG_I("render: far-plane mode -> local-proj-push (pipeline on; Shift+F4 cycles)");
+                }
+                drv.setPipeline(on); // also calls setEnabled()
+                DH_LOG_I("render: pipeline %s (F5)", on ? "on" : "off");
             }
+        }
+        if (dh::input::pressed(VK_F7) && shift) {
+            auto& drv = bedrock::ClientWorldDriver::instance();
+            drv.setIngestion(!drv.ingestion());
         }
         if (dh::input::pressed(VK_F4)) {
             if (shift) r.cycleFarMode();
@@ -149,6 +164,10 @@ void onKeys(ll::event::AfterUIRenderEvent& e) {
 
 LodRenderer& renderer() { return *gRenderer; }
 bool         enabled() { return gEnabled; }
+void         setEnabled(bool on) {
+    gEnabled = on;
+    if (gRenderer) updateHud();
+}
 
 void install() {
     if (gInstalled) return;
@@ -164,7 +183,8 @@ void install() {
     });
     updateHud();
     DH_LOG_I(
-        "render: Stage-A renderer installed (off; F5 on/off, Shift+F5 test feed, F4 prim, Shift+F4 far plane, Ctrl+F4 "
+        "render: Stage-A renderer installed (off; F5 pipeline on/off, Shift+F5 test feed, Ctrl+F5 core frustum, "
+        "Shift+F7 ingestion, F4 prim, Shift+F4 far plane, Ctrl+F4 "
         "near cut-off, "
         "F6 material, Shift+F6 origin, Ctrl+F6 transparent)"
     );

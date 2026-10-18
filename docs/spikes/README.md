@@ -15,7 +15,7 @@ F11 (fullscreen) overlap with some spike keys — that is known and harmless for
 | 1 | [render-spikes.md](render-spikes.md) R0 | F9 | material names, D3D11 vs D3D12, viewport depth range, projection matrix, vertex fields |
 | 2 | [render-spikes.md](render-spikes.md) R1/R1b/R2 | F10, F11, Shift+F10/F11 | immediate-draw path works; which hook draws in world space; fog on `MeshFallback`; origin/primitive conventions |
 | 3 | [render-spikes.md](render-spikes.md) R3 | F12 (cycle) | depth convention, far-plane strategy (local push vs `mZFar`) |
-| 4 | [chunk-ingress.md](chunk-ingress.md) | Shift+F7 | `LevelChunk` → `FullDataSource` works: columns>0, biome name format, y-offset, per-chunk ms, SP double-fire |
+| 4 | [chunk-ingress.md](chunk-ingress.md) (superseded by [m1-lods.md](m1-lods.md); the smoke hook is gone) | — | historical: `LevelChunk` → `FullDataSource` spike |
 | 5 | [stage-a-render.md](stage-a-render.md) | F5, Shift+F5 (test feed), F4/F6 + modifiers | persistent `mce::Mesh` upload + draw of DH-format buffers; which toggle combination renders correctly |
 | 6 | [stage-b-offline.md](stage-b-offline.md) B3 | (automatic at load) | injector log lines: `materials.index.json spliced`, `DH_Terrain served`, `DH_Terrain resolved: yes/no` |
 | 7 | [stage-b-offline.md](stage-b-offline.md) B2 | manual file swap (backup first!) | does the loader accept a modified vanilla `.material.bin` (terrain tinted pink)? restore afterwards |

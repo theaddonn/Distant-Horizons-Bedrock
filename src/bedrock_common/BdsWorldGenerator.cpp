@@ -1,4 +1,4 @@
-#include "server/BdsWorldGenerator.h"
+#include "bedrock_common/BdsWorldGenerator.h"
 
 #include "bedrock_common/FileLogger.h"
 
