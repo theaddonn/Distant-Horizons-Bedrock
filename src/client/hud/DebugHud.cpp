@@ -85,7 +85,12 @@ void text(MinecraftUIRenderContext& ctx, float x, float y, std::string line) {
     r._y0 = y;
     r._y1 = y + 10.0f;
     ctx.drawDebugText(
-        r, std::move(line), white, 1.0f, ui::TextAlignment::Left, reinterpret_cast<TextMeasureData const&>(tm),
+        r,
+        std::move(line),
+        white,
+        1.0f,
+        ui::TextAlignment::Left,
+        reinterpret_cast<TextMeasureData const&>(tm),
         reinterpret_cast<CaretMeasureData const&>(cm)
     );
 }
@@ -93,15 +98,15 @@ void text(MinecraftUIRenderContext& ctx, float x, float y, std::string line) {
 void onRender(ll::event::AfterUIRenderEvent& e) {
     if (e.screenView().getScreenName() != "hud_screen") return;
 
-    using clock     = std::chrono::steady_clock;
+    using clock      = std::chrono::steady_clock;
     static auto last = clock::now();
     auto        now  = clock::now();
     double      dt   = std::chrono::duration<double, std::milli>(now - last).count();
     last             = now;
     if (dt > 0.0 && dt < 1000.0) gFrameMs = gFrameMs == 0.0 ? dt : gFrameMs * 0.95 + dt * 0.05;
 
-    if (dh::input::pressed(0x76)) gVisible = !gVisible; // F7
-    if (dh::input::pressed(0x77)) DH_LOG_I("hud-dump: %s", dumpJson().c_str()); // F8
+    if (dh::input::pressed(0x76) && !dh::input::shiftDown()) gVisible = !gVisible; // F7 (Shift+F7 = chunk ingress)
+    if (dh::input::pressed(0x77)) DH_LOG_I("hud-dump: %s", dumpJson().c_str());    // F8
 
     if (!gVisible) return;
 

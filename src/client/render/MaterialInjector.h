@@ -10,7 +10,7 @@
 
 namespace dh::render {
 
-void install();
-void uninstall();
+void installMaterialInjector();
+void uninstallMaterialInjector();
 
 } // namespace dh::render

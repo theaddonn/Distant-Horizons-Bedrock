@@ -11,7 +11,6 @@
 #include "dh/pos/SectionPos.h"
 #include "dh/render/RenderDataPoint.h"
 #include "dh/util/Color.h"
-#include "golden_loader.h"
 
 using namespace dh;
 
@@ -512,12 +511,4 @@ TEST_CASE("mesh column: debug rendering colours are full bright") {
     CHECK(up[0].color == color::rgbToInt(255, 0, 0)); // detail 0
     CHECK(up[0].blockLight == 15);
     CHECK(up[0].skyLight == 12);
-}
-
-TEST_CASE("mesh column: golden mesh suite") {
-    DH_GOLDEN_SUITE_OR_SKIP(gv, "mesh");
-    // TODO(WP-F2): the `mesh` suite is still being generated. Once tests/golden/mesh.gv.json exists,
-    // re-check the case keys against tools/golden-dumper/README.md, build the 3x3 fixture from `in`,
-    // run makeLodRenderData and compare build() vertex bytes with the hex strings in `out`.
-    MESSAGE("mesh golden suite present (" << gv.cases.size() << " cases) but comparison is not implemented yet");
 }
