@@ -1,5 +1,6 @@
 #include "dh/platform/testing/TestChunk.h"
 
+#include "dh/platform/ChunkHeightUtil.h"
 #include "dh/util/Assert.h"
 
 namespace dh {
@@ -63,8 +64,7 @@ void TestChunk::fillBiome(const BiomeInfo* biome) {
 // --- bounds / height maps (Java ChunkWrapper semantics) ---------------------
 
 void TestChunk::computeBounds() const {
-    const int sectionCount = (maxY_ - minY_) / 16;
-    auto      sectionEmpty = [&](int section) {
+    auto sectionEmpty = [&](int section) {
         std::int32_t base = minY_ + section * 16;
         for (std::int32_t y = base; y < base + 16; ++y)
             for (int z = 0; z < kWidth; ++z)
@@ -72,24 +72,10 @@ void TestChunk::computeBounds() const {
                     if (!blocks_[index(x, y, z)]->isAir) return false;
         return true;
     };
-
-    // Java getMinNonEmptyHeight: bottom-up, first non-empty section's min Y.
-    minNonEmpty_ = minY_;
-    for (int s = 0; s < sectionCount; ++s) {
-        if (!sectionEmpty(s)) {
-            minNonEmpty_ = minY_ + s * 16;
-            break;
-        }
-    }
-
-    // Java getMaxNonEmptyHeight: top-down, value updated at each section to
-    // (section min + 16) before the emptiness check; stays exclusiveMax if all empty.
-    maxNonEmpty_ = maxY_;
-    for (int s = sectionCount - 1; s >= 0; --s) {
-        maxNonEmpty_ = minY_ + s * 16 + 16;
-        if (!sectionEmpty(s)) break;
-    }
-    boundsValid_ = true;
+    const auto bounds = chunkheight::computeNonEmptyBounds(minY_, maxY_, sectionEmpty);
+    minNonEmpty_      = bounds.minNonEmpty;
+    maxNonEmpty_      = bounds.maxNonEmpty;
+    boundsValid_      = true;
 }
 
 std::int32_t TestChunk::minNonEmptyHeight() const {
@@ -103,27 +89,13 @@ std::int32_t TestChunk::maxNonEmptyHeight() const {
 }
 
 void TestChunk::computeHeightMaps() const {
-    // Verbatim port of ChunkWrapper.createDhHeightMaps.
-    const std::int32_t minInclusiveBuildHeight = minNonEmptyHeight();
-    for (int x = 0; x < kWidth; x++) {
-        for (int z = 0; z < kWidth; z++) {
-            std::int32_t solidHeight         = minInclusiveBuildHeight;
-            std::int32_t lightBlockingHeight = minInclusiveBuildHeight;
-
-            std::int32_t     y     = maxNonEmptyHeight();
-            const BlockInfo* block = blockAt(x, y, z);
-            while (y > minInclusiveBuildHeight
-                   && (solidHeight == minInclusiveBuildHeight || lightBlockingHeight == minInclusiveBuildHeight)) {
-                if (solidHeight == minInclusiveBuildHeight && block->isSolid) solidHeight = y;
-                if (lightBlockingHeight == minInclusiveBuildHeight && block->opacity != 0) lightBlockingHeight = y;
-                y--;
-                block = blockAt(x, y, z);
-            }
-
-            solidHeightMap_[x][z]         = solidHeight;
-            lightBlockingHeightMap_[x][z] = lightBlockingHeight;
-        }
-    }
+    chunkheight::computeHeightMaps(
+        minNonEmptyHeight(),
+        maxNonEmptyHeight(),
+        [&](int x, std::int32_t y, int z) { return blockAt(x, y, z); },
+        solidHeightMap_,
+        lightBlockingHeightMap_
+    );
     heightMapsValid_ = true;
 }
 
