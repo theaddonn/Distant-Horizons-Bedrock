@@ -20,6 +20,8 @@
 //   * no DhApiWorldProxy.worldLoaded()/readOnly gate (no such global here).
 //   * errors that Java threw at the caller (UnsupportedOperationException,
 //     assertion failures) become an already-Rejected future.
+//   * the chunk-gen-time rolling average holds max(numThreads, 1) * 500 samples;
+//     Java sized it Runtime.availableProcessors() * 500 (no such query here).
 
 #include <cstddef>
 #include <cstdint>

@@ -19,6 +19,10 @@
 //   * After close() returns no callback may fire anymore: every outstanding
 //     onDone has either fired (with Cancelled) or never will. The queue relies
 //     on this for its own destruction.
+//   * GenQueue never calls generate() once its shutdown has begun (it re-checks
+//     right before each call), so an implementation does not see generate()
+//     after close(). Defensive implementations may still answer such a call with
+//     an immediate ErrorCode::Cancelled (FakeWorldGenerator does).
 //   * Detail levels are absolute data detail levels (0 = block), as in Java:
 //     smallestDataDetailLevel() <= requested <= largestDataDetailLevel().
 

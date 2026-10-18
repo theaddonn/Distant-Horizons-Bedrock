@@ -364,6 +364,34 @@ struct GenQueue::Impl : std::enable_shared_from_this<GenQueue::Impl> {
             static_cast<std::int8_t>(static_cast<int>(sec::detail(taskPos)) - sec::SECTION_MINIMUM_DETAIL_LEVEL);
         request.mode = mode;
 
+        // shutdown() may have run between the pick and this point: never hand work to a
+        // generator that has been (or is about to be) closed. The task's future was already
+        // cancelled by shutdown(); give its slot back and, if that was the last lingering slot
+        // of a deferred close, close the generator.
+        {
+            bool closeGeneratorNow = false;
+            bool abort             = false;
+            {
+                std::lock_guard lock(mutex);
+                if (closing) {
+                    abort   = true;
+                    auto it = inProgressGenTasksByLodPos.find(taskPos);
+                    if (it != inProgressGenTasksByLodPos.end() && it->second == worldGenTask) {
+                        inProgressGenTasksByLodPos.erase(it);
+                    }
+                    if (deferGeneratorClose && !generatorClosed && inProgressGenTasksByLodPos.empty()) {
+                        closeGeneratorNow = true;
+                        generatorClosed   = true;
+                    }
+                }
+            }
+            if (abort) {
+                worldGenTask->future->cancel();
+                if (closeGeneratorNow) generator.close();
+                return;
+            }
+        }
+
         std::weak_ptr<Impl> weak = weak_from_this();
         generator.generate(
             request,
@@ -446,20 +474,32 @@ struct GenQueue::Impl : std::enable_shared_from_this<GenQueue::Impl> {
         bool                                          closeGeneratorNow = false;
         {
             std::lock_guard lock(mutex);
-            if (closing) return; // Java close(): second call is a no-op on the futures
-            closing = true;
-
-            // stop and remove any in progress tasks (:733; Java order: in-progress first, then waiting)
-            for (const auto& [pos, task] : inProgressGenTasksByLodPos) toCancel.push_back(task->future);
-            for (const auto& [pos, task] : waitingTaskByPos) toCancel.push_back(task->future);
-            waitingTaskByPos.clear();
-
-            if (interruptRunning || inProgressGenTasksByLodPos.empty()) {
-                closeGeneratorNow = true;
-                generatorClosed   = true;
+            if (closing) {
+                // Already shutting down: the futures were cancelled by the first call, but a
+                // shutdown(false) may still be waiting for lingering tasks before closing the
+                // generator. Java close() always reaches generator.close() (:795), so an
+                // interrupting call (or the destructor) closes it now.
+                if (interruptRunning && !generatorClosed) {
+                    generatorClosed     = true;
+                    deferGeneratorClose = false;
+                    closeGeneratorNow   = true;
+                }
+                if (!closeGeneratorNow) return;
             } else {
-                // let any lingering generation requests finish before fully shutting down
-                deferGeneratorClose = true;
+                closing = true;
+
+                // stop and remove any in progress tasks (:733; Java order: in-progress first, then waiting)
+                for (const auto& [pos, task] : inProgressGenTasksByLodPos) toCancel.push_back(task->future);
+                for (const auto& [pos, task] : waitingTaskByPos) toCancel.push_back(task->future);
+                waitingTaskByPos.clear();
+
+                if (interruptRunning || inProgressGenTasksByLodPos.empty()) {
+                    closeGeneratorNow = true;
+                    generatorClosed   = true;
+                } else {
+                    // let any lingering generation requests finish before fully shutting down
+                    deferGeneratorClose = true;
+                }
             }
         }
 
