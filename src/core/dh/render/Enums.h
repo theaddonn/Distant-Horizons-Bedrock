@@ -20,15 +20,17 @@ enum class VerticalQuality : std::uint8_t {
 
 inline constexpr int VERTICAL_QUALITY_DETAIL_COUNT = 11;
 
-inline constexpr std::array<std::array<int, VERTICAL_QUALITY_DETAIL_COUNT>, 7> VERTICAL_QUALITY_SLICES{{
-    /* HEIGHT_MAP */ {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
-    /* LOW        */ {4, 4, 4, 3, 3, 3, 3, 3, 3, 3, 1},
-    /* MEDIUM     */ {6, 6, 6, 4, 4, 4, 4, 4, 4, 4, 1},
-    /* HIGH       */ {16, 16, 12, 12, 8, 8, 8, 8, 8, 8, 1},
-    /* VERY_HIGH  */ {32, 16, 12, 12, 12, 12, 12, 12, 12, 12, 1},
-    /* EXTREME    */ {64, 32, 32, 32, 16, 16, 16, 16, 16, 16, 1},
-    /* PIXEL_ART  */ {512, 256, 128, 64, 32, 32, 16, 16, 16, 16, 1},
-}};
+inline constexpr std::array<std::array<int, VERTICAL_QUALITY_DETAIL_COUNT>, 7> VERTICAL_QUALITY_SLICES{
+    {
+     /* HEIGHT_MAP */ {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
+     /* LOW        */ {4, 4, 4, 3, 3, 3, 3, 3, 3, 3, 1},
+     /* MEDIUM     */ {6, 6, 6, 4, 4, 4, 4, 4, 4, 4, 1},
+     /* HIGH       */ {16, 16, 12, 12, 8, 8, 8, 8, 8, 8, 1},
+     /* VERY_HIGH  */ {32, 16, 12, 12, 12, 12, 12, 12, 12, 12, 1},
+     /* EXTREME    */ {64, 32, 32, 32, 16, 16, 16, 16, 16, 16, 1},
+     /* PIXEL_ART  */ {512, 256, 128, 64, 32, 32, 16, 16, 16, 16, 1},
+     }
+};
 
 /// Java calculateMaxNumberOfVerticalSlicesAtDetailLevel: MathUtil.clamp(0, detail, len - 1).
 constexpr int maxVerticalData(VerticalQuality q, int dataDetail) {
@@ -38,6 +40,7 @@ constexpr int maxVerticalData(VerticalQuality q, int dataDetail) {
 }
 
 /// Port of EDhApiHorizontalQuality (2.0/4, 2.0/8, 2.0/12, 2.2/16, 2.2/20).
+/// Java declares HIGH(2.2f, 16) into a double, i.e. the float widened (2.2000000476837158).
 enum class HorizontalQuality : std::uint8_t { Lowest, Low, Medium, High, Extreme };
 
 struct HorizontalQualityInfo {
@@ -45,15 +48,19 @@ struct HorizontalQualityInfo {
     int    distanceUnitInBlocks;
 };
 
-inline constexpr std::array<HorizontalQualityInfo, 5> HORIZONTAL_QUALITY{{
-    {2.0, 4},
-    {2.0, 8},
-    {2.0, 12},
-    {2.2, 16},
-    {2.2, 20},
-}};
+inline constexpr std::array<HorizontalQualityInfo, 5> HORIZONTAL_QUALITY{
+    {
+     {2.0, 4},
+     {2.0, 8},
+     {2.0, 12},
+     {static_cast<double>(2.2f), 16},
+     {static_cast<double>(2.2f), 20},
+     }
+};
 
-constexpr const HorizontalQualityInfo& info(HorizontalQuality q) { return HORIZONTAL_QUALITY[static_cast<std::size_t>(q)]; }
+constexpr const HorizontalQualityInfo& info(HorizontalQuality q) {
+    return HORIZONTAL_QUALITY[static_cast<std::size_t>(q)];
+}
 
 /// Port of EDhApiMaxHorizontalResolution. Ordinal == detail level (BLOCK=0 .. CHUNK=4).
 enum class MaxHorizontalResolution : std::uint8_t { Block, TwoBlocks, FourBlocks, HalfChunk, Chunk };

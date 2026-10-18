@@ -25,8 +25,14 @@ struct ColumnRenderView {
     int voidDataOffset        = 0;
 
     /// Java populate. Returns false (view left unusable) when an offset is past the end of its array.
-    bool populate(std::span<std::uint64_t> data, std::span<std::uint64_t> voidData, int size, int offset,
-                  int voidDataOffset, int maxVerticalSliceCount);
+    bool populate(
+        std::span<std::uint64_t> data,
+        std::span<std::uint64_t> voidData,
+        int                      size,
+        int                      offset,
+        int                      voidDataOffset,
+        int                      maxVerticalSliceCount
+    );
     void clear();
 
     std::uint64_t get(int index) const { return data[static_cast<std::size_t>(index + dataOffset)]; }
@@ -37,9 +43,12 @@ struct ColumnRenderView {
     void          setVoid(std::uint64_t value) { voidData[static_cast<std::size_t>(voidDataOffset)] = value; }
 
     /// The datapoints [0, size) of this view.
-    std::span<std::uint64_t> points() const { return data.subspan(static_cast<std::size_t>(dataOffset), static_cast<std::size_t>(size)); }
+    std::span<std::uint64_t> points() const {
+        return data.subspan(static_cast<std::size_t>(dataOffset), static_cast<std::size_t>(size));
+    }
 
     /// Java subView: `dataCount` columns starting at column `dataIndexStart`.
+    /// Returns an empty view (size 0, no data) when the window starts past the end of the arrays.
     ColumnRenderView subView(int dataIndexStart, int dataCount) const;
     /// Number of columns covered (size / maxVerticalSliceCount, 0 if maxVerticalSliceCount == 0).
     int subViewCount() const { return maxVerticalSliceCount != 0 ? size / maxVerticalSliceCount : 0; }
@@ -79,7 +88,9 @@ struct ColumnRenderSource {
     /// Java calculateMaxNumberOfVerticalSlicesAtDetailLevel.
     static int maxSlices(VerticalQuality q, int dataDetail) { return maxVerticalData(q, dataDetail); }
 
-    static int dataIndex(int x, int z, int slices, int verticalIndex) { return x * WIDTH * slices + z * slices + verticalIndex; }
+    static int dataIndex(int x, int z, int slices, int verticalIndex) {
+        return x * WIDTH * slices + z * slices + verticalIndex;
+    }
     static int voidIndex(int x, int z) { return x * WIDTH + z; }
 
     static bool inBounds(int x, int z) { return x >= 0 && x < WIDTH && z >= 0 && z < WIDTH; }

@@ -31,15 +31,15 @@ TEST_CASE("rdp: layout of a hand-built datapoint") {
 TEST_CASE("rdp: pack/unpack fuzz including materials >= 8") {
     std::mt19937_64 rng(1234);
     for (int i = 0; i < 200000; ++i) {
-        const int a   = static_cast<int>(rng() & 0xFF);
-        const int r   = static_cast<int>(rng() & 0xFF);
-        const int g   = static_cast<int>(rng() & 0xFF);
-        const int b   = static_cast<int>(rng() & 0xFF);
-        const int yH  = static_cast<int>(rng() & 0xFFF);
-        const int yL  = static_cast<int>(rng() & 0xFFF);
-        const int sky = static_cast<int>(rng() & 0xF);
-        const int blk = static_cast<int>(rng() & 0xF);
-        const auto m  = static_cast<BlockMaterial>(rng() & 0xF);
+        const int  a   = static_cast<int>(rng() & 0xFF);
+        const int  r   = static_cast<int>(rng() & 0xFF);
+        const int  g   = static_cast<int>(rng() & 0xFF);
+        const int  b   = static_cast<int>(rng() & 0xFF);
+        const int  yH  = static_cast<int>(rng() & 0xFFF);
+        const int  yL  = static_cast<int>(rng() & 0xFFF);
+        const int  sky = static_cast<int>(rng() & 0xF);
+        const int  blk = static_cast<int>(rng() & 0xF);
+        const auto m   = static_cast<BlockMaterial>(rng() & 0xF);
 
         const std::uint64_t d = rdp::create(a, r, g, b, yH, yL, sky, blk, m);
         REQUIRE(rdp::alpha(d) == ((a >> 4) << 4 | 0xF));
@@ -51,12 +51,24 @@ TEST_CASE("rdp: pack/unpack fuzz including materials >= 8") {
         REQUIRE(rdp::skyLight(d) == sky);
         REQUIRE(rdp::blockLight(d) == blk);
         REQUIRE(rdp::material(d) == m);
-        REQUIRE(rdp::argb(d) == (static_cast<std::uint32_t>(rdp::alpha(d)) << 24 | static_cast<std::uint32_t>(r) << 16 |
-                                 static_cast<std::uint32_t>(g) << 8 | static_cast<std::uint32_t>(b)));
+        REQUIRE(
+            rdp::argb(d)
+            == (static_cast<std::uint32_t>(rdp::alpha(d)) << 24 | static_cast<std::uint32_t>(r) << 16
+                | static_cast<std::uint32_t>(g) << 8 | static_cast<std::uint32_t>(b))
+        );
         // the argb overload must agree with the component overload
-        REQUIRE(rdp::create(yH, yL, (static_cast<std::uint32_t>(a) << 24) | (static_cast<std::uint32_t>(r) << 16) |
-                                        (static_cast<std::uint32_t>(g) << 8) | static_cast<std::uint32_t>(b),
-                            sky, blk, m) == d);
+        REQUIRE(
+            rdp::create(
+                yH,
+                yL,
+                (static_cast<std::uint32_t>(a) << 24) | (static_cast<std::uint32_t>(r) << 16)
+                    | (static_cast<std::uint32_t>(g) << 8) | static_cast<std::uint32_t>(b),
+                sky,
+                blk,
+                m
+            )
+            == d
+        );
     }
 }
 
@@ -106,8 +118,8 @@ TEST_CASE("rdp: hasZeroHeight / existence") {
 }
 
 TEST_CASE("rdp: comparePriority sign behaviour") {
-    const auto lowMat  = rdp::create(255, 0, 0, 0, 10, 0, 0, 0, BlockMaterial::Wood);   // bit 63 clear
-    const auto highMat = rdp::create(255, 0, 0, 0, 10, 0, 0, 0, BlockMaterial::Water);  // bit 63 set
+    const auto lowMat  = rdp::create(255, 0, 0, 0, 10, 0, 0, 0, BlockMaterial::Wood);  // bit 63 clear
+    const auto highMat = rdp::create(255, 0, 0, 0, 10, 0, 0, 0, BlockMaterial::Water); // bit 63 set
     CHECK(rdp::comparePriority(lowMat, lowMat) == 0);
 
     // same word except the lowest 3 bits are ignored by the >>3
@@ -160,9 +172,9 @@ TEST_CASE("HorizontalQuality and resolution tables match Java") {
     CHECK(info(HorizontalQuality::Lowest).distanceUnitInBlocks == 4);
     CHECK(info(HorizontalQuality::Low).distanceUnitInBlocks == 8);
     CHECK(info(HorizontalQuality::Medium).distanceUnitInBlocks == 12);
-    CHECK(info(HorizontalQuality::High).quadraticBase == 2.2);
+    CHECK(info(HorizontalQuality::High).quadraticBase == static_cast<double>(2.2f));
     CHECK(info(HorizontalQuality::High).distanceUnitInBlocks == 16);
-    CHECK(info(HorizontalQuality::Extreme).quadraticBase == 2.2);
+    CHECK(info(HorizontalQuality::Extreme).quadraticBase == static_cast<double>(2.2f));
     CHECK(info(HorizontalQuality::Extreme).distanceUnitInBlocks == 20);
 
     CHECK(dataPointLengthCount(MaxHorizontalResolution::Block) == 16);
@@ -224,7 +236,7 @@ TEST_CASE("ColumnRenderSource: layout and column spans") {
 }
 
 TEST_CASE("ColumnRenderSource: populateColumnView / hasNonVoidDataPoints") {
-    auto s = ColumnRenderSource::createEmpty(1, 4, 0);
+    auto             s = ColumnRenderSource::createEmpty(1, 4, 0);
     ColumnRenderView v;
     CHECK_FALSE(s.populateColumnView(v, -1, 0));
     CHECK_FALSE(s.populateColumnView(v, 0, 64));
@@ -246,11 +258,60 @@ TEST_CASE("ColumnRenderSource: populateColumnView / hasNonVoidDataPoints") {
     CHECK_FALSE(s.hasNonVoidDataPoints());
 }
 
+TEST_CASE("VerticalQuality: full table equals Java literal (77 values)") {
+    constexpr int expected[7][11] = {
+        {1,   1,   1,   1,  1,  1,  1,  1,  1,  1,  1},
+        {4,   4,   4,   3,  3,  3,  3,  3,  3,  3,  1},
+        {6,   6,   6,   4,  4,  4,  4,  4,  4,  4,  1},
+        {16,  16,  12,  12, 8,  8,  8,  8,  8,  8,  1},
+        {32,  16,  12,  12, 12, 12, 12, 12, 12, 12, 1},
+        {64,  32,  32,  32, 16, 16, 16, 16, 16, 16, 1},
+        {512, 256, 128, 64, 32, 32, 16, 16, 16, 16, 1},
+    };
+    for (int q = 0; q < 7; ++q) {
+        for (int d = 0; d < 11; ++d) {
+            CHECK(maxVerticalData(static_cast<VerticalQuality>(q), d) == expected[q][d]);
+        }
+    }
+}
+
+TEST_CASE("enum ordinals match Java declaration order") {
+    CHECK(static_cast<int>(VerticalQuality::HeightMap) == 0);
+    CHECK(static_cast<int>(VerticalQuality::Low) == 1);
+    CHECK(static_cast<int>(VerticalQuality::Medium) == 2);
+    CHECK(static_cast<int>(VerticalQuality::High) == 3);
+    CHECK(static_cast<int>(VerticalQuality::VeryHigh) == 4);
+    CHECK(static_cast<int>(VerticalQuality::Extreme) == 5);
+    CHECK(static_cast<int>(VerticalQuality::PixelArt) == 6);
+    CHECK(static_cast<int>(HorizontalQuality::Lowest) == 0);
+    CHECK(static_cast<int>(HorizontalQuality::Low) == 1);
+    CHECK(static_cast<int>(HorizontalQuality::Medium) == 2);
+    CHECK(static_cast<int>(HorizontalQuality::High) == 3);
+    CHECK(static_cast<int>(HorizontalQuality::Extreme) == 4);
+    CHECK(static_cast<int>(MaxHorizontalResolution::Block) == 0);
+    CHECK(static_cast<int>(MaxHorizontalResolution::TwoBlocks) == 1);
+    CHECK(static_cast<int>(MaxHorizontalResolution::FourBlocks) == 2);
+    CHECK(static_cast<int>(MaxHorizontalResolution::HalfChunk) == 3);
+    CHECK(static_cast<int>(MaxHorizontalResolution::Chunk) == 4);
+    CHECK(static_cast<int>(Transparency::Disabled) == 0);
+    CHECK(static_cast<int>(Transparency::Complete) == 1);
+    CHECK(static_cast<int>(GrassSideRendering::AsGrass) == 0);
+    CHECK(static_cast<int>(GrassSideRendering::FadeToDirt) == 1);
+    CHECK(static_cast<int>(GrassSideRendering::AsDirt) == 2);
+    CHECK(static_cast<int>(LodShading::Auto) == 0);
+    CHECK(static_cast<int>(LodShading::Enabled) == 1);
+    CHECK(static_cast<int>(LodShading::Disabled) == 2);
+    CHECK(static_cast<int>(BlocksToAvoid::None) == 0);
+    CHECK(static_cast<int>(BlocksToAvoid::NonColliding) == 1);
+}
+
 TEST_CASE("ColumnRenderView: subView, copyFrom and changeVerticalSizeFrom") {
+    constexpr std::uint64_t SENTINEL = 0xDEADBEEFULL;
+
     auto src = ColumnRenderSource::createEmpty(1, 2, 0);
     auto dst = ColumnRenderSource::createEmpty(1, 4, 0);
+    std::fill(dst.data.begin(), dst.data.end(), SENTINEL);
 
-    // a 2-column wide view starting at x=0,z=0 (z-adjacent columns are contiguous)
     ColumnRenderView sv;
     ColumnRenderView dv;
     REQUIRE(src.populateColumnView(sv, 0, 0));
@@ -264,30 +325,70 @@ TEST_CASE("ColumnRenderView: subView, copyFrom and changeVerticalSizeFrom") {
     CHECK(dv.changeVerticalSizeFrom(sv));
     CHECK(dv.get(0) == 11);
     CHECK(dv.get(1) == 22);
-    CHECK(dv.get(2) == 0);
+    CHECK(dv.get(2) == 0); // zero padded over the sentinel
     CHECK(dv.get(3) == 0);
     CHECK(dv.getVoid() == 99);
+    // neighbouring column untouched
+    CHECK(dst.dataPoint(0, 1, 0) == SENTINEL);
 
-    // equal size copy
-    auto           same = ColumnRenderSource::createEmpty(1, 2, 0);
+    // equal size copy over sentinel
+    auto same = ColumnRenderSource::createEmpty(1, 2, 0);
+    std::fill(same.data.begin(), same.data.end(), SENTINEL);
     ColumnRenderView samev;
     REQUIRE(same.populateColumnView(samev, 0, 0));
     CHECK(samev.changeVerticalSizeFrom(sv));
+    CHECK(samev.get(0) == 11);
     CHECK(samev.get(1) == 22);
 
-    // multi-column subViews
-    ColumnRenderView wide;
-    REQUIRE(src.populateColumnView(wide, 0, 0));
-    wide.size = 2 * 2; // two columns
-    CHECK(wide.subViewCount() == 2);
-    auto second = wide.subView(1, 1);
-    CHECK(second.dataOffset == wide.dataOffset + 2);
-    CHECK(second.voidDataOffset == wide.voidDataOffset + 1);
+    // multi-column: 2 source columns -> 2 destination columns
+    ColumnRenderView swide;
+    ColumnRenderView dwide;
+    REQUIRE(src.populateColumnView(swide, 0, 0));
+    REQUIRE(dst.populateColumnView(dwide, 0, 0));
+    swide.size = 2 * 2;
+    dwide.size = 2 * 4;
+    CHECK(swide.subViewCount() == 2);
+    CHECK(dwide.subViewCount() == 2);
+    swide.set(2, 33);
+    swide.set(3, 44);
+    CHECK(dwide.changeVerticalSizeFrom(swide));
+    CHECK(dwide.get(0) == 11);
+    CHECK(dwide.get(1) == 22);
+    CHECK(dwide.get(2) == 0);
+    CHECK(dwide.get(4) == 33);
+    CHECK(dwide.get(5) == 44);
+    CHECK(dwide.get(6) == 0);
+    CHECK(dwide.get(7) == 0);
+
+    auto second = swide.subView(1, 1);
+    CHECK(second.dataOffset == swide.dataOffset + 2);
+    CHECK(second.voidDataOffset == swide.voidDataOffset + 1);
     CHECK(second.size == 2);
 
-    // mismatched column counts are rejected
-    CHECK_FALSE(dv.changeVerticalSizeFrom(wide));
+    // non-zero outputDataIndexOffset: 1 source column into column 1 of a 2-column destination
+    std::fill(dst.data.begin(), dst.data.end(), SENTINEL);
+    REQUIRE(dst.populateColumnView(dwide, 0, 0));
+    dwide.size = 8;
+    CHECK(dwide.copyFrom(sv, 1));
+    CHECK(dwide.get(0) == SENTINEL);
+    CHECK(dwide.get(3) == SENTINEL);
+    CHECK(dwide.get(4) == 11);
+    CHECK(dwide.get(5) == 22);
+    CHECK(dwide.get(6) == 0);
+    CHECK(dwide.get(7) == 0);
+    CHECK(dwide.get(8) == SENTINEL);
+    // offset that does not fit
+    CHECK_FALSE(dwide.copyFrom(sv, 2));
 
-    // reducing path is a WP-E1 stub
+    // mismatched column counts are rejected
+    CHECK_FALSE(dv.changeVerticalSizeFrom(swide));
+
+    // source wider than destination: copyFrom rejects, changeVerticalSizeFrom is the WP-E1 stub
+    CHECK_FALSE(sv.copyFrom(dv, 0));
     CHECK_FALSE(sv.changeVerticalSizeFrom(dv));
+
+    // subView past the end yields an empty view
+    auto bad = sv.subView(1 << 20, 1);
+    CHECK(bad.size == 0);
+    CHECK(bad.data.empty());
 }

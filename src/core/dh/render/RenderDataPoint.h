@@ -61,26 +61,40 @@ constexpr std::uint64_t widen(int v) { return static_cast<std::uint64_t>(static_
 
 /// Java createDataPoint(alpha, red, green, blue, maxY, minY, lightSky, lightBlock, material).
 /// No range validation (Java validates only in dev builds); out-of-range Y is truncated to 12 bits.
-constexpr std::uint64_t create(int alpha, int red, int green, int blue, int maxY, int minY, int skyLight,
-                               int blockLight, BlockMaterial material) {
+constexpr std::uint64_t create(
+    int           alpha,
+    int           red,
+    int           green,
+    int           blue,
+    int           maxY,
+    int           minY,
+    int           skyLight,
+    int           blockLight,
+    BlockMaterial material
+) {
     using detail::widen;
     return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(alpha) >> ALPHA_DOWNSIZE_SHIFT) << ALPHA_SHIFT)
-         | ((widen(red) & COLOR_CHANNEL_MASK) << RED_SHIFT)
-         | ((widen(green) & COLOR_CHANNEL_MASK) << GREEN_SHIFT)
-         | ((widen(blue) & COLOR_CHANNEL_MASK) << BLUE_SHIFT)
-         | ((widen(maxY) & Y_MASK) << MAX_Y_SHIFT)
-         | ((widen(minY) & Y_MASK) << MIN_Y_SHIFT)
-         | ((widen(blockLight) & LIGHT_MASK) << BLOCK_LIGHT_SHIFT)
+         | ((widen(red) & COLOR_CHANNEL_MASK) << RED_SHIFT) | ((widen(green) & COLOR_CHANNEL_MASK) << GREEN_SHIFT)
+         | ((widen(blue) & COLOR_CHANNEL_MASK) << BLUE_SHIFT) | ((widen(maxY) & Y_MASK) << MAX_Y_SHIFT)
+         | ((widen(minY) & Y_MASK) << MIN_Y_SHIFT) | ((widen(blockLight) & LIGHT_MASK) << BLOCK_LIGHT_SHIFT)
          | ((widen(skyLight) & LIGHT_MASK) << SKY_LIGHT_SHIFT)
          | ((static_cast<std::uint64_t>(material) & MATERIAL_MASK) << MATERIAL_SHIFT);
 }
 
 /// Java createDataPoint(maxY, minY, color(argb), lightSky, lightBlock, material).
-constexpr std::uint64_t create(int maxY, int minY, std::uint32_t argb, int skyLight, int blockLight,
-                               BlockMaterial material) {
-    return create(static_cast<int>(argb >> 24), static_cast<int>((argb >> 16) & 0xFF),
-                  static_cast<int>((argb >> 8) & 0xFF), static_cast<int>(argb & 0xFF), maxY, minY, skyLight,
-                  blockLight, material);
+constexpr std::uint64_t
+create(int maxY, int minY, std::uint32_t argb, int skyLight, int blockLight, BlockMaterial material) {
+    return create(
+        static_cast<int>(argb >> 24),
+        static_cast<int>((argb >> 16) & 0xFF),
+        static_cast<int>((argb >> 8) & 0xFF),
+        static_cast<int>(argb & 0xFF),
+        maxY,
+        minY,
+        skyLight,
+        blockLight,
+        material
+    );
 }
 
 constexpr int yMax(std::uint64_t d) { return static_cast<int>((d >> MAX_Y_SHIFT) & Y_MASK); }
@@ -103,7 +117,7 @@ constexpr int skyLight(std::uint64_t d) { return static_cast<int>((d >> SKY_LIGH
 constexpr int blockLight(std::uint64_t d) { return static_cast<int>((d >> BLOCK_LIGHT_SHIFT) & LIGHT_MASK); }
 
 /// Raw 4-bit material id (Java getBlockMaterialId; always 0..15).
-constexpr int materialId(std::uint64_t d) { return static_cast<int>((d >> MATERIAL_SHIFT) & MATERIAL_MASK); }
+constexpr int           materialId(std::uint64_t d) { return static_cast<int>((d >> MATERIAL_SHIFT) & MATERIAL_MASK); }
 constexpr BlockMaterial material(std::uint64_t d) { return static_cast<BlockMaterial>(materialId(d)); }
 
 /// True if min Y and max Y are both zero ("void" datapoint). Tests the 24 Y bits only.

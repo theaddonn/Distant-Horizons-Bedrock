@@ -1,13 +1,21 @@
 #include "dh/render/ColumnRenderSource.h"
 
 #include <algorithm>
+#include <cassert>
+#include <cstring>
 
 #include "dh/render/RenderDataPoint.h"
 
 namespace dh {
 
-bool ColumnRenderView::populate(std::span<std::uint64_t> d, std::span<std::uint64_t> v, int sz, int offset,
-                                int voidOffset, int maxSlices) {
+bool ColumnRenderView::populate(
+    std::span<std::uint64_t> d,
+    std::span<std::uint64_t> v,
+    int                      sz,
+    int                      offset,
+    int                      voidOffset,
+    int                      maxSlices
+) {
     data                  = d;
     voidData              = v;
     size                  = sz;
@@ -30,6 +38,12 @@ void ColumnRenderView::clear() {
 
 ColumnRenderView ColumnRenderView::subView(int dataIndexStart, int dataCount) const {
     ColumnRenderView v;
+    // Reject (empty, size 0 view) when the requested window starts past the end of the arrays.
+    if (dataIndexStart < 0 || dataCount < 0
+        || static_cast<std::size_t>(dataOffset + dataIndexStart * maxVerticalSliceCount) > data.size()
+        || static_cast<std::size_t>(voidDataOffset + dataIndexStart) > voidData.size()) {
+        return v;
+    }
     v.data                  = data;
     v.voidData              = voidData;
     v.size                  = dataCount * maxVerticalSliceCount;
@@ -49,15 +63,27 @@ bool ColumnRenderView::copyFrom(const ColumnRenderView& source, int outputDataIn
 
     if (source.maxVerticalSliceCount != maxVerticalSliceCount) {
         for (int i = 0; i < source.subViewCount(); ++i) {
-            const int outputOffset = dataOffset + outputDataIndexOffset * maxVerticalSliceCount + i * maxVerticalSliceCount;
+            const int outputOffset =
+                dataOffset + outputDataIndexOffset * maxVerticalSliceCount + i * maxVerticalSliceCount;
             const ColumnRenderView sub = source.subView(i, 1);
             auto*                  dst = data.data() + outputOffset;
-            std::copy_n(sub.data.data() + sub.dataOffset, source.maxVerticalSliceCount, dst);
+            assert(outputOffset >= 0 && static_cast<std::size_t>(outputOffset + maxVerticalSliceCount) <= data.size());
+            std::memmove(
+                dst,
+                sub.data.data() + sub.dataOffset,
+                static_cast<std::size_t>(source.maxVerticalSliceCount) * sizeof(std::uint64_t)
+            );
             std::fill(dst + source.maxVerticalSliceCount, dst + maxVerticalSliceCount, std::uint64_t{0});
         }
     } else {
-        std::copy_n(source.data.data() + source.dataOffset, source.size,
-                    data.data() + dataOffset + outputDataIndexOffset * maxVerticalSliceCount);
+        const int outputOffset = dataOffset + outputDataIndexOffset * maxVerticalSliceCount;
+        assert(outputOffset >= 0 && static_cast<std::size_t>(outputOffset + source.size) <= data.size());
+        // memmove: source and destination may overlap within the same array
+        std::memmove(
+            data.data() + outputOffset,
+            source.data.data() + source.dataOffset,
+            static_cast<std::size_t>(source.size) * sizeof(std::uint64_t)
+        );
     }
     return true;
 }
@@ -96,16 +122,20 @@ std::span<std::uint64_t> ColumnRenderSource::column(int x, int z) {
     if (!inBounds(x, z) || maxVerticalSlices <= 0) {
         return {};
     }
-    return std::span<std::uint64_t>(data).subspan(static_cast<std::size_t>(dataIndex(x, z, maxVerticalSlices, 0)),
-                                                  static_cast<std::size_t>(maxVerticalSlices));
+    return std::span<std::uint64_t>(data).subspan(
+        static_cast<std::size_t>(dataIndex(x, z, maxVerticalSlices, 0)),
+        static_cast<std::size_t>(maxVerticalSlices)
+    );
 }
 
 std::span<const std::uint64_t> ColumnRenderSource::column(int x, int z) const {
     if (!inBounds(x, z) || maxVerticalSlices <= 0) {
         return {};
     }
-    return std::span<const std::uint64_t>(data).subspan(static_cast<std::size_t>(dataIndex(x, z, maxVerticalSlices, 0)),
-                                                        static_cast<std::size_t>(maxVerticalSlices));
+    return std::span<const std::uint64_t>(data).subspan(
+        static_cast<std::size_t>(dataIndex(x, z, maxVerticalSlices, 0)),
+        static_cast<std::size_t>(maxVerticalSlices)
+    );
 }
 
 bool ColumnRenderSource::populateColumnView(ColumnRenderView& view, int x, int z) {
