@@ -127,9 +127,15 @@ bool PacketTransport::send(dh::SessionId session, std::span<const std::byte> fra
 
 std::size_t PacketTransport::flushOutbound() {
     std::deque<Outbound> batch;
+#ifdef LL_PLAT_S
+    std::unordered_set<dh::SessionId> closingNow; // taken with the swap: their last frames are in `batch`
+#endif
     {
         std::lock_guard lock(mutex_);
         batch.swap(outbound_);
+#ifdef LL_PLAT_S
+        closingNow.swap(closing_);
+#endif
     }
     std::size_t sent = 0;
     for (auto& o : batch) {
@@ -163,13 +169,12 @@ std::size_t PacketTransport::flushOutbound() {
     {
         // Sessions closed by disconnect(): their last frames (CloseReason) went out above; now forget them.
         std::lock_guard lock(mutex_);
-        for (dh::SessionId s : closing_) {
+        for (dh::SessionId s : closingNow) {
             auto it = bySession_.find(s);
             if (it == bySession_.end()) continue;
             byId_.erase(it->second.id);
             bySession_.erase(it);
         }
-        closing_.clear();
     }
 #endif
     return sent;
@@ -221,6 +226,8 @@ void PacketTransport::closeSession(const NetworkIdentifier& id) {
         byId_.erase(it);
         bySession_.erase(session);
         std::erase_if(outbound_, [&](const Outbound& o) { return o.session == session; });
+        // disconnect() already reported onDisconnected for this session: do not report it twice.
+        if (closing_.erase(session) != 0) return;
     }
     post([this, session] {
         std::lock_guard lock(listenerMutex_);

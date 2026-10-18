@@ -63,16 +63,20 @@ public:
     ) override;
     bool isBusy() const override;
     void cancelAll() override;
+    /// Stops accepting work and cancels everything; call BEFORE the thread pools are shut down and joined.
+    void close();
 
     std::uint64_t generatedChunks() const { return generated_.load(); }
     std::uint64_t failedChunks() const { return failed_.load(); }
 
 private:
     struct Batch;
+    struct TaskGuard;
     void                        runChunk(const std::shared_ptr<Batch>& batch, std::int32_t cx, std::int32_t cz);
     void                        finishChunk(const std::shared_ptr<Batch>& batch, bool ok);
     std::shared_ptr<dh::IChunk> generateScratch(std::int32_t cx, std::int32_t cz);
-    std::shared_ptr<dh::IChunk> snapshotLoaded(std::int32_t cx, std::int32_t cz, bool loadIfMissing);
+    std::shared_ptr<dh::IChunk>
+    snapshotLoaded(const std::shared_ptr<Batch>& batch, std::int32_t cx, std::int32_t cz, bool loadIfMissing);
 
     Dimension&       dimension_;
     BlockSerializer& serializer_;
