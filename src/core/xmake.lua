@@ -19,6 +19,9 @@ target("dh_core")
     add_defines("JSON_NOEXCEPTION", {public = true})
     if is_plat("windows") then
         add_cxflags("/clang:-ffp-contract=off", {tools = {"clang_cl"}})
+        -- mode.release adds /opt:ref /opt:icf for "strip"; they are linker flags and break the
+        -- librarian once xmake switches to a response file (llvm-lib sees them as inputs).
+        set_strip("none")
     else
         add_cxflags("-ffp-contract=off", "-Wall", "-Wextra")
     end

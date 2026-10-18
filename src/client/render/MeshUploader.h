@@ -65,14 +65,17 @@ public:
         std::size_t liveBytes    = 0;
         std::size_t liveVertices = 0;
         std::size_t uploadsTotal = 0;
+        std::size_t staleRemoves = 0; ///< removeIf calls ignored because a newer upload existed
     };
 
     MeshUploader();
     ~MeshUploader() override;
 
     // IVertexSink
-    void upload(std::uint64_t sectionPos, MeshBuffers&& buffers, UploadCallback onDone) override;
-    void remove(std::uint64_t sectionPos) override;
+    void     upload(std::uint64_t sectionPos, MeshBuffers&& buffers, UploadCallback onDone) override;
+    void     remove(std::uint64_t sectionPos) override;
+    UploadId uploadWithId(std::uint64_t sectionPos, MeshBuffers&& buffers, UploadCallback onDone) override;
+    void     removeIf(std::uint64_t sectionPos, UploadId id) override;
 
     void         setSettings(MeshSettings const& s);
     MeshSettings settings() const;
@@ -104,8 +107,9 @@ private:
     };
     struct Format; // colour packing + MeshData templates (defined in the .cpp)
 
-    void convertInto(MeshBuffers const& b, std::uint64_t pos, MeshSettings const& s, Converted& out) const;
-    bool ensureFormat(ScreenContext& ctx);
+    UploadCallback removeLocked(std::uint64_t sectionPos);
+    void           convertInto(MeshBuffers const& b, std::uint64_t pos, MeshSettings const& s, Converted& out) const;
+    bool           ensureFormat(ScreenContext& ctx);
     bool
     applyUpload(Op& op, MeshSettings const& s, std::uint32_t curGen, std::shared_ptr<mce::BufferResourceService>& svc);
     void destroyAll(bool leak);
@@ -114,10 +118,14 @@ private:
     MeshSettings                          settings_;
     std::uint32_t                         gen_ = 0;
     std::unordered_map<std::uint64_t, Op> latest_;
-    std::deque<std::uint64_t>             order_;
-    std::atomic<bool>                     rebuildAll_{false};
-    std::atomic<bool>                     clearRequested_{false};
-    std::atomic<std::size_t>              pending_{0};
+    /// Id of the newest upload issued per pos (pending or applied); erased by remove()/successful removeIf()/clear.
+    /// removeIf compares against this, so it needs no render-thread state.
+    std::unordered_map<std::uint64_t, UploadId> newestId_;
+    std::atomic<UploadId>                       lastId_{0};
+    std::deque<std::uint64_t>                   order_;
+    std::atomic<bool>                           rebuildAll_{false};
+    std::atomic<bool>                           clearRequested_{false};
+    std::atomic<std::size_t>                    pending_{0};
 
     // render thread only
     std::unordered_map<std::uint64_t, Section> sections_;
@@ -126,7 +134,7 @@ private:
     bool                                       formatFailed_ = false;
     std::unique_ptr<Format>                    format_;
 
-    std::atomic<std::size_t> liveSections_{0}, liveBytes_{0}, liveVertices_{0}, uploadsTotal_{0};
+    std::atomic<std::size_t> liveSections_{0}, liveBytes_{0}, liveVertices_{0}, uploadsTotal_{0}, staleRemoves_{0};
 };
 
 } // namespace dh::render
