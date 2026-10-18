@@ -142,9 +142,6 @@ void runStoreConformance(MakeStore&& make) {
         StoreRecord rec = makeRecord(P1, 7, 99, flagBit(StoreFlag::ApplyToParent));
         REQUIRE(s->put(rec).has_value());
 
-        struct Case {
-            StorePart parts;
-        };
         const StorePart singles[] = {
             StorePart::Data,
             StorePart::Adjacent,
@@ -245,7 +242,7 @@ void runStoreConformance(MakeStore&& make) {
         auto up = s->positionsToPropagateUp(0, 0, 10);
         REQUIRE(up.has_value());
         CHECK(up->empty());
-        auto rc = s->regenCount(0, 0, -1);
+        auto rc = s->regenRecordCount(0, 0, -1);
         REQUIRE(rc.has_value());
         CHECK(*rc == 0);
         auto t = s->timestamp(P1);
@@ -391,15 +388,15 @@ void runStoreConformance(MakeStore&& make) {
         CHECK(*far == PosList{f.E}); // 128 <= 135 < 136
     }
 
-    SUBCASE("regenCount counts Regenerate records within distance") {
+    SUBCASE("regenRecordCount counts Regenerate records within distance") {
         auto         s = make(false);
         OrderFixture f;
         f.fill(*s, flagBit(StoreFlag::Regenerate));
         REQUIRE(s->setFlag(f.E, StoreFlag::Regenerate, false).has_value());
-        auto all = s->regenCount(0, 0, -1);
-        auto d0  = s->regenCount(0, 0, 0);
-        auto d64 = s->regenCount(0, 0, 64);
-        auto d63 = s->regenCount(0, 0, 63);
+        auto all = s->regenRecordCount(0, 0, -1);
+        auto d0  = s->regenRecordCount(0, 0, 0);
+        auto d64 = s->regenRecordCount(0, 0, 64);
+        auto d63 = s->regenRecordCount(0, 0, 63);
         REQUIRE(all.has_value());
         REQUIRE(d0.has_value());
         REQUIRE(d64.has_value());
@@ -463,7 +460,7 @@ void runStoreConformance(MakeStore&& make) {
         auto emptyRange = s->timestamps(6, 2, 0, 2, 1); // start == end is empty
         REQUIRE(emptyRange.has_value());
         CHECK(emptyRange->empty());
-        auto inverted =s->timestamps(6, 3, 0, 1, 0);
+        auto inverted = s->timestamps(6, 3, 0, 1, 0);
         REQUIRE(inverted.has_value());
         CHECK(inverted->empty());
     }
@@ -581,5 +578,91 @@ void runStoreConformance(MakeStore&& make) {
         auto all = s->allPositions();
         REQUIRE(all.has_value());
         CHECK(all->size() == 1 + kThreads / 2);
+        std::size_t regenFlagged = 0;
+        for (std::uint64_t p : *all) {
+            auto m = s->get(p, StorePart::Meta);
+            REQUIRE(m.has_value());
+            REQUIRE(m->has_value());
+            if ((*m)->meta.hasFlag(StoreFlag::Regenerate)) ++regenFlagged;
+        }
+        auto rc = s->regenRecordCount(0, 0, -1);
+        REQUIRE(rc.has_value());
+        CHECK(*rc == regenFlagged);
+    }
+
+    SUBCASE("distance is 64-bit: huge coordinates do not wrap") {
+        auto                s    = make(false);
+        const std::uint64_t near = sec::encode(6, 1, 0);          // corner 64      -> dist 64
+        const std::uint64_t big  = sec::encode(6, 1 << 26, 0);    // corner 2^32    -> dist 2^32 (wraps to 0 in int32)
+        const std::uint64_t mid  = sec::encode(6, 1 << 24, 0);    // corner 2^30    -> dist 2^30
+        const std::uint64_t neg  = sec::encode(6, -(1 << 26), 0); // corner -2^32 -> dist 2^32
+        for (std::uint64_t p : {near, big, mid, neg}) {
+            REQUIRE(s->put(makeRecord(p, 1, 0, flagBit(StoreFlag::Regenerate) | flagBit(StoreFlag::ApplyToParent)))
+                        .has_value());
+        }
+        auto one = s->positionsToRegen(0, 0, -1, 1);
+        REQUIRE(one.has_value());
+        CHECK(*one == PosList{near});
+        auto up = s->positionsToPropagateUp(0, 0, 4);
+        REQUIRE(up.has_value());
+        CHECK(*up == PosList{near, mid, big, neg}); // big/neg tie at 2^32, big has the smaller pos
+        const std::int32_t pow30 = 1 << 30;
+        auto               lo    = s->positionsToRegen(0, 0, pow30 - 1, 10);
+        auto               hi    = s->positionsToRegen(0, 0, pow30, 10);
+        auto               max   = s->positionsToRegen(0, 0, INT32_MAX, 10);
+        REQUIRE(lo.has_value());
+        REQUIRE(hi.has_value());
+        REQUIRE(max.has_value());
+        CHECK(*lo == PosList{near});
+        CHECK(*hi == PosList{near, mid});
+        CHECK(*max == PosList{near, mid}); // 2^32 > INT32_MAX
+        auto c1 = s->regenRecordCount(0, 0, pow30 - 1);
+        auto c2 = s->regenRecordCount(0, 0, pow30);
+        REQUIRE(c1.has_value());
+        REQUIRE(c2.has_value());
+        CHECK(*c1 == 1);
+        CHECK(*c2 == 2);
+    }
+
+    SUBCASE("put with StorePart::None is a no-op") {
+        auto s = make(false);
+        REQUIRE(s->put(makeRecord(P1, 1), StorePart::None).has_value());
+        auto e = s->exists(P1);
+        REQUIRE(e.has_value());
+        CHECK_FALSE(*e);
+    }
+
+    SUBCASE("flag changes persist across reopen") {
+        const std::uint64_t a = sec::encode(6, 0, 0), b = sec::encode(6, 1, 0), c = sec::encode(6, 2, 0);
+        {
+            auto s = make(false);
+            REQUIRE(s->put(makeRecord(a, 1, 1, 0)).has_value());
+            REQUIRE(s->put(makeRecord(b, 2, 1, flagBit(StoreFlag::ApplyToParent))).has_value());
+            REQUIRE(s->put(makeRecord(c, 3, 1, 0)).has_value());
+            REQUIRE(s->setFlag(a, StoreFlag::Regenerate, true).has_value());
+            REQUIRE(s->setFlag(b, StoreFlag::ApplyToParent, false).has_value());
+            StoreRecord m = makeRecord(c, 3, 1, flagBit(StoreFlag::ApplyToChildren));
+            REQUIRE(s->put(m, StorePart::Meta).has_value());
+            REQUIRE(s->flush().has_value());
+        }
+        auto s  = make(true);
+        auto up = s->positionsToPropagateUp(0, 0, 10);
+        auto dn = s->positionsToPropagateDown(0, 0, 10);
+        auto rg = s->positionsToRegen(0, 0, -1, 10);
+        REQUIRE(up.has_value());
+        REQUIRE(dn.has_value());
+        REQUIRE(rg.has_value());
+        CHECK(up->empty());
+        CHECK(*dn == PosList{c});
+        CHECK(*rg == PosList{a});
+        auto ma = s->get(a, StorePart::Meta);
+        auto mb = s->get(b, StorePart::Meta);
+        auto mc = s->get(c, StorePart::Meta);
+        REQUIRE(ma.has_value());
+        REQUIRE(mb.has_value());
+        REQUIRE(mc.has_value());
+        CHECK((*ma)->meta.flags == flagBit(StoreFlag::Regenerate));
+        CHECK((*mb)->meta.flags == 0);
+        CHECK((*mc)->meta.flags == flagBit(StoreFlag::ApplyToChildren));
     }
 }
