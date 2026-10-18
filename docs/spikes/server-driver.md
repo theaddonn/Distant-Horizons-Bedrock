@@ -136,3 +136,25 @@ World gen runs while a ready player is in the dimension (`DimListener::shouldDoW
 * Disconnect semantics: `ITransport::disconnect` does not tell the client; add a `CloseReason` frame wait or a Bedrock kick?
 * Where should the client driver call `clientConnect()`: on level join (before the server joins the player) is safe because the
   client speaks first with its `SessionConfig`.
+
+## Review checklist (GLUE-3 follow-ups; verify in game)
+
+Fixed after review: pool shutdown dropping queued world-gen tasks (RAII `TaskGuard` + `BdsWorldGenerator::close()` called before the pools are joined),
+`Loaded` required on every snapshot path, one level-naming rule (`LevelNaming.h`), no double `onDisconnected`, `closing_` snapshot taken with the
+outbound swap, hook result checks, all dimensions created at start and on join, 100 ms accumulator, status line only on change, settings
+written on the dispatch thread.
+
+Still to check (reviewer items, abridged):
+
+* P1 log the dh:frame packet id (hash) and the first received frame on each side, to prove registration and routing.
+* P2 initial sweep: chunks loaded before the hooks were installed (spawn chunks at ServerStarted) are never noted; add a sweep over the
+  loaded chunk map (`ChunkSource::getChunkMap`/`getStorage`) at start and on first sight of a dimension.
+* P12 `ServerPlayers::settings` is read by core worker threads (request handlers); only the dispatch-thread read is synchronised.
+* P17 `loadChunk` on a pool worker: `WorldGenerator` keeps a thread-local `ChunkAccessor*` heightmap provider
+  (`mThreadLocalHeightmapProvider`); vanilla sets it per generation task. If scratch generation crashes or yields flat terrain on workers, run it on
+  vanilla's worker context or the server thread.
+* `/dh` command: `getOrCreateCommand` is called once per mod enable; after disable/enable (hot reload) check that it is not registered twice and that
+  the lambda does not outlive `this`.
+* Final save after hooks off: `stop()` unhooks first, so chunks saved during server shutdown are not ingested; consider draining `pending` once
+  before unhooking.
+* Hook result convention: `hook()` returning 0 = success is assumed.

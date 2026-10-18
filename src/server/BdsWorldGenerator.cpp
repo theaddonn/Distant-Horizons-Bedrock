@@ -86,9 +86,26 @@ BdsWorldGenerator::BdsWorldGenerator(Dimension& dimension, BlockSerializer& seri
   serializer_(serializer),
   genPool_(genPool) {}
 
-BdsWorldGenerator::~BdsWorldGenerator() {
+void BdsWorldGenerator::close() {
     closing_.store(true);
     cancelAll();
+}
+
+/// Owned by the pool task's closure: whether the task runs or is dropped (ThreadPools::shutdown() drops queued
+/// tasks), its destruction releases the in-flight slot and, if the task never ran, completes the chunk as failed.
+struct BdsWorldGenerator::TaskGuard {
+    BdsWorldGenerator*     self;
+    std::shared_ptr<Batch> batch;
+    bool                   ran = false;
+    ~TaskGuard() {
+        if (!ran) self->finishChunk(batch, false);
+        std::lock_guard lock(self->mutex_);
+        if (--self->inFlightTasks_ == 0) self->idleCv_.notify_all();
+    }
+};
+
+BdsWorldGenerator::~BdsWorldGenerator() {
+    close();
     std::unique_lock lock(mutex_);
     // Tasks capture `this`: wait for them (they skip the work once cancelled). Bounded so a stuck server
     // thread hop cannot hang shutdown forever.
@@ -143,20 +160,12 @@ void BdsWorldGenerator::queue(
         for (std::int32_t dx = 0; dx < widthChunks; ++dx) {
             const std::int32_t cx = minChunkX + dx, cz = minChunkZ + dz;
             ++inFlightTasks_;
-            const bool accepted = genPool_.execute([this, batch, cx, cz] {
+            auto guard = std::make_shared<TaskGuard>(TaskGuard{this, batch});
+            // If rejected, the closure (and with it the guard) is destroyed and completes the chunk as failed.
+            (void)genPool_.execute([this, batch, cx, cz, guard] {
+                guard->ran = true;
                 runChunk(batch, cx, cz);
-                if (--inFlightTasks_ == 0) {
-                    std::lock_guard lock(mutex_);
-                    idleCv_.notify_all();
-                }
             });
-            if (!accepted) {
-                if (--inFlightTasks_ == 0) {
-                    std::lock_guard lock(mutex_);
-                    idleCv_.notify_all();
-                }
-                finishChunk(batch, false);
-            }
         }
     }
 }
@@ -179,10 +188,10 @@ void BdsWorldGenerator::runChunk(const std::shared_ptr<Batch>& batch, std::int32
         std::shared_ptr<dh::IChunk> chunk;
         switch (batch->mode) {
         case GenerationMode::PreExistingOnly:
-            chunk = snapshotLoaded(cx, cz, /*loadIfMissing=*/false);
+            chunk = snapshotLoaded(batch, cx, cz, /*loadIfMissing=*/false);
             break;
         case GenerationMode::InternalServer:
-            chunk = snapshotLoaded(cx, cz, /*loadIfMissing=*/true);
+            chunk = snapshotLoaded(batch, cx, cz, /*loadIfMissing=*/true);
             ok    = chunk != nullptr;
             break;
         case GenerationMode::Surface:
@@ -244,7 +253,12 @@ std::shared_ptr<dh::IChunk> BdsWorldGenerator::generateScratch(std::int32_t cx, 
     return wrapped;
 }
 
-std::shared_ptr<dh::IChunk> BdsWorldGenerator::snapshotLoaded(std::int32_t cx, std::int32_t cz, bool loadIfMissing) {
+std::shared_ptr<dh::IChunk> BdsWorldGenerator::snapshotLoaded(
+    const std::shared_ptr<Batch>& batch,
+    std::int32_t                  cx,
+    std::int32_t                  cz,
+    bool                          loadIfMissing
+) {
     Dimension* dim = &dimension_;
     auto       fn  = [dim, cx, cz, loadIfMissing]() -> std::shared_ptr<LevelChunk> {
         ChunkSource&     cs = dim->getChunkSource();
@@ -256,13 +270,13 @@ std::shared_ptr<dh::IChunk> BdsWorldGenerator::snapshotLoaded(std::int32_t cx, s
     std::shared_ptr<LevelChunk> lc = onServerThread(fn, 2000ms);
     if (!lc) return nullptr;
 
-    if (loadIfMissing) {
-        // wait (polling) for the chunk to reach Loaded; the server thread keeps ticking the generation
-        const auto deadline = std::chrono::steady_clock::now() + kInternalServerTtl;
-        while (lc->mLoadState->load() < ChunkState::Loaded) {
-            if (closing_.load() || std::chrono::steady_clock::now() > deadline) return nullptr;
-            std::this_thread::sleep_for(50ms);
-        }
+    // Both paths require a fully Loaded chunk (a chunk still Generating/Generated is incomplete). Only the
+    // load path waits for it; PreExistingOnly just skips such chunks.
+    const auto deadline = std::chrono::steady_clock::now() + (loadIfMissing ? kInternalServerTtl : 0ms);
+    while (lc->mLoadState->load() < ChunkState::Loaded) {
+        if (!loadIfMissing || closing_.load() || batch->cancelled.load() || std::chrono::steady_clock::now() > deadline)
+            return nullptr;
+        std::this_thread::sleep_for(50ms);
     }
     if (!BedrockChunk::heightSupported(*lc)) return nullptr;
 
