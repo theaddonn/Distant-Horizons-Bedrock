@@ -1,4 +1,4 @@
-#include "mod/DistantHorizons.h"
+#include "client/DistantHorizons.h"
 
 #include "ll/api/mod/RegisterHelper.h"
 

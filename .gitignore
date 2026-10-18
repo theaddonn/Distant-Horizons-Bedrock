@@ -549,3 +549,7 @@ fabric.properties
 # Project specific ignores
 /.idea/
 /bin/
+
+# host test project
+/tests/.xmake/
+/tests/build/
