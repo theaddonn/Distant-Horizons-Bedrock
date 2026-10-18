@@ -1062,3 +1062,55 @@ TEST_CASE("QuadTree iteration order is independent of insertion order") {
     CHECK(sec::detail(da.nodes[0]) == a->treeRootDetailLevel);
     CHECK(da.nodes.size() == 4 * (3 + 1 + 4 + 4) /* chain 13..11, level 10, 4 children, 4 grandchildren */);
 }
+
+//===================================//
+// extra: remove() safety, callbacks //
+//===================================//
+
+TEST_CASE("QuadTree NodeIterator.remove keeps the iterator valid") {
+    IntTree q(1024, 4, BlockPos2D(0, 0), 6);
+    q.setValue(sec::encode(10, 0, 0), 1);
+    q.setValue(sec::encode(9, 0, 0), 2);
+    q.setValue(sec::encode(8, 0, 0), 3);
+    auto it = q.nodeIterator();
+    it.next();
+    it.remove();
+    while (it.hasNext()) {
+        it.next();
+    }
+    CHECK(q.tryGetValue(sec::encode(9, 0, 0)) == std::nullopt);
+    CHECK(q.tryGetNode(sec::encode(9, 0, 0)) == nullptr);
+}
+
+TEST_CASE("QuadNode.deleteAllChildren callback order") {
+    IntNode root(sec::encode(10, 0, 0), 0);
+    for (int i = 0; i < 4; i++) {
+        root.setValue(sec::child(root.sectionPos, i), 10 + i);
+    }
+    root.setValue(sec::child(sec::child(root.sectionPos, 1), 0), 99);
+    std::vector<int> order;
+    root.deleteAllChildren([&](std::optional<int>& v) { order.push_back(v ? *v : -1); });
+    // deeper levels first (grandchild of child 1), then children as 0, 2, 3, 1
+    CHECK(order == std::vector<int>{99, 10, 12, 13, 11});
+    CHECK(root.getTotalChildCount() == 0);
+}
+
+TEST_CASE("QuadTree.setCenterBlockPos callback order") {
+    IntTree q(1024, 4, BlockPos2D(0, 0), 6);
+    // root (10,-1,0) will be dropped; root (10,0,0) stays and its chain goes out of bounds
+    q.setValue(sec::encode(10, -1, 0), 5);
+    q.setValue(sec::encode(9, -1, 0), 6);
+    q.setValue(sec::encode(10, 0, 0), 1);
+    q.setValue(sec::encode(9, 0, 0), 2);
+    q.setValue(sec::encode(8, 0, 0), 3);
+    q.setValue(sec::encode(7, 0, 0), 4);
+    q.setValue(sec::encode(6, 0, 0), 7);
+    std::vector<std::string> events;
+    q.setCenterBlockPos(
+        BlockPos2D(1024, 700),
+        [&](std::optional<int>& v) { events.push_back("del" + std::to_string(v ? *v : -1)); },
+        [&](std::optional<int>& v) { events.push_back("mut" + std::to_string(v ? *v : -1)); }
+    );
+    // removal pass first (children before the root value), then the mutate pass bottom up
+    CHECK(events == std::vector<std::string>{"del6", "del5", "mut7", "mut4", "mut3", "mut2"});
+}
