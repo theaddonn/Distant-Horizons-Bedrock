@@ -39,7 +39,8 @@ struct TransformOptions {
     int caveCullingHeight = 60;
     /// NOT read by the Java transformer; kept for the pipeline (the alpha of blockColor already carries it).
     Transparency transparency = Transparency::Complete;
-    /// WRAPPER_FACTORY.getRendererIgnoredBlocks (from ignoredRenderBlockCsv)
+    /// WRAPPER_FACTORY.getRendererIgnoredBlocks (from ignoredRenderBlockCsv); Java's ignore sets always contain air
+    /// (the transformer treats air as ignored itself)
     const BlockSet* ignoredBlocks = nullptr;
     /// WRAPPER_FACTORY.getRendererIgnoredCaveBlocks (ignoredRenderCaveBlockCsv)
     const BlockSet* ignoredCaveBlocks = nullptr;
@@ -68,8 +69,11 @@ std::optional<ColumnRenderSource> transformFullDataToRenderSource(
 bool isSnowLayerSerial(std::string_view serial);
 
 /// Parses a comma separated block list, trims whitespace, skips empty and unresolvable names.
-/// NOTE: resolves each entry as one exact serial; the glue's registry should expand a bare
-/// name ("minecraft:kelp") to the state it wants (Java matched every state of the base block).
-BlockSet resolveCsv(std::string_view csv, IBlockRegistry& registry);
+///
+/// Every entry expands to all states of the base block (IBlockRegistry::resolveAllStates). With
+/// `addAirForUnresolvable` (use for the two ignore sets, not the water-replacement sets) an entry
+/// that resolves to nothing adds air, as Java getAllBlockWrappers does.
+/// TODO(glue): Java derives isIce from serial.contains("minecraft:ice"); mirror that in BlockTable.
+BlockSet resolveCsv(std::string_view csv, IBlockRegistry& registry, bool addAirForUnresolvable = false);
 
 } // namespace dh

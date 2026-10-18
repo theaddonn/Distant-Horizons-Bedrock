@@ -68,7 +68,7 @@ bool isSnowLayerSerial(std::string_view serial) {
     return layers >= 1 && layers <= 3;
 }
 
-BlockSet resolveCsv(std::string_view csv, IBlockRegistry& registry) {
+BlockSet resolveCsv(std::string_view csv, IBlockRegistry& registry, bool addAirForUnresolvable) {
     BlockSet out;
     while (!csv.empty()) {
         const std::size_t comma = csv.find(',');
@@ -77,7 +77,12 @@ BlockSet resolveCsv(std::string_view csv, IBlockRegistry& registry) {
         while (!tok.empty() && (tok.front() == ' ' || tok.front() == '\t')) tok.remove_prefix(1);
         while (!tok.empty() && (tok.back() == ' ' || tok.back() == '\t' || tok.back() == '\r')) tok.remove_suffix(1);
         if (tok.empty()) continue;
-        if (const BlockInfo* b = registry.resolveBlock(tok)) out.insert(b);
+        const std::vector<const BlockInfo*> states = registry.resolveAllStates(tok);
+        if (states.empty()) {
+            if (addAirForUnresolvable) out.insert(registry.air()); // Java getAllBlockWrappers :1355-1359
+        } else {
+            out.insert(states.begin(), states.end());
+        }
     }
     return out;
 }
@@ -201,8 +206,9 @@ void setRenderColumnView(
             block = water;
         }
 
-        const bool ignoreBlock = Ctx::contains(opt.ignoredBlocks, block);
-        const bool caveBlock   = Ctx::contains(opt.ignoredCaveBlocks, block);
+        // Java pre-seeds both ignore sets with air (BlockStateWrapper.java:1154-1170)
+        const bool ignoreBlock = block->isAir || Ctx::contains(opt.ignoredBlocks, block);
+        const bool caveBlock   = block->isAir || Ctx::contains(opt.ignoredCaveBlocks, block);
         if (caveBlock || !block->isSolid || block->isLiquid || block->opacity < BLOCK_FULLY_OPAQUE) {
             if (caveCullingEnabled && skyLight == MIN_MC_LIGHT && topY < caveCullingMaxY && renderDataIndex != 0
                 && fullDataIndex != 0 && (fullDataIndex + 1) < colSize) {
