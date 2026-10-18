@@ -30,7 +30,9 @@
 //
 // Memory: sections are owned by the tree through shared_ptr; queued build tasks hold a weak_ptr (a section
 // removed before its load runs is simply skipped), the sink callback holds a strong reference until the
-// sink answers (the IVertexSink contract guarantees every upload is answered).
+// sink answers (the IVertexSink contract guarantees every upload is answered). GPU buffers are freed through
+// IVertexSink::removeIf with the section's own upload id (Java closed its own LodBufferContainer object), so a
+// late callback of a disposed section never wipes the replacement section's buffers at the same pos.
 
 #include <atomic>
 #include <cstdint>
@@ -46,15 +48,179 @@
 #include "dh/platform/IExecutor.h"
 #include "dh/platform/ILevelInfo.h"
 #include "dh/platform/IVertexSink.h"
+#include "dh/pos/BlockPos.h"
 #include "dh/pos/Direction.h"
 #include "dh/pos/SectionPos.h"
 #include "dh/render/ColumnRenderSource.h"
+#include "dh/render/Enums.h"
 #include "dh/render/FullToRender.h"
 #include "dh/storage/SourceProvider.h"
 
+#include <glm/glm.hpp>
+
 namespace dh::tree {
 
-class LodQuadTree;
+//===================//
+// shared tree state //
+//===================//
+
+/// Port of render/CameraZoom.java (the pure parts). A zoomed camera makes LODs in its cone appear closer;
+/// the tree uses the magnified distance for them.
+struct CameraZoom {
+    static constexpr double NOT_ZOOMED_MAGNIFICATION     = 1.0;
+    static constexpr double MIN_ZOOM_MAGNIFICATION       = 1.5;
+    static constexpr double ZOOM_CONE_PADDING_MULTIPLIER = 1.5;
+
+    /// how many times larger objects appear on screen compared to the player's FOV setting
+    double magnification = NOT_ZOOMED_MAGNIFICATION;
+    /// tangent of half the zoom cone's horizontal angle (slightly wider than the camera's FOV)
+    double coneTanHalfAngle = 0.0;
+    /// the camera's look direction projected onto the XZ plane, normalized
+    double lookDirectionX = 0.0;
+    double lookDirectionZ = 0.0;
+
+    static CameraZoom notZoomed() { return CameraZoom{}; }
+    bool              isZoomed() const { return magnification > NOT_ZOOMED_MAGNIFICATION; }
+
+    /// CameraZoom.coneIntersectsCircle: true if any part of the circle is visible through the zoomed camera
+    /// (2D, XZ plane).
+    bool coneIntersectsCircle(
+        double coneOriginX,
+        double coneOriginZ,
+        double circleCenterX,
+        double circleCenterZ,
+        double circleRadius
+    ) const;
+
+    /// CameraZoom.update() without the wrapper lookups. `projection` is the MC projection (or, when that is
+    /// the identity, the pre-multiplied model-view) in the glm layout used by Frustum.h; `lookAt` is
+    /// MC_RENDER.getLookAtVector(); `fovSettingDegrees` MC_RENDER.getFovSetting().
+    static CameraZoom fromProjection(
+        const glm::mat4&  projection,
+        const glm::vec3&  lookAt,
+        double            fovSettingDegrees,
+        HorizontalQuality horizontalQuality,
+        int               maxZoomQualityIncrease,
+        bool              increaseQualityWhenZoomedIn
+    );
+};
+
+/// LodQuadTree.updateDetailLevelVariables + calcDetailLevelFromDistance + calcExpectedDetailLevel as a value
+/// type (also what the `treemath` golden suite replays). All detail levels are ABSOLUTE (0 = block); add
+/// SECTION_MINIMUM_DETAIL_LEVEL for section detail levels.
+struct DetailLevelMath {
+    /// FullDataUpdatePropagatorV2.HIGHEST_DOWNSAMPLE_DETAIL_LEVEL: sections at/above never zoom.
+    static constexpr std::int8_t kHighestDownsampleDetailLevel = sec::SECTION_MINIMUM_DETAIL_LEVEL + 6;
+
+    /// used to calculate when a detail drop will occur: horizontalQuality.distanceUnitInBlocks * 16
+    double detailDropOffDistanceUnit = 0.0;
+    /// ln(horizontalQuality.quadraticBase)
+    double detailDropOffLogBase = 0.0;
+    /// smallest numerical detail level that can be rendered (maxHorizontalResolution.detailLevel)
+    std::int8_t maxLeafRenderDetailLevel = 0;
+    /// largest numerical detail level that can be rendered
+    std::int8_t minRootRenderDetailLevel = 0;
+    /// the tree's root detail level (section detail)
+    std::int8_t treeRootDetailLevel = 0;
+
+    /// LodQuadTree.java:1244-1263.
+    static DetailLevelMath compute(
+        HorizontalQuality       horizontalQuality,
+        MaxHorizontalResolution maxHorizontalResolution,
+        std::int32_t            blockRenderDistanceDiameter,
+        std::int8_t             treeRootDetailLevel
+    );
+
+    /// LodQuadTree.java:1265-1271: clamp(maxDetail, (int)(ln(d / unit) / logBase), ROOT_SECTION_DETAIL_LEVEL).
+    std::int8_t calcDetailLevelFromDistance(double blockDistance) const {
+        return calcDetailLevelFromDistance(blockDistance, maxLeafRenderDetailLevel);
+    }
+    std::int8_t calcDetailLevelFromDistance(double blockDistance, std::int8_t maxDetailLevel) const;
+
+    /// LodQuadTree.java:1209-1242.
+    std::int8_t calcExpectedDetailLevel(BlockPos2D playerPos, sec::Pos sectionPos, const CameraZoom& zoom) const;
+    std::int8_t calcExpectedDetailLevel(
+        BlockPos2D        playerPos,
+        std::int32_t      targetBlockPosX,
+        std::int32_t      targetBlockPosZ,
+        const CameraZoom& zoom
+    ) const;
+
+private:
+    std::int8_t calcExpectedDetailLevel(
+        BlockPos2D        playerPos,
+        sec::Pos          targetSectionPos,
+        std::int32_t      targetBlockPosX,
+        std::int32_t      targetBlockPosZ,
+        double            targetBlockRadius,
+        const CameraZoom& zoom
+    ) const;
+};
+
+/// The tree state a render section reads from worker threads (Java: `this.quadTree.calcExpectedDetailLevel`
+/// + `MC.getPlayerBlockPos()`). Owned by the tree through shared_ptr and shared with every section, so a
+/// section that outlives its tree (late sink callback, test holding a reference) never dereferences a dead
+/// tree. The tree writes under the mutex once per tick; readers take a snapshot.
+class TreeShared {
+public:
+    void set(const DetailLevelMath& math, const CameraZoom& zoom) {
+        std::lock_guard lock(mutex_);
+        math_ = math;
+        zoom_ = zoom;
+    }
+    void setZoom(const CameraZoom& zoom) {
+        std::lock_guard lock(mutex_);
+        zoom_ = zoom;
+    }
+    void setLastPlayerPos(BlockPos2D p) { lastPlayerPos_.store(pack(p), std::memory_order_release); }
+
+    DetailLevelMath math() const {
+        std::lock_guard lock(mutex_);
+        return math_;
+    }
+    CameraZoom zoom() const {
+        std::lock_guard lock(mutex_);
+        return zoom_;
+    }
+    void snapshot(DetailLevelMath& math, CameraZoom& zoom) const {
+        std::lock_guard lock(mutex_);
+        math = math_;
+        zoom = zoom_;
+    }
+    BlockPos2D lastPlayerPos() const { return unpack(lastPlayerPos_.load(std::memory_order_acquire)); }
+
+    std::int8_t calcExpectedDetailLevel(BlockPos2D playerPos, sec::Pos sectionPos) const {
+        DetailLevelMath m;
+        CameraZoom      z;
+        snapshot(m, z);
+        return m.calcExpectedDetailLevel(playerPos, sectionPos, z);
+    }
+    std::int8_t calcExpectedDetailLevel(BlockPos2D playerPos, std::int32_t blockX, std::int32_t blockZ) const {
+        DetailLevelMath m;
+        CameraZoom      z;
+        snapshot(m, z);
+        return m.calcExpectedDetailLevel(playerPos, blockX, blockZ, z);
+    }
+
+    /// BlockPos2D <-> one int64 (x high 32 bits, z low 32 bits) for lock-free publication.
+    static std::int64_t pack(BlockPos2D p) {
+        return static_cast<std::int64_t>(
+            (static_cast<std::uint64_t>(static_cast<std::uint32_t>(p.x)) << 32) | static_cast<std::uint32_t>(p.z)
+        );
+    }
+    static BlockPos2D unpack(std::int64_t v) {
+        return BlockPos2D(
+            static_cast<std::int32_t>(static_cast<std::uint64_t>(v) >> 32),
+            static_cast<std::int32_t>(static_cast<std::uint32_t>(static_cast<std::uint64_t>(v)))
+        );
+    }
+
+private:
+    mutable std::mutex        mutex_;
+    DetailLevelMath           math_;
+    CameraZoom                zoom_;
+    std::atomic<std::int64_t> lastPlayerPos_{0};
+};
 
 /// The two provider calls a render section makes (Java FullDataSourceProviderV2.get / getAdjForDirection).
 /// Abstract so tests can feed synthetic sections without a store + codec; ProviderSectionSource is the
@@ -110,7 +276,7 @@ public:
     std::atomic<bool> renderDataDirty{false};
     std::atomic<bool> queuedMissingSectionsForRetrieval{false};
 
-    LodRenderSection(sec::Pos pos, LodQuadTree& quadTree, RenderSectionContext& ctx);
+    LodRenderSection(sec::Pos pos, std::shared_ptr<const TreeShared> tree, RenderSectionContext& ctx);
     ~LodRenderSection();
     LodRenderSection(const LodRenderSection&)            = delete;
     LodRenderSection& operator=(const LodRenderSection&) = delete;
@@ -166,15 +332,25 @@ private:
     bool                              isAdjacentPosSameDetailLevel(Direction direction) const;
 
     void runBuild(const std::shared_ptr<BuildToken>& token);
-    void onUploadDone(bool ok, bool hasOpaque, bool hasTransparent, const std::shared_ptr<BuildToken>& token);
+    void onUploadDone(
+        bool                               ok,
+        bool                               hasOpaque,
+        bool                               hasTransparent,
+        const std::shared_ptr<BuildToken>& token,
+        IVertexSink::UploadId              uploadId
+    );
     /// Java `future.handle(...)`: forget the build if `token` is still the current one.
     void finishBuild(const std::shared_ptr<BuildToken>& token);
 
-    LodQuadTree&          quadTree_;
-    RenderSectionContext& ctx_;
+    std::shared_ptr<const TreeShared> tree_;
+    RenderSectionContext&             ctx_;
 
     std::mutex                  buildMutex_; ///< guards currentBuild_
     std::shared_ptr<BuildToken> currentBuild_;
+
+    /// Identity of the newest upload this section issued (IVertexSink::uploadWithId); what dispose() and a
+    /// late callback pass to removeIf so a replacement section's buffers at the same pos survive.
+    std::atomic<IVertexSink::UploadId> lastUploadId_{0};
 
     std::atomic<bool> buildInProgress_{false};
     std::atomic<bool> hasGpuBuffers_{false};

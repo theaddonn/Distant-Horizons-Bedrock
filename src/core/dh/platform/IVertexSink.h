@@ -28,11 +28,21 @@
 //
 // Ordering: for one sectionPos, calls are applied in call order; an upload that
 // follows a remove re-creates the section, a remove after an upload drops it
-// (pending uploads complete with false).
+// (pending uploads complete with false). Callback order is NOT constrained: the
+// callback of upload k may fire after upload k+1 for the same pos was issued or
+// even applied (batching sinks). Producers therefore identify their uploads with
+// uploadWithId()/removeIf() instead of relying on callback order.
+//
+// Upload identity (WP-G2): uploadWithId() returns a sink-chosen UploadId for that
+// upload; removeIf(pos, id) frees the section only if the newest upload the sink
+// holds (applied or still pending) for `pos` carries `id`, and is a no-op for a
+// stale id. The defaults keep older sinks compiling (ids are all 0 and removeIf
+// degrades to remove()); real sinks should implement both (GLUE-4).
 
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <mutex>
 #include <utility>
 #include <vector>
@@ -59,6 +69,8 @@ struct MeshBuffers {
 
 struct IVertexSink {
     using UploadCallback = std::function<void(bool ok)>;
+    /// Identity of one upload for `removeIf`; 0 = unknown (sink without identity support).
+    using UploadId = std::uint64_t;
 
     virtual ~IVertexSink() = default;
 
@@ -68,6 +80,16 @@ struct IVertexSink {
 
     /// Stops rendering `sectionPos` and frees its GPU resources. No-op if absent.
     virtual void remove(std::uint64_t sectionPos) = 0;
+
+    /// upload() that also returns the upload's identity (see header). Default: plain upload, id 0.
+    virtual UploadId uploadWithId(std::uint64_t sectionPos, MeshBuffers&& buffers, UploadCallback onDone) {
+        upload(sectionPos, std::move(buffers), std::move(onDone));
+        return 0;
+    }
+
+    /// remove(sectionPos) only if the newest upload held for `sectionPos` (applied or pending) has `id`;
+    /// a stale id (a newer upload exists) is ignored. Default: unconditional remove().
+    virtual void removeIf(std::uint64_t sectionPos, UploadId /*id*/) { remove(sectionPos); }
 };
 
 /// Test double: records every call. Callbacks are deferred until the test calls
@@ -78,24 +100,47 @@ public:
         std::uint64_t  sectionPos;
         MeshBuffers    buffers;
         UploadCallback onDone;
+        UploadId       id = 0;
     };
 
     bool autoComplete = false; ///< if true, onDone(true) fires inside upload()
 
     void upload(std::uint64_t sectionPos, MeshBuffers&& buffers, UploadCallback onDone) override {
+        (void)uploadWithId(sectionPos, std::move(buffers), std::move(onDone));
+    }
+
+    /// Ids are monotonic (1, 2, ...); the newest id per pos is what removeIf compares against.
+    UploadId uploadWithId(std::uint64_t sectionPos, MeshBuffers&& buffers, UploadCallback onDone) override {
         UploadCallback cb;
+        UploadId       id;
         {
             std::lock_guard lock(mutex_);
-            uploads_.push_back(Upload{sectionPos, std::move(buffers), {}});
+            id = ++lastId_;
+            uploads_.push_back(Upload{sectionPos, std::move(buffers), {}, id});
+            newestIdByPos_[sectionPos] = id;
             if (autoComplete) cb = std::move(onDone);
             else uploads_.back().onDone = std::move(onDone);
         }
         if (cb) cb(true);
+        return id;
     }
 
     void remove(std::uint64_t sectionPos) override {
         std::lock_guard lock(mutex_);
         removes_.push_back(sectionPos);
+        newestIdByPos_.erase(sectionPos);
+    }
+
+    /// Removes only if `id` is the newest upload for the pos; stale ids are recorded in staleRemoves().
+    void removeIf(std::uint64_t sectionPos, UploadId id) override {
+        std::lock_guard lock(mutex_);
+        auto            it = newestIdByPos_.find(sectionPos);
+        if (it != newestIdByPos_.end() && it->second == id) {
+            removes_.push_back(sectionPos);
+            newestIdByPos_.erase(it);
+        } else {
+            staleRemoves_.push_back(sectionPos);
+        }
     }
 
     /// Fires the oldest pending callback with `ok`. Returns false if none pending.
@@ -124,6 +169,14 @@ public:
 
     std::vector<Upload>&        uploads() { return uploads_; }
     std::vector<std::uint64_t>& removes() { return removes_; }
+    /// removeIf calls that were ignored because a newer upload existed for the pos.
+    std::vector<std::uint64_t>& staleRemoves() { return staleRemoves_; }
+    /// Newest upload id for a pos, 0 if the pos holds nothing.
+    UploadId newestId(std::uint64_t sectionPos) const {
+        std::lock_guard lock(mutex_);
+        auto            it = newestIdByPos_.find(sectionPos);
+        return it == newestIdByPos_.end() ? 0 : it->second;
+    }
 
     std::size_t pendingCount() const {
         std::lock_guard lock(mutex_);
@@ -136,12 +189,17 @@ public:
         std::lock_guard lock(mutex_);
         uploads_.clear();
         removes_.clear();
+        staleRemoves_.clear();
+        newestIdByPos_.clear();
     }
 
 private:
-    mutable std::mutex         mutex_;
-    std::vector<Upload>        uploads_;
-    std::vector<std::uint64_t> removes_;
+    mutable std::mutex                mutex_;
+    std::vector<Upload>               uploads_;
+    std::vector<std::uint64_t>        removes_;
+    std::vector<std::uint64_t>        staleRemoves_;
+    std::map<std::uint64_t, UploadId> newestIdByPos_;
+    UploadId                          lastId_ = 0;
 };
 
 } // namespace dh
