@@ -25,6 +25,19 @@ public final class Main
 		for (int i = 0; i < DatapointSuite.SHARDS; i++) { reg(new DatapointSuite(i)); }
 		for (int i = 0; i < RdpSuite.SHARDS; i++) { reg(new RdpSuite(i)); }
 		reg(new ConfigSuite());
+		reg(new BlockTableSuite());
+		reg(new MergeSuite(MergeSuite.Mode.SAME, 1000));
+		reg(new MergeSuite(MergeSuite.Mode.UP, 1000));
+		reg(new MergeSuite(MergeSuite.Mode.DOWN, 600));
+		reg(new ChunkSuite());
+		reg(new CullSuite());
+		reg(new LightDsSuite());
+		reg(new ReduceSuite());
+		reg(new QuadSuite());
+		reg(new LightChunkSuite());
+		reg(new TreeMathSuite());
+		reg(new NetSuite());
+		reg(new GenPosSuite());
 	}
 
 	public static void main(String[] args) throws Exception
