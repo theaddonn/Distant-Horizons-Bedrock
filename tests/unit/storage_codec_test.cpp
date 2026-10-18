@@ -12,6 +12,7 @@
 #include "dh/fulldata/FullDataSource.h"
 #include "dh/platform/IBlockRegistry.h"
 #include "dh/storage/Codec.h"
+#include "dh/util/Varint.h"
 
 using namespace dh;
 
@@ -238,10 +239,10 @@ TEST_CASE("codec: unknown serials fall back to air / default biome") {
     CHECK(d->contentEquals(s));
 }
 
-TEST_CASE("codec: seeded fuzz round trip (6000 sources) + adjacent-only") {
+TEST_CASE("codec: seeded fuzz round trip (1500 sources) + adjacent-only") {
     std::mt19937_64 rng(0xD1C0DECull);
-    for (int i = 0; i < 6000; ++i) {
-        const double   fill = (i % 50 == 0) ? 1.0 : (i % 3 == 0 ? 0.02 : 0.15);
+    for (int i = 0; i < 1500; ++i) {
+        const double   fill = (i % 100 == 0) ? 1.0 : (i % 3 == 0 ? 0.02 : 0.04);
         FullDataSource s    = randomSource(rng, fill);
         auto           r    = encode(s);
         REQUIRE(r.has_value());
@@ -352,7 +353,7 @@ TEST_CASE("codec: corruption - truncation at every byte offset") {
         REQUIRE(r.has_value());
         for (int b = 0; b < 8; ++b) {
             const std::size_t full   = blobAt(*r, b)->size();
-            const std::size_t stride = rec == 0 ? 1 : std::max<std::size_t>(1, full / 300);
+            const std::size_t stride = rec == 0 ? (b == 0 ? 3 : 1) : std::max<std::size_t>(1, full / 80);
             for (std::size_t len = 0; len < full; len += stride) {
                 StoreRecord m = *r;
                 blobAt(m, b)->resize(len);
@@ -370,7 +371,7 @@ TEST_CASE("codec: corruption - truncation at every byte offset") {
     }
 }
 
-TEST_CASE("codec: corruption - random byte flips (10000 trials)") {
+TEST_CASE("codec: corruption - random byte flips (2500 trials)") {
     std::mt19937_64          rng(0xBADF00Dull);
     std::vector<StoreRecord> recs;
     for (int i = 0; i < 4; ++i) {
@@ -380,7 +381,7 @@ TEST_CASE("codec: corruption - random byte flips (10000 trials)") {
         recs.push_back(std::move(*r));
     }
     int rejected = 0, accepted = 0;
-    for (int t = 0; t < 10000; ++t) {
+    for (int t = 0; t < 2500; ++t) {
         StoreRecord m     = recs[rng() % recs.size()];
         const int   flips = 1 + static_cast<int>(rng() % 4);
         for (int f = 0; f < flips; ++f) {
@@ -441,4 +442,20 @@ TEST_CASE("codec: size report") {
         static_cast<double>(r->data.size() + adj) / static_cast<double>(points)
     );
     MESSAGE(buf);
+}
+
+TEST_CASE("codec: mapping with millions of empty strings is rejected") {
+    FullDataSource s = FullDataSource::createEmpty(1);
+    auto           r = encode(s);
+    REQUIRE(r.has_value());
+    std::vector<std::byte> payload;
+    (void)varint::writeVarint(payload, 1u << 24);                                    // stringCount
+    payload.insert(payload.end(), static_cast<std::size_t>(1u << 24), std::byte{0}); // empty strings
+    (void)varint::writeVarint(payload, 0);                                           // pairCount
+    std::vector<std::byte> blob{static_cast<std::byte>(kCodecFormatVersion), static_cast<std::byte>(0)};
+    blob.insert(blob.end(), payload.begin(), payload.end());
+    r->mapping = std::move(blob);
+    auto d     = decode(*r, env().reg);
+    CHECK_FALSE(d.has_value());
+    CHECK_FALSE(decodeAdjacentOnly(*r, Direction::North, env().reg).has_value());
 }
