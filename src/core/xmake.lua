@@ -15,6 +15,8 @@ target("dh_core")
     add_headerfiles(path.join(os.scriptdir(), "dh/**.h"))
     add_files(path.join(os.scriptdir(), "dh/**.cpp"))
     set_exceptions("none")
+    -- nlohmann::json must be compiled identically in core and in every consumer (ODR)
+    add_defines("JSON_NOEXCEPTION", {public = true})
     if is_plat("windows") then
         add_cxflags("/clang:-ffp-contract=off", {tools = {"clang_cl"}})
     else

@@ -141,3 +141,14 @@ Format: date — WP — decision — why — evidence.
   flag can be dropped from `src/core/xmake.lua` for the windows branch.
 * **Builds must pass `-P .`** in both the repo root and `tests/`: without it
   xmake resolved the project to the main checkout from inside a worktree.
+
+## Follow-ups recorded during Wave 1 reviews
+
+- **COMPARE_SHIFT lesson (2026-10-18):** `RenderDataPointUtil.COMPARE_SHIFT` is `0b111` = 7. The exploration notes, the WP-E0 port, its reviewer and the dumper README all carried `>>3`; only the Java-generated `rdp` golden suite caught it. Rule: constants are read from the Java source, never from a summary; every WP gets a golden replay, not just a stub.
+- **WP-H → WP-G2:** Java `LodRenderSection.java:490` calls `renderLoaderExecutor.remove(runnable)`. `dh::Executor` has no `remove` (std::function is not comparable). G2 must use a cancellation token/`shared_ptr<atomic<bool>>` captured by the task, or `Executor::execute` must return a handle.
+- **WP-H `DelayedSaveCache`:** Java slept 100 ms before running removal handlers to cover callers that mutate a container after `writeToMemoryAndQueueSave` returns. The port has no such window; concrete caches (data source / beacon) must mutate inside the first lock or via a `modify` callback. `KeyedLock` is non-reentrant (Java `ReentrantLock`): never lock the same key twice on one thread; removal handlers run with the key lock held.
+- **WP-H:** thread count / run-time ratio are fixed at construction; a config change must rebuild `ThreadPools` (Java rebuilt pools in `onConfigValueSet`). `threadPriority` is not applied to workers.
+- **WP-D2:** `ILodStore::timestamps` end bound is EXCLUSIVE (Java `BETWEEN … end-1`); `regenRecordCount` is a record count, not Java's 2^(detail+6)-weighted `getRegenChunkCount` — callers derive weights from `positionsToRegen`.
+- **WP-C2 (verified Java quirk):** `lightChunk` clears the center chunk after seeding, so in the center a torch cell reads 13 and open-sky cells read 14 while neighbour chunks read 15. Reproduced on purpose; the Bedrock glue should supply native light where available.
+- **WP-E2 (pending):** Bedrock snow layers are `minecraft:snow_layer[height=N]`; the Java rule looks for `layers=N` on `minecraft:snow`. The glue's serial format or the transformer's matcher must bridge this.
+- **WP-G1 → WP-G2:** `QuadTree::mutateOutOfBoundChildNodes` skips a child whose value is null and never descends into it (Java behaviour); a chain with a null value in the middle is not mutated below the first null. `NodeIterator::remove()` keeps the iterator valid (descendants purged from the BFS queues before deletion). `MovableGridRingList` has no lock (Java `ReentrantReadWriteLock`) — G2 decides locking.
