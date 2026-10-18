@@ -1,0 +1,18 @@
+// Prints the compile+runtime classpath of :core (main output + deps, incl. :api) to a file.
+// Usage: ./gradlew -I init.gradle :core:printGoldenClasspath -PmcVer=1.20.1 -PgoldenCpOut=/path/out.txt
+allprojects {
+    if (path == ':core') {
+        afterEvaluate {
+            tasks.register('printGoldenClasspath') {
+                dependsOn 'classes'
+                doLast {
+                    def cp = []
+                    cp.addAll(sourceSets.main.runtimeClasspath.files.findAll { it.exists() })
+                    // compileOnly deps (log4j, fastutil, joml, netty, guava, annotations) are needed at runtime too
+                    cp.addAll(configurations.compileClasspath.files.findAll { it.exists() })
+                    new File(project.property('goldenCpOut')).text = cp.unique().join(':')
+                }
+            }
+        }
+    }
+}
