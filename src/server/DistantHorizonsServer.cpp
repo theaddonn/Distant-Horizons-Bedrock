@@ -1,5 +1,7 @@
 #include "server/DistantHorizonsServer.h"
 
+#include "bedrock_common/LeviLogger.h"
+
 #include "ll/api/mod/RegisterHelper.h"
 
 namespace distant_horizons::server {
@@ -10,6 +12,7 @@ DistantHorizonsServer& DistantHorizonsServer::getInstance() {
 }
 
 bool DistantHorizonsServer::load() {
+    dh::bedrock::installCoreLogger();
     getSelf().getLogger().debug("Loading...");
     // Code for loading the mod goes here.
     return true;
