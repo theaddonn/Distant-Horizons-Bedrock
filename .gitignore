@@ -553,3 +553,5 @@ fabric.properties
 # host test project
 /tests/.xmake/
 /tests/build/
+/artifacts/
+/scripts/.game.pid
