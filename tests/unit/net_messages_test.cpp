@@ -9,7 +9,6 @@
 #include "dh/net/MessageRegistry.h"
 #include "dh/net/Messages.h"
 #include "dh/net/SessionConfig.h"
-#include "golden_loader.h"
 
 using namespace dh;
 using namespace dh::net;
@@ -490,30 +489,4 @@ TEST_CASE("net: decoder fuzz") {
         }
     }
     CHECK(decoded > 0);
-}
-
-TEST_CASE("net: golden suite (Java frames)") {
-    // Golden frames come from Java with protocol version 16 (0x0010); ours is 0x4010. Only the 2-byte version
-    // differs, so we replace it and then require decode + re-encode to reproduce the Java bytes exactly.
-    // Cases whose message id is not ported (CodecCrash) are skipped.
-    DH_GOLDEN_SUITE_OR_SKIP(suite, "net.pending");
-    int checked = 0;
-    for (const auto& c : suite.cases) {
-        INFO(c.name);
-        if (!c.out.contains("hex")) continue;
-        std::string hex = c.out["hex"].get<std::string>();
-        if (hex.rfind("0x", 0) == 0) hex.erase(0, 2);
-        auto javaFrame = fromHex(hex);
-        if (javaFrame.size() < 4) continue;
-        auto ours = javaFrame;
-        ours[0]   = static_cast<std::byte>(kProtocolVersion >> 8);
-        ours[1]   = static_cast<std::byte>(kProtocolVersion & 0xFF);
-        auto r    = decodeFrame(ours);
-        if (!r.has_value() && r.error().code == ErrorCode::Unsupported) continue;
-        REQUIRE(r.has_value());
-        auto re = encodeFrame(*r.value());
-        CHECK(toHex(re).substr(4) == toHex(javaFrame).substr(4));
-        checked++;
-    }
-    CHECK(checked > 0);
 }

@@ -23,6 +23,9 @@ namespace dh::bedrock {
 
 class BedrockChunk final : public dh::IChunk {
 public:
+    /// False for dimensions whose height is not a positive multiple of 16 (callers skip those chunks).
+    static bool heightSupported(LevelChunk& chunk);
+
     BedrockChunk(LevelChunk& chunk, BlockSerializer& serializer);
 
     std::int32_t chunkX() const override { return chunkX_; }
