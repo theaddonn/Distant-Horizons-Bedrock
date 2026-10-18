@@ -15,8 +15,12 @@ BedrockChunk::BedrockChunk(LevelChunk& chunk, BlockSerializer& serializer)
   chunkX_(chunk.mPosition->x),
   chunkZ_(chunk.mPosition->z),
   minY_(chunk.mDimension.mHeightRange->mMin),
-  maxY_(chunk.mDimension.mHeightRange->mMax) {
-    DH_ASSERT(maxY_ > minY_ && (maxY_ - minY_) % 16 == 0, "BedrockChunk: dimension height must be a multiple of 16");
+  maxY_(chunk.mDimension.mHeightRange->mMax) {}
+
+bool BedrockChunk::heightSupported(LevelChunk& chunk) {
+    const int lo = chunk.mDimension.mHeightRange->mMin;
+    const int hi = chunk.mDimension.mHeightRange->mMax;
+    return hi > lo && (hi - lo) % 16 == 0;
 }
 
 void BedrockChunk::ensureBlocks() const {
