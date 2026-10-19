@@ -54,6 +54,18 @@ VSOut main(VSIn i) {
     // [3][0] packs clipStart + fadeEnd * 4096 (integer blocks, each <= 4095, exact in a float up to 2^24).
     float fadeEnd = floor(M[3][0] / 4096.0 + 0.001);
     float clipStart = M[3][0] - fadeEnd * 4096.0;
+    if (M[3][3] > 1.5) {
+        // DH cloud layer (unlit marker): no near clip / fade; [3][0] carries the per-draw tint instead, packed as
+        // r + g * 256 + b * 65536 (8 bits each, exact in a float), so the mesh stays white and the tint follows the
+        // sky every frame without a rebuild (Run 13 follow-up).
+        float pk = M[3][0] + 0.5;
+        float tb = floor(pk / 65536.0);
+        float tg = floor((pk - tb * 65536.0) / 256.0);
+        float tr = floor(pk - tb * 65536.0 - tg * 256.0);
+        o.color.rgb *= float3(tr, tg, tb) / 255.0;
+        fadeEnd = 0.0;
+        clipStart = 0.0;
+    }
     o.light = float4(clipStart, M[3][1], M[3][2], fadeEnd);
     // [3][3] selects the lighting path (see dh_terrain_light.hlsli and LodRenderer).
     o.texCoords = dhLightVarying(M[3][3], i.texCoords);
