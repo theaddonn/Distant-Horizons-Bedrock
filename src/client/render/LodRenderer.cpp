@@ -217,6 +217,20 @@ void LodRenderer::renderFrame(BaseActorRenderContext& rc, ViewRenderObject const
         }
         break;
     }
+    if (!material && cfg_.material != MaterialChoice::Selection && lr && lr->mLevelRendererPlayer) {
+        // 2026-10-19: MeshFallbackPosUVNormalColor is in materials.index.json but no load list loads it, so the
+        // chosen material resolves to nothing. Draw with the selection material (magenta-tinted, unfogged) rather
+        // than nothing, and say so once.
+        auto const& m = lr->mLevelRendererPlayer->selectionOpaqueMaterial.get();
+        if (spikes::materialValid(m)) {
+            material = &m;
+            matName  = "selectionOpaqueMaterial(auto-fallback)";
+            if (!warnedMaterialFallback_) {
+                DH_LOG_W("render: material '%s' invalid; drawing with selectionOpaqueMaterial instead", materialName());
+                warnedMaterialFallback_ = true;
+            }
+        }
+    }
 
     auto stats = uploader_.stats();
     dh::hud::set("render.sections", static_cast<std::int64_t>(stats.liveSections));
