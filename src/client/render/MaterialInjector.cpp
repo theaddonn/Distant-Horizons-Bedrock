@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -475,6 +476,45 @@ struct FileHookGuard {
     ~FileHookGuard() { tlInFileHook = false; }
 };
 
+/// Logs the return-address chain of the current thread as module+RVA, so the offline disassembly can start at the
+/// exact functions that open a compiled material (who calls CompiledMaterialManager::getMaterial, and from where).
+std::atomic<int> gBacktraceBudget{6};
+void             logBacktrace(char const* why) {
+    if (gBacktraceBudget.fetch_sub(1) <= 0) return;
+    void*       frames[32];
+    USHORT      n = RtlCaptureStackBackTrace(1, 32, frames, nullptr);
+    std::string line;
+    for (USHORT i = 0; i < n; ++i) {
+        HMODULE mod      = nullptr;
+        char    name[64] = "?";
+        if (GetModuleHandleExW(
+                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                static_cast<LPCWSTR>(frames[i]),
+                &mod
+            )
+            && mod) {
+            wchar_t w[MAX_PATH];
+            if (GetModuleFileNameW(mod, w, MAX_PATH)) {
+                std::string s = narrow(w);
+                auto        p = s.find_last_of("\\/");
+                s             = p == std::string::npos ? s : s.substr(p + 1);
+                snprintf(name, sizeof(name), "%s", s.c_str());
+            }
+        }
+        char buf[128];
+        snprintf(
+            buf,
+            sizeof(buf),
+            "%s%s+0x%llx",
+            i ? " < " : "",
+            name,
+            static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(frames[i]) - reinterpret_cast<uintptr_t>(mod))
+        );
+        line += buf;
+    }
+    DH_LOG_I("materials: backtrace (%s): %s", why, line.c_str());
+}
+
 uintptr_t k32(char const* name) {
     HMODULE m = GetModuleHandleW(L"kernel32.dll");
     return m ? reinterpret_cast<uintptr_t>(GetProcAddress(m, name)) : 0;
@@ -498,6 +538,7 @@ LL_STATIC_HOOK(
         if (lowerSlashes(n).find("material") != std::string::npos) {
             FileHookGuard g;
             traceLoader("CreateFileW", n);
+            if (endsWith(lowerSlashes(n), ".material.bin")) logBacktrace(n.c_str());
             std::wstring r = redirectFor(n);
             if (!r.empty()) {
                 DH_LOG_I("materials: CreateFileW redirect %s -> %s", n.c_str(), narrow(r.c_str()).c_str());
