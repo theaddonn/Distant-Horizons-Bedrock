@@ -153,3 +153,18 @@ still use the section cut-off (`render.cutoff`).
 - **Dither fade**: `u_model[0]` row 3 entry 0 now packs `clipStart + fadeEnd * 4096` (both integer blocks <= 4095; `fadeEnd` = vanilla render distance in blocks). The VS decodes it (floor) and hands `light = (clipStart, fogStart, fogEnd, fadeEnd)` to the FS. FS: `d < clipStart` discards; in `[clipStart, fadeEnd)` an ordered 4x4 Bayer test on `SV_Position.xy` against `t = (d - clipStart) / (fadeEnd - clipStart)` discards, like the Java near-fade. `clipStart <= 0` skips both.
 - **Face shading**: Java does NOT shade in the shader; `getShade` (down 0.5, up 1.0, north/south 0.8, east/west 0.6) is baked into the vertex colour on the CPU (`ColumnMeshBuilder` / `LodQuadBuilder` via `IClientLevel::shade`, already ported, `TableClientLevel` returns the vanilla constants). Applying it again in the shader would double-darken, so the shader factor table exists behind `DH_SHADE_IN_SHADER` (0). The DH direction byte is now carried to the shader anyway (`StageAVertex.u` = face index 0..5, `v` = 0; host test extended). If shading looks absent in game, check the baked colours first (`Level.cpp` `shadeByFace`).
 - **Water**: `DH_TerrainTransparent` is a second cloned mce material (index entry `{"name":"DH_TerrainTransparent","path":"DH_Terrain"}`, same compiled shader): depth test on, depth write off, `Blending` (stateMask 1<<1), blend bytes copied from `entity_alphablend` / `beacon_beam_transparent` when valid (logged). The dragon rename hook treats both infos as DH. FS outputs the vertex alpha. The renderer draws `drawLayer(true)` with it and logs which material was used.
+
+## Run 8: vanilla fog (disableVanillaFog)
+
+Java DH (`MixinFogRenderer` / `MixinVanillaFogCommon.cancelFog`) overwrites vanilla fog start/end with huge values after
+`setupFog`, unless the camera is in a fluid, has blindness, or DH is off. Bedrock port: hook
+`LevelRendererCamera::$setupFog`, after `origin` write start = 0.9 x LOD far, end = LOD far (only with the pipeline on).
+Which fields feed the shader is unknown, so Numpad 1 cycles the write set (HUD `render.vanillaFog`, log `vfog:` lines
+with before/after values): `off`, `distance-fog` (mCurrentDistanceFog, mLastTargetDistanceFog, mBaseFog*, mLastFogEnd,
+mBlendFogThisFrame=false), `fog-control` (mFogControl only), `all`. Default `all` (option
+`client.graphics.fog.disableVanillaFog`, default true).
+
+Underwater/lava/blindness: not detectable directly; heuristic skips the push when the current fog end is < 48 blocks.
+
+In game: stand at the vanilla render-distance edge with LODs on, cycle Numpad 1; report which mode removes the grey band
+on vanilla terrain, whether the log shows the fields changing, and whether underwater / lava / blindness fog still works.

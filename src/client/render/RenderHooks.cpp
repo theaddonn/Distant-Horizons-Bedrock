@@ -1,5 +1,6 @@
 #include "client/render/RenderHooks.h"
 
+#include "bedrock_common/ConfigBridge.h"
 #include "bedrock_common/FileLogger.h"
 #include "client/Input.h"
 #include "client/hud/DebugHud.h"
@@ -7,6 +8,7 @@
 #include "client/render/TestFeed.h"
 #include "client/spikes/SpikeGfx.h"
 #include "client/world/ClientWorldDriver.h"
+#include "dh/render/RenderUtil.h"
 
 #include "ll/api/event/EventBus.h"
 #include "ll/api/event/client/ClientExitLevelEvent.h"
@@ -46,6 +48,23 @@ std::unique_ptr<LodRenderer> gRenderer;
 ll::event::ListenerPtr       gKeyListener;
 ll::event::ListenerPtr       gExitListener;
 
+enum class VFogMode { Off, PushDistanceFog, PushFogControl, All };
+VFogMode gVFog     = VFogMode::All;
+bool     gVFogInit = false;
+
+char const* vfogName(VFogMode m) {
+    switch (m) {
+    case VFogMode::Off:
+        return "off";
+    case VFogMode::PushDistanceFog:
+        return "distance-fog";
+    case VFogMode::PushFogControl:
+        return "fog-control";
+    default:
+        return "all";
+    }
+}
+
 void updateHud() {
     auto& r = *gRenderer;
     dh::hud::set("render.enabled", gEnabled ? "on" : "off");
@@ -54,6 +73,7 @@ void updateHud() {
     dh::hud::set("render.prim", kPrimChoices[r.config().primChoice].name);
     dh::hud::set("render.far", r.farModeName());
     dh::hud::set("render.hook", r.drawHookName());
+    dh::hud::set("render.vanillaFog", vfogName(gVFog));
     dh::hud::set("render.feed", testfeed::active() ? "on" : "off");
 }
 
@@ -150,7 +170,7 @@ LL_TYPE_INSTANCE_HOOK(
     try {
         float      oldFar = cam.mZFar;
         float      newFar = gRenderer->config().farBlocks;
-        glm::mat4  p      = cam.projectionMatrixStack->top()._m.get();
+        glm::mat4  p      = cam.projectionMatrixStack->top()._m;
         auto       info   = spikes::analyzeProjection(p, cam.mZNear, oldFar);
         static int logged = 0;
         if (!info.valid) {
@@ -165,6 +185,84 @@ LL_TYPE_INSTANCE_HOOK(
     } catch (...) {
         static int n = 0;
         if (n++ < 3) DH_LOG_E("render: setupCamera hook threw");
+    }
+}
+
+// ---- vanilla fog (Java DH "disableVanillaFog") ----------------------------------------------------------------
+// Experiment: which LevelRendererCamera fog fields feed the shader uniforms is unknown, so the write set is a mode.
+float lodFarBlocks() {
+    float rad = static_cast<float>(
+        bedrock::ConfigBridge::instance().config().options().client.graphics.quality.lodChunkRenderDistanceRadius
+    );
+    return renderutil::farClipPlaneDistanceInBlocks(static_cast<std::int32_t>(rad));
+}
+
+LL_TYPE_INSTANCE_HOOK(
+    VanillaFogHook,
+    ll::memory::HookPriority::Normal,
+    LevelRendererCamera,
+    &LevelRendererCamera::$setupFog,
+    void,
+    ::ScreenContext& sc,
+    float const      sky
+) {
+    origin(sc, sky);
+    try {
+        if (!gVFogInit) {
+            gVFogInit = true;
+            gVFog     = bedrock::ConfigBridge::instance().config().options().client.graphics.fog.disableVanillaFog
+                          ? VFogMode::All
+                          : VFogMode::Off;
+        }
+        if (gVFog == VFogMode::Off || !bedrock::ClientWorldDriver::instance().pipeline()) return;
+        // Java keeps vanilla fog in fluids / blindness. We cannot tell directly: those fogs are short (< 48 blocks),
+        // normal distance fog ends near the render distance, so only push when the fog is a far one.
+        float oldEnd = mCurrentDistanceFog->mEnd;
+        if (oldEnd < 48.0f) return;
+        float      farB   = lodFarBlocks();
+        float      end    = farB;
+        float      start  = farB * 0.9f;
+        bool       dist   = gVFog == VFogMode::PushDistanceFog || gVFog == VFogMode::All;
+        bool       ctrl   = gVFog == VFogMode::PushFogControl || gVFog == VFogMode::All;
+        static int logged = -1;
+        if (logged != static_cast<int>(gVFog)) {
+            logged = static_cast<int>(gVFog);
+            DH_LOG_I(
+                "vfog: mode %s before: cur[%.1f,%.1f] last[%.1f,%.1f] base[%.1f,%.1f] ctrl[%.1f,%.1f] lastEnd %.1f "
+                "blend %d type %d -> push [%.1f,%.1f]",
+                vfogName(gVFog),
+                mCurrentDistanceFog->mStart,
+                mCurrentDistanceFog->mEnd,
+                mLastTargetDistanceFog->mStart,
+                mLastTargetDistanceFog->mEnd,
+                mBaseFogStart,
+                mBaseFogEnd,
+                mFogControl->x,
+                mFogControl->y,
+                mLastFogEnd,
+                (int)mBlendFogThisFrame,
+                (int)mCurrentDistanceFog->mType,
+                start,
+                end
+            );
+        }
+        if (dist) {
+            mCurrentDistanceFog->mStart    = start;
+            mCurrentDistanceFog->mEnd      = end;
+            mLastTargetDistanceFog->mStart = start;
+            mLastTargetDistanceFog->mEnd   = end;
+            mBaseFogStart                  = start;
+            mBaseFogEnd                    = end;
+            mLastFogEnd                    = end;
+            mBlendFogThisFrame             = false;
+        }
+        if (ctrl) {
+            mFogControl->x = start;
+            mFogControl->y = end;
+        }
+    } catch (...) {
+        static int n = 0;
+        if (n++ < 3) DH_LOG_E("vfog: hook threw");
     }
 }
 
@@ -230,6 +328,11 @@ void onKeys(ll::event::AfterUIRenderEvent& e) {
             else if (ctrl) r.toggleTransparent();
             else r.cycleMaterial();
         }
+        if (dh::input::pressed(VK_NUMPAD1)) {
+            gVFogInit = true;
+            gVFog     = static_cast<VFogMode>((static_cast<int>(gVFog) + 1) % 4);
+            DH_LOG_I("vfog: mode -> %s (Numpad 1)", vfogName(gVFog));
+        }
         updateHud();
     } catch (...) {
         static int n = 0;
@@ -254,6 +357,7 @@ void install() {
     LodLevelRenderHook::hook();
     LodPostLevelHook::hook();
     LodSetupCameraHook::hook();
+    VanillaFogHook::hook();
     auto& bus     = ll::event::EventBus::getInstance();
     gKeyListener  = bus.emplaceListener<ll::event::AfterUIRenderEvent>(onKeys);
     gExitListener = bus.emplaceListener<ll::event::ClientExitLevelEvent>([](auto&) {
