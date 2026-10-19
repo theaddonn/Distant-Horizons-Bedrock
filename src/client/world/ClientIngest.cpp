@@ -14,6 +14,7 @@
 //                    each update therefore gets its own copies (a snapshot copy is a few vector memcpys).
 //                    Back-pressure: at most kMaxInFlight chunk updates are queued in the level at a time.
 
+#include "bedrock_common/BdsWorldGenerator.h"
 #include "bedrock_common/BedrockChunk.h"
 #include "bedrock_common/FileLogger.h"
 #include "client/world/ClientDriverImpl.h"
@@ -382,6 +383,11 @@ void ClientWorldDriver::Impl::drain(Session& s) {
             }
         if (s.world->applyChunkUpdate(*handle, std::move(center), std::move(neighbours))) ++s.ingested;
         else ++s.skipped;
+        // Run 13 compare mode: regenerate this real chunk through the distant generator and log the difference.
+        if (s.singleplayer && BdsWorldGenerator::compareModeEnabled() && level->isServerLevel()
+            && level->isClientLevel())
+            if (auto* gen = static_cast<dh::DhClientServerLevel*>(level)->serverside().chunkGenerator())
+                static_cast<BdsWorldGenerator*>(gen)->compareWithReal(std::make_shared<BedrockChunk>(*c.chunk));
     }
 }
 
