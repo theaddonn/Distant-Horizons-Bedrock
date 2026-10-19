@@ -288,6 +288,13 @@ Table table() {
             kPlanNames,
             "How LODs are generated outside the vanilla render distance."
         ),
+        DH_BOOL(
+            "common.worldGenerator.allowUnvalidatedGenerator",
+            common.worldGenerator.allowUnvalidatedGenerator,
+            false,
+            "Bedrock port: allow distant generation (generatorPlan) although scratch chunk generation is not yet "
+            "validated in game."
+        ),
         DH_ENUM(
             "common.worldGenerator.chunkGeneratorMode",
             common.worldGenerator.chunkGeneratorMode,

@@ -114,6 +114,9 @@ struct ClientOptions {
 struct WorldGeneratorOptions {
     /// Java Common.WorldGenerator. SURFACE_THEN_CHUNKS
     GeneratorPlan generatorPlan = GeneratorPlan::SurfaceThenChunks;
+    /// Bedrock port safety switch: distant generation stays Disabled until scratch generation is validated in game.
+    /// false
+    bool allowUnvalidatedGenerator = false;
     /// FEATURES
     DistantGeneratorMode chunkGeneratorMode = DistantGeneratorMode::Features;
     /// true
