@@ -10,7 +10,18 @@ Everything here was built offline, **untested in game**. Rebuild: `tools/shaders
    (interface or sampler mismatch), crash on startup or vanilla look (file rejected: hash/integrity), or only some blocks tinted (variant coverage).
 4. Restore: `cp RenderChunk.material.bin.orig RenderChunk.material.bin`.
 
-## B3: DH_Terrain loaded through the mod (no game-dir writes)
+## B3 result (2026-10-19): the loader does not go through ResourcePackManager
+
+Three sessions of trace: no `materials: load renderer/materials/...` line ever appeared (neither `$load` overload), so
+`materials.index.json` and the `.material.bin` files are read from `data/renderer/materials/` on disk by another path.
+`DH_Terrain resolved: no` after every `loadList` is that, not a parse failure. Compiled names live in
+`RenderMaterialGroup::switchable()` (1014 entries), not `common()` (137 legacy names).
+
+Interim delivery: `scripts/deploy.sh client --game-materials` copies `DH_Terrain.material.bin` into the game's
+`data/renderer/materials/` and adds the index entry (one-time backup `materials.index.json.dh-backup`);
+`scripts/deploy.sh restore-materials` reverts both. A loader-level hook replaces this later.
+
+## B3 (original plan): DH_Terrain loaded through the mod (no game-dir writes)
 1. `scripts/build.sh client && scripts/deploy.sh client` (copies `artifacts/shaders/B3/DH_Terrain.material.bin` to `<modDir>/materials/`).
    Toggle with env `DH_MATERIAL_INJECT=0|1` (default on iff the file exists). Launch the game, then read `<modDir>/logs/dh.log`:
    - `materials: injector on, DH_Terrain.material.bin N bytes` (at enable)
