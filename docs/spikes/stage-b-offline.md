@@ -21,6 +21,19 @@ Interim delivery: `scripts/deploy.sh client --game-materials` copies `DH_Terrain
 `data/renderer/materials/` and adds the index entry (one-time backup `materials.index.json.dh-backup`);
 `scripts/deploy.sh restore-materials` reverts both. A loader-level hook replaces this later.
 
+## Trace run: which function loads `renderer/materials`?
+Diagnostic hooks (log only, installed with the injector, so only when `materials/DH_Terrain.material.bin` is in the mod dir) on
+`AppResourceLoader::load` (3 overloads) + `loadAllVersionsOf`, `ResourcePackManager::$loadAllVersionsOf` + `::load(loc, string&, optional<UUID>)`,
+and `Core::StandardFileSystem::readFile / readFileData / openFile / readFileDataExt`. The `AppResourceLoader` and `StandardFileSystem`
+ones are installed by vtable slot (their `$fn` thunks and `$vftable()` are not in the import lib; the vftable is resolved at runtime via the
+mangled symbol). `FileSystemImpl::openFile` is skipped (not exported).
+1. Launch the game, enter a world, then `grep 'materials: trace' <modDir>/logs/dh.log`.
+2. `materials: trace hook <Name> -> N` lines at enable: `0` = installed; non-zero = the target did not resolve (vtable symbol lookup failed) and that hook is inactive.
+3. `materials: trace[<Hook>] <path>` is logged once per distinct path containing "material" (any case), max 200 lines. Hooks that report a size print a
+   following `trace   -> ...` line. The hook that shows `renderer/materials/materials.index.json` and `*.material.bin` is the loader entry point;
+   the earliest/deepest one (e.g. `StandardFileSystem::$readFile`) can be used to splice the index and serve `DH_Terrain.material.bin`.
+4. If nothing shows with "material" at all, the loader reads via a path the hooks do not cover (e.g. memory-mapped / `CreateFileW` directly).
+
 ## B3 (original plan): DH_Terrain loaded through the mod (no game-dir writes)
 1. `scripts/build.sh client && scripts/deploy.sh client` (copies `artifacts/shaders/B3/DH_Terrain.material.bin` to `<modDir>/materials/`).
    Toggle with env `DH_MATERIAL_INJECT=0|1` (default on iff the file exists). Launch the game, then read `<modDir>/logs/dh.log`:

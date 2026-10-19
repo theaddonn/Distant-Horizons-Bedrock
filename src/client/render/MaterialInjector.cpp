@@ -3,17 +3,31 @@
 #include "bedrock_common/FileLogger.h"
 
 #include "ll/api/memory/Hook.h"
+#include "ll/api/memory/Symbol.h"
 #include "ll/api/mod/NativeMod.h"
 #include "mc/client/renderer/RenderMaterialGroup.h"
+#include "mc/deps/core/file/FileOpenMode.h"
+#include "mc/deps/core/file/FileSystem.h"
+#include "mc/deps/core/file/PathView.h"
+#include "mc/deps/core/file/StandardFileSystem.h"
+#include "mc/deps/core/file/file_system/FileSystemImpl.h"
+#include "mc/deps/core/platform/Result.h"
 #include "mc/deps/core/renderer/RenderMaterialInfo.h"
+#include "mc/deps/core/resource/LoadedResourceData.h"
 #include "mc/deps/core/resource/ResourceLocation.h"
+#include "mc/deps/core/resource/ResourceLocationPair.h"
 #include "mc/deps/core/string/HashedString.h"
+#include "mc/resources/AppResourceLoader.h"
 #include "mc/resources/ResourcePackManager.h"
 
+#include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
+#include <set>
 #include <sstream>
 #include <string>
 
@@ -54,6 +68,27 @@ bool splice(std::string& json, std::string const& entry) {
 void trace(char const* tag, std::string const& p) {
     if (p.find("renderer/materials") == std::string::npos) return;
     if (gTraceBudget.fetch_sub(1) > 0) DH_LOG_I("materials: %s %s", tag, p.c_str());
+}
+
+// Diagnostic loader trace: log once per distinct (tag, path) whose path contains "material" (case-insensitive).
+std::atomic<int>      gLoaderBudget{200};
+std::mutex            gLoaderMutex;
+std::set<std::string> gLoaderSeen;
+
+bool traceLoader(char const* tag, std::string_view path) {
+    if (path.empty()) return false;
+    auto it = std::search(path.begin(), path.end(), "material", "material" + 8, [](char a, char b) {
+        return std::tolower((unsigned char)a) == b;
+    });
+    if (it == path.end()) return false;
+    std::string key = std::string(tag) + '|' + std::string(path);
+    {
+        std::lock_guard lk(gLoaderMutex);
+        if (!gLoaderSeen.insert(key).second) return false;
+    }
+    if (gLoaderBudget.fetch_sub(1) <= 0) return false;
+    DH_LOG_I("materials: trace[%s] %.*s", tag, (int)path.size(), path.data());
+    return true;
 }
 
 LL_TYPE_INSTANCE_HOOK(
@@ -140,7 +175,189 @@ LL_TYPE_INSTANCE_HOOK(
     return r;
 }
 
+// ---- diagnostic-only trace hooks (log, always call origin, never alter data) ----
+
+constexpr char const* kVtArl = "??_7AppResourceLoader@@6B@";
+constexpr char const* kVtSfs = "??_7StandardFileSystem@Core@@6B@";
+
+// The `$fn` thunks of these classes are not exported by the import lib; hook the vtable slot instead.
+template <class T, class MemFn>
+uintptr_t vslot(char const* vftableSym, MemFn fn) {
+    auto idx = ll::memory::getVtableIndex(fn);
+    auto vt  = static_cast<void**>(ll::memory::SymbolView{vftableSym}.resolve(true));
+    if (!idx || !vt) return 0;
+    return reinterpret_cast<uintptr_t>(vt[*idx]);
+}
+
+LL_TYPE_INSTANCE_HOOK(
+    TraceArlLoad1,
+    ll::memory::HookPriority::Normal,
+    AppResourceLoader,
+    vslot<AppResourceLoader>(
+        kVtArl,
+        static_cast<bool (AppResourceLoader::*)(ResourceLocation const&, std::string&) const>(&AppResourceLoader::load)
+    ),
+    bool,
+    ::ResourceLocation const& loc,
+    ::std::string&            stream
+) {
+    bool r = origin(loc, stream);
+    if (gActive.load() && traceLoader("AppResourceLoader::$load", pathOf(loc)))
+        DH_LOG_I("materials: trace   -> ok=%d size=%zu", (int)r, stream.size());
+    return r;
+}
+
+LL_TYPE_INSTANCE_HOOK(
+    TraceArlLoad2,
+    ll::memory::HookPriority::Normal,
+    AppResourceLoader,
+    vslot<AppResourceLoader>(
+        kVtArl,
+        static_cast<bool (AppResourceLoader::*)(ResourceLocation const&, std::string&, gsl::span<std::string const>)
+                        const>(&AppResourceLoader::load)
+    ),
+    bool,
+    ::ResourceLocation const&        loc,
+    ::std::string&                   stream,
+    ::gsl::span<::std::string const> exts
+) {
+    bool r = origin(loc, stream, exts);
+    if (gActive.load() && traceLoader("AppResourceLoader::$load(ext)", pathOf(loc)))
+        DH_LOG_I("materials: trace   -> ok=%d size=%zu", (int)r, stream.size());
+    return r;
+}
+
+LL_TYPE_INSTANCE_HOOK(
+    TraceArlLoad3,
+    ll::memory::HookPriority::Normal,
+    AppResourceLoader,
+    vslot<AppResourceLoader>(
+        kVtArl,
+        static_cast<bool (AppResourceLoader::*)(ResourceLocationPair const&, std::string&, gsl::span<std::string const>)
+                        const>(&AppResourceLoader::load)
+    ),
+    bool,
+    ::ResourceLocationPair const&    loc,
+    ::std::string&                   stream,
+    ::gsl::span<::std::string const> exts
+) {
+    bool r = origin(loc, stream, exts);
+    if (gActive.load() && traceLoader("AppResourceLoader::$load(pair)", pathOf(loc.mResourceLocation.get())))
+        DH_LOG_I("materials: trace   -> ok=%d size=%zu", (int)r, stream.size());
+    return r;
+}
+
+LL_TYPE_INSTANCE_HOOK(
+    TraceArlAllVersions,
+    ll::memory::HookPriority::Normal,
+    AppResourceLoader,
+    vslot<AppResourceLoader>(kVtArl, &AppResourceLoader::loadAllVersionsOf),
+    std::vector<LoadedResourceData>,
+    ::ResourceLocation const& loc
+) {
+    auto r = origin(loc);
+    if (gActive.load()) traceLoader("AppResourceLoader::$loadAllVersionsOf", pathOf(loc));
+    return r;
+}
+
+LL_TYPE_INSTANCE_HOOK(
+    TraceRpmAllVersions,
+    ll::memory::HookPriority::Normal,
+    ResourcePackManager,
+    &ResourcePackManager::$loadAllVersionsOf,
+    std::vector<LoadedResourceData>,
+    ::ResourceLocation const& loc
+) {
+    auto r = origin(loc);
+    if (gActive.load()) traceLoader("ResourcePackManager::$loadAllVersionsOf", pathOf(loc));
+    return r;
+}
+
+LL_TYPE_INSTANCE_HOOK(
+    TraceRpmLoadNv,
+    ll::memory::HookPriority::Normal,
+    ResourcePackManager,
+    &ResourcePackManager::load,
+    bool,
+    ::ResourceLocation const&    loc,
+    ::std::string&               stream,
+    ::std::optional<::mce::UUID> packId
+) {
+    bool r = origin(loc, stream, packId);
+    if (gActive.load() && traceLoader("ResourcePackManager::load", pathOf(loc)))
+        DH_LOG_I("materials: trace   -> ok=%d size=%zu", (int)r, stream.size());
+    return r;
+}
+
+LL_TYPE_INSTANCE_HOOK(
+    TraceSfsReadFile,
+    ll::memory::HookPriority::Normal,
+    Core::StandardFileSystem,
+    vslot<Core::StandardFileSystem>(kVtSfs, &Core::StandardFileSystem::readFile),
+    ::Bedrock::Result<std::string>,
+    ::Core::PathView path
+) {
+    auto r = origin(path);
+    if (gActive.load() && traceLoader("StandardFileSystem::$readFile", path.getUtf8StringView()))
+        DH_LOG_I("materials: trace   -> has_value=%d size=%zu", (int)r.has_value(), r.has_value() ? r->size() : 0);
+    return r;
+}
+
+LL_TYPE_INSTANCE_HOOK(
+    TraceSfsReadFileData,
+    ll::memory::HookPriority::Normal,
+    Core::StandardFileSystem,
+    vslot<Core::StandardFileSystem>(kVtSfs, &Core::StandardFileSystem::readFileData),
+    ::Core::Result,
+    ::Core::PathView              path,
+    ::std::vector<unsigned char>& data
+) {
+    auto r = origin(path, data);
+    if (gActive.load() && traceLoader("StandardFileSystem::$readFileData", path.getUtf8StringView()))
+        DH_LOG_I("materials: trace   -> size=%zu", data.size());
+    return r;
+}
+
+LL_TYPE_INSTANCE_HOOK(
+    TraceSfsOpenFile,
+    ll::memory::HookPriority::Normal,
+    Core::StandardFileSystem,
+    vslot<Core::StandardFileSystem>(kVtSfs, &Core::StandardFileSystem::openFile),
+    ::Core::Result,
+    ::Core::PathView            path,
+    ::Core::File&               fileOut,
+    ::Core::FileOpenMode const& mode,
+    ::Core::FileBufferingMode   buf
+) {
+    if (gActive.load()) traceLoader("StandardFileSystem::$openFile", path.getUtf8StringView());
+    return origin(path, fileOut, mode, buf);
+}
+
+LL_TYPE_INSTANCE_HOOK(
+    TraceSfsReadFileDataExt,
+    ll::memory::HookPriority::Normal,
+    Core::StandardFileSystem,
+    vslot<Core::StandardFileSystem>(kVtSfs, &Core::StandardFileSystem::readFileDataExt),
+    ::Core::Result,
+    ::Core::PathView              path,
+    uint64                        pos,
+    uint64                        bufSize,
+    ::std::vector<unsigned char>& buffer,
+    uint64&                       bytesRead
+) {
+    auto r = origin(path, pos, bufSize, buffer, bytesRead);
+    if (gActive.load() && traceLoader("StandardFileSystem::$readFileDataExt", path.getUtf8StringView()))
+        DH_LOG_I(
+            "materials: trace   -> pos=%llu bytesRead=%llu",
+            (unsigned long long)pos,
+            (unsigned long long)bytesRead
+        );
+    return r;
+}
+
 } // namespace
+
+#define DH_TRACE_HOOK(H) DH_LOG_I("materials: trace hook " #H " -> %d", (int)H::hook())
 
 void installMaterialInjector() {
     if (gInstalled.exchange(true)) return;
@@ -168,12 +385,32 @@ void installMaterialInjector() {
     MaterialLoadHook::hook();
     MaterialLoadExtHook::hook();
     LoadListProbeHook::hook();
+    DH_TRACE_HOOK(TraceArlLoad1);
+    DH_TRACE_HOOK(TraceArlLoad2);
+    DH_TRACE_HOOK(TraceArlLoad3);
+    DH_TRACE_HOOK(TraceArlAllVersions);
+    DH_TRACE_HOOK(TraceRpmAllVersions);
+    DH_TRACE_HOOK(TraceRpmLoadNv);
+    DH_TRACE_HOOK(TraceSfsReadFile);
+    DH_TRACE_HOOK(TraceSfsReadFileData);
+    DH_TRACE_HOOK(TraceSfsOpenFile);
+    DH_TRACE_HOOK(TraceSfsReadFileDataExt);
     DH_LOG_I("materials: injector on, DH_Terrain.material.bin %zu bytes", gMaterialBytes.size());
 }
 
 void uninstallMaterialInjector() {
     if (!gInstalled.exchange(false)) return;
     if (gActive.exchange(false)) {
+        TraceSfsReadFileDataExt::unhook();
+        TraceSfsOpenFile::unhook();
+        TraceSfsReadFileData::unhook();
+        TraceSfsReadFile::unhook();
+        TraceRpmLoadNv::unhook();
+        TraceRpmAllVersions::unhook();
+        TraceArlAllVersions::unhook();
+        TraceArlLoad3::unhook();
+        TraceArlLoad2::unhook();
+        TraceArlLoad1::unhook();
         LoadListProbeHook::unhook();
         MaterialLoadExtHook::unhook();
         MaterialLoadHook::unhook();
