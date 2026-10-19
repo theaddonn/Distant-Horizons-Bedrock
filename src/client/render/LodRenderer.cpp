@@ -232,6 +232,7 @@ ViewSnapshot LodRenderer::snapshotOf(ViewRenderObject const& vro) {
     v.isShadowPass   = vro.mViewData->mIsShadowPass;
     v.cameraPos      = {p.x, p.y, p.z};
     v.renderDistance = vro.mViewData->mRenderDistance;
+    v.skyBrightness  = vro.mViewData->mSkyBrightnessScalar;
     auto const& sky  = vro.mViewData->mSkyColor.get();
     v.skyColor       = {sky.r, sky.g, sky.b};
     v.valid          = true;
@@ -336,7 +337,7 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
     const LightmapMode lmode       = cfg_.lightmapMode;
     const bool         useSpan     = lmode == LightmapMode::DynamicSpan;
     const bool         swapAxes    = (lmode == LightmapMode::DynamicSwapped) != cfg_.lightmapSwapAxes;
-    if (std::strcmp(matName, "DH_Terrain") == 0 && lmode != LightmapMode::Cpu) {
+    if (std::strcmp(matName, "DH_Terrain") == 0 && lmode != LightmapMode::Shader) {
         const bool wantDynamic = lmode == LightmapMode::Dynamic || lmode == LightmapMode::DynamicSwapped || useSpan;
         if (wantDynamic) {
             if (::MinecraftGraphics* gfx = ci.getMinecraftGraphics().get().get()) {
@@ -392,8 +393,15 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
     // in uv0.y; every other case (other materials, no lightmap) applies the CPU light factor. A change re-converts all
     // sections.
     {
-        const bool wantCpu = !lightmapOk;
-        dh::hud::set("render.lighting", wantCpu ? "cpu" : "lightmap");
+        // DH_Terrain always gets unlit colours + packed light (texture lightmap or the procedural one in the FS);
+        // only the fallback materials bake a CPU light factor into the vertex colours.
+        const bool wantCpu = std::strcmp(matName, "DH_Terrain") != 0;
+        dh::hud::set("render.lighting", wantCpu ? "cpu" : (lightmapOk ? "lightmap" : "shader"));
+        {
+            char day[32];
+            std::snprintf(day, sizeof day, "%.2f", static_cast<double>(vs.skyBrightness));
+            dh::hud::set("render.daylight", day);
+        }
         {
             char hud[96];
             std::snprintf(
@@ -401,7 +409,7 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
                 sizeof hud,
                 "%s: %s%s",
                 kLightmapModeNames[static_cast<int>(lmode)],
-                lightmapOk ? lightSrc : "none(cpu)",
+                lightmapOk ? lightSrc : "none(shader)",
                 lightmapOk ? (swapAxes ? " u=sky,v=block" : " u=block,v=sky") : ""
             );
             dh::hud::set("render.lightmap", hud);
@@ -678,7 +686,8 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
                 g[0][3] = packedClip;
                 g[1][3] = fogStart;
                 g[2][3] = fogEnd;
-                g[3][3] = lightmapOk ? 1.0f : 0.0f; // 0: no lightmap bound, FS keeps the CPU-lit colour
+                // [3][3]: 1 = lightmap texture at t0; -daylight (<= 0) = procedural lightmap in the FS (see the VS).
+                g[3][3] = lightmapOk ? 1.0f : -std::clamp(vs.skyBrightness, 0.0f, 1.0f);
             }
             cam.worldMatrixStack->getTop() = m;
             for (auto const& part : parts) {
