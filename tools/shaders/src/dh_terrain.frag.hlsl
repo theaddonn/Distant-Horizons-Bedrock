@@ -65,6 +65,8 @@ float4 main(PSIn i) : SV_Target0 {
             // Packed light = sky * 16 + block.
             float  packedLight = round(saturate(-i.texCoords.y - 1.0) * 255.0);
             float  sky = floor(packedLight / 16.0), block = packedLight - sky * 16.0;
+            // debug paint (x > 2.5): R = sky/15, G = block/15, B = 0.25 marker
+            if (i.texCoords.x > 2.5) return float4(sky / 15.0, block / 15.0, 0.25, 1.0);
             float  skyDarken = clamp(i.texCoords.x, 0.2, 1.0);
             float  fs = sky / 15.0, fb = block / 15.0;
             float  rampS = fs / (4.0 - 3.0 * fs), rampB = fb / (4.0 - 3.0 * fb);

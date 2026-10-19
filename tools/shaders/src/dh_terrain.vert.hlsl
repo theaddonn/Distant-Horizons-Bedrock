@@ -59,7 +59,7 @@ VSOut main(VSIn i) {
         float m = M[3][3];
         if (m > 1.5) o.texCoords = float2(-1.0, 2.0);
         else if (m >= 0.5) o.texCoords = i.texCoords;
-        else o.texCoords = float2(saturate(-m), -(1.0 + i.texCoords.y));
+        else o.texCoords = float2(m < -2.5 ? 3.0 : saturate(-m), -(1.0 + i.texCoords.y)); // m < -2.5: debug paint
     }
     o.worldPos = world.xyz;
     return o;

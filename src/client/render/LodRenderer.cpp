@@ -339,7 +339,8 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
     const LightmapMode lmode       = cfg_.lightmapMode;
     const bool         useSpan     = lmode == LightmapMode::DynamicSpan;
     const bool         swapAxes    = (lmode == LightmapMode::DynamicSwapped) != cfg_.lightmapSwapAxes;
-    if (std::strcmp(matName, "DH_Terrain") == 0 && lmode != LightmapMode::Shader && lmode != LightmapMode::UnlitTest) {
+    if (std::strcmp(matName, "DH_Terrain") == 0 && lmode != LightmapMode::Shader && lmode != LightmapMode::UnlitTest
+        && lmode != LightmapMode::LightDebug) {
         const bool wantDynamic = lmode == LightmapMode::Dynamic || lmode == LightmapMode::DynamicSwapped || useSpan;
         if (wantDynamic) {
             if (::MinecraftGraphics* gfx = ci.getMinecraftGraphics().get().get()) {
@@ -397,7 +398,8 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
     float daylight = 1.0f;
     if (::LocalPlayer* lp = ci.getLocalPlayer()) daylight = std::clamp(lp->getDimension().getSkyDarken(1.0f), 0.0f, 1.0f);
     // u_model[0][3][3] for the VS: 1 = lightmap texture at t0, 2 = unlit, -daylight = procedural lightmap.
-    const float lightFlag = lightmapOk ? 1.0f : (lmode == LightmapMode::UnlitTest ? 2.0f : -daylight);
+    const float lightFlag = lightmapOk ? 1.0f
+                          : (lmode == LightmapMode::UnlitTest ? 2.0f : (lmode == LightmapMode::LightDebug ? -3.0f : -daylight));
     if (const auto tnow = std::chrono::steady_clock::now(); tnow - lastLightDiag_ > std::chrono::seconds(10)) {
         lastLightDiag_ = tnow;
         auto const ls  = uploader_.lightStats();
