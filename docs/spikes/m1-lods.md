@@ -17,7 +17,7 @@ until you run it. Build + deploy: `scripts/build.sh client && scripts/deploy.sh 
 | Shift+F7 | chunk ingestion on/off (default on) |
 | F4 / Shift+F4 / Ctrl+F4 | primitive / far-plane mode / near cut-off (now on by default while the pipeline runs) |
 | F6 / Shift+F6 / Ctrl+F6 | material / origin mode / transparent pass |
-| Ctrl+F8 | cycle the LOD draw hook: camera-after (default) / level-before / level-after / post-level (plain F8 = HUD dump) |
+| Numpad 0 (or Ctrl+F8) | cycle the LOD draw hook: camera-after (default) / level-before / level-after / post-level (plain F8 = HUD dump) |
 
 The old F7-ingest smoke test (`ChunkIngress`) is gone; ingestion is part of the driver.
 
@@ -124,6 +124,6 @@ that may not know them; if joining a vanilla server gets you kicked, tell me.
 ## Run 5: draw hook
 
 LODs drawn after the whole level (camera-after) show through Bedrock's depth-less translucent water. Stand at sea level
-looking at the LOD edge and cycle Ctrl+F8 (log `render: draw hook -> <name>`, HUD `render.hook`). For each mode report:
+looking at the LOD edge and press Numpad 0 (log `render: draw hook -> <name>`, HUD `render.hook`). For each mode report:
 (a) whether the under-water LOD faces disappear or tint blue, (b) whether LODs still appear at all. level-before is the
 Java-like order (LODs before the translucent pass); level-after / post-level are for comparison.
