@@ -77,6 +77,9 @@ def main():
     ap.add_argument("--attrs", action="append", default=[])
     ap.add_argument("--add-prop", action="append", default=[])
     ap.add_argument("--keep-passes", default="")
+    ap.add_argument("--pass-code", action="append", default=[], help="PASS:platform:stage=file (overrides --code for that pass)")
+    ap.add_argument("--pass-uniforms", action="append", default=[], help="PASS:stage=spec (overrides --uniforms for that pass)")
+    ap.add_argument("--pass-cbuf", action="append", default=[], help="PASS:stage=bytes (overrides --cbuf for that pass)")
     ap.add_argument("--rename", default="")
     ap.add_argument("--out", required=True)
     ap.add_argument("--mbt", default=os.path.join(HOME, ".cache/dh-tools/mbt-build/mbt.jar"))
@@ -96,7 +99,21 @@ def main():
     uni = {k: parse_uniforms(v) for k, v in (split_kv(x, "--uniforms") for x in a.uniforms)}
     cbuf = {k: int(v) for k, v in (split_kv(x, "--cbuf") for x in a.cbuf)}
     attrs = {k: [int(i) for i in v.split(",") if i] for k, v in (split_kv(x, "--attrs") for x in a.attrs)}
+    pass_code, pass_uni, pass_cbuf = {}, {}, {}
+    for c in a.pass_code:
+        k, f = split_kv(c, "--pass-code")
+        pn, plat, stage = k.split(":")
+        pass_code.setdefault(pn, {})[(plat, stage)] = open(f, "rb").read()
+    for x in a.pass_uniforms:
+        k, v = split_kv(x, "--pass-uniforms")
+        pn, stage = k.split(":")
+        pass_uni.setdefault(pn, {})[stage] = parse_uniforms(v)
+    for x in a.pass_cbuf:
+        k, v = split_kv(x, "--pass-cbuf")
+        pn, stage = k.split(":")
+        pass_cbuf.setdefault(pn, {})[stage] = int(v)
     want = dict(kv.split("=") for kv in a.flags.split(",") if kv)
+    global_code, global_uni, global_cbuf = code, uni, cbuf
 
     src = os.path.abspath(a.unpacked)
     name = os.path.basename(src)
@@ -130,6 +147,9 @@ def main():
         for pass_name in edit_passes:
             pj_path = os.path.join(dst, pass_name, pass_name + ".json")
             pj = json.load(open(pj_path))
+            code = dict(global_code); code.update(pass_code.get(pass_name, {}))
+            uni = dict(global_uni); uni.update(pass_uni.get(pass_name, {}))
+            cbuf = dict(global_cbuf); cbuf.update(pass_cbuf.get(pass_name, {}))
             nvar = nblob = ndrop = 0
             for vi, v in enumerate(pj["variantList"]):
                 if any(v["flags"].get(k) != x for k, x in want.items()):
