@@ -80,8 +80,9 @@ struct LodRendererConfig {
     float overdraw                    = 1.0f;
     float fogStartFraction            = 0.6f; ///< DH_Terrain far fog starts at this fraction of the LOD far distance
 
-    float skyBrightness = 1.0f;   ///< CPU light stand-in input (0 night .. 1 day)
-    float minYBlocks    = -64.0f; ///< DH y 0 maps to this Bedrock y
+    float skyBrightness    = 1.0f;   ///< CPU light stand-in input (0 night .. 1 day); fallback materials only
+    bool  lightmapSwapAxes = false;  ///< DH_Terrain: swap the lightmap lookup axes (default u = block, v = sky)
+    float minYBlocks       = -64.0f; ///< DH y 0 maps to this Bedrock y
 };
 
 class LodRenderer {
@@ -122,6 +123,7 @@ public:
     void cycleFarMode();
     void toggleNearCutoff();
     void toggleTransparent();
+    void toggleLightmapAxes();
 
     char const* materialName() const;
     char const* farModeName() const;
@@ -144,6 +146,10 @@ private:
     bool                                  warnedMaterialFallback_ = false;
     bool                                  loggedDhMaterial_       = false;
     bool                                  loggedTransMaterial_    = false;
+    bool                                  warnedNoLightmap_       = false;
+    bool                                  loggedLightmapSize_     = false;
+    bool                                  cpuLighting_      = true; ///< ConvertParams::cpuLighting currently applied
+    bool                                  lightSwapApplied_ = false;
 };
 
 } // namespace dh::render

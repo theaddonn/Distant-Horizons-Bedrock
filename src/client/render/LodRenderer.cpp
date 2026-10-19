@@ -18,6 +18,7 @@
 #include "mc/deps/core/math/Color.h"
 #include "mc/deps/core/math/Matrix.h"
 #include "mc/deps/minecraft_renderer/objects/ViewRenderObject.h"
+#include "mc/deps/minecraft_renderer/renderer/BedrockTextureData.h"
 #include "mc/deps/minecraft_renderer/renderer/MaterialPtr.h"
 #include "mc/deps/minecraft_renderer/renderer/Mesh.h"
 #include "mc/deps/minecraft_renderer/renderer/MeshContext.h"
@@ -89,12 +90,14 @@ LodRenderer::LodRenderer() { applyMeshSettings(); }
 
 void LodRenderer::applyMeshSettings() {
     MeshSettings s;
-    auto const&  pc        = kPrimChoices[cfg_.primChoice % kPrimChoiceCount];
-    s.prim                 = pc.prim;
-    s.params.flipWinding   = pc.flip;
-    s.params.doubleSided   = pc.doubleSided;
-    s.params.skyBrightness = cfg_.skyBrightness;
-    s.yOffsetBlocks        = cfg_.minYBlocks;
+    auto const&  pc           = kPrimChoices[cfg_.primChoice % kPrimChoiceCount];
+    s.prim                    = pc.prim;
+    s.params.flipWinding      = pc.flip;
+    s.params.doubleSided      = pc.doubleSided;
+    s.params.skyBrightness    = cfg_.skyBrightness;
+    s.params.cpuLighting      = cpuLighting_;
+    s.params.lightmapSwapAxes = cfg_.lightmapSwapAxes;
+    s.yOffsetBlocks           = cfg_.minYBlocks;
     uploader_.setSettings(s);
 }
 
@@ -184,6 +187,11 @@ void LodRenderer::toggleNearCutoff() {
     cfg_.nearCutoff = !cfg_.nearCutoff;
     loggedCutoff_   = false;
     DH_LOG_I("render: near cut-off -> %s", cfg_.nearCutoff ? "on" : "off");
+}
+
+void LodRenderer::toggleLightmapAxes() {
+    cfg_.lightmapSwapAxes = !cfg_.lightmapSwapAxes;
+    DH_LOG_I("render: lightmap axes -> %s (Numpad 3)", cfg_.lightmapSwapAxes ? "u=sky,v=block" : "u=block,v=sky");
 }
 
 void LodRenderer::toggleTransparent() {
@@ -281,6 +289,47 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
                 DH_LOG_W("render: material '%s' invalid; drawing with selectionOpaqueMaterial instead", materialName());
                 warnedMaterialFallback_ = true;
             }
+        }
+    }
+
+    // DH_Terrain needs the lightmap bound; without it the FS would sample an unbound t0. Draw with the fallback
+    // material (CPU lighting) instead and say so once.
+    bool lightmapOk = false;
+    if (std::strcmp(matName, "DH_Terrain") == 0) {
+        auto const* bt = lr ? lr->mBrightnessTex->mClientTexture.get() : nullptr;
+        lightmapOk     = bt != nullptr;
+        if (lightmapOk && !loggedLightmapSize_) {
+            auto const& d = bt->mTextureDescription.get();
+            DH_LOG_I("render: lightmap texture %ux%u (shader maps light 0..15 to texel centres)", d.mWidth, d.mHeight);
+            loggedLightmapSize_ = true;
+        }
+        if (!lightmapOk) {
+            if (!warnedNoLightmap_) {
+                DH_LOG_W(
+                    "render: LevelRenderer::mBrightnessTex unavailable; drawing LODs with the CPU-lit fallback material"
+                );
+                warnedNoLightmap_ = true;
+            }
+            if (spikes::materialValid(spikes::fallbackMaterial())) {
+                material = &spikes::fallbackMaterial();
+                matName  = "MeshFallbackPosUVNormalColor(no-lightmap)";
+            } else if (lr && lr->mLevelRendererPlayer
+                       && spikes::materialValid(lr->mLevelRendererPlayer->selectionOpaqueMaterial.get())) {
+                material = &lr->mLevelRendererPlayer->selectionOpaqueMaterial.get();
+                matName  = "selectionOpaqueMaterial(no-lightmap)";
+            }
+        }
+    }
+    // Lighting mode follows the material: DH_Terrain samples the vanilla lightmap (colours stay unlit, light travels in
+    // uv0.y); every other material cannot, so it keeps the CPU light factor. A change re-converts all sections.
+    {
+        const bool wantCpu = std::strcmp(matName, "DH_Terrain") != 0;
+        dh::hud::set("render.lighting", wantCpu ? "cpu" : "lightmap");
+        dh::hud::set("render.lightmap", wantCpu ? "cpu" : (cfg_.lightmapSwapAxes ? "sky,block" : "block,sky"));
+        if (wantCpu != cpuLighting_ || lightSwapApplied_ != cfg_.lightmapSwapAxes) {
+            cpuLighting_      = wantCpu;
+            lightSwapApplied_ = cfg_.lightmapSwapAxes;
+            applyMeshSettings();
         }
     }
 
@@ -455,10 +504,15 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
 
     // 4. draw
     static Texture const none{std::monostate{}};
-    auto&                sc    = mctx.currentShaderColor;
-    mce::Color           saved = sc.color.get();
-    sc.color                   = mce::Color{1.f, 1.f, 1.f, 1.f};
-    sc.dirty                   = true;
+    // DH_Terrain: slot 0 (s_MatTexture) = the vanilla lightmap (LevelRenderer::mBrightnessTex), refreshed by the engine
+    // every frame for day/night and gamma. Copy of the TexturePtr (shared_ptr members), valid for this frame.
+    Texture lightTex{std::monostate{}};
+    if (dhShader && lr) lightTex = *lr->mBrightnessTex; // dhShader implies lightmapOk (checked above)
+    Texture const& drawTex = dhShader ? lightTex : none;
+    auto&          sc      = mctx.currentShaderColor;
+    mce::Color     saved   = sc.color.get();
+    sc.color               = mce::Color{1.f, 1.f, 1.f, 1.f};
+    sc.dirty               = true;
 
     // Transparent layer: blended clone of DH_Terrain (depth test, no depth write); falls back to the opaque material.
     mce::MaterialPtr const* transMaterial = material;
@@ -499,7 +553,7 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
                 part.mesh->renderMesh(
                     mctx,
                     transparent ? *transMaterial : *material,
-                    none,
+                    drawTex,
                     0,
                     part.verts,
                     OffscreenCaptureDescription{},
