@@ -31,7 +31,7 @@ struct VSOut {
     float4 color : COLOR0;
     float4 fog : COLOR2;
     float4 light : COLOR1;
-    centroid float2 texCoords : TEXCOORD0;
+    nointerpolation float2 texCoords : TEXCOORD0; // x = face index, y = packed light (flat: per-quad)
     float3 worldPos : TEXCOORD3;
 };
 

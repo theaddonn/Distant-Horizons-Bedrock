@@ -15,6 +15,10 @@ float lightFactor(int sky, int block, float skyBrightness) {
     return kFloor + (1.0f - kFloor) * std::pow(0.8f, 15.0f - l);
 }
 
+float packLight(int hi, int lo) {
+    return static_cast<float>(std::clamp(hi, 0, 15) * 16 + std::clamp(lo, 0, 15)) / 255.0f;
+}
+
 namespace {
 
 std::uint16_t rd16(const std::byte* p) {
@@ -57,7 +61,7 @@ std::size_t convertDhBuffer(
             const int        sky   = static_cast<int>(meta & 0xF);
             const int        block = static_cast<int>((meta >> 4) & 0xF);
             const unsigned   micro = (meta >> 8) & 0xFF;
-            const float      light = lightFactor(sky, block, params.skyBrightness);
+            const float      light = params.cpuLighting ? lightFactor(sky, block, params.skyBrightness) : 1.0f;
 
             v[i].x = x + microSign(micro & 3u) * params.microOffset;
             v[i].y = y + yOffsetBlocks + microSign((micro >> 2) & 3u) * params.microOffset;
@@ -70,9 +74,11 @@ std::size_t convertDhBuffer(
             v[i].rgba            = static_cast<std::uint32_t>(r) | (static_cast<std::uint32_t>(g) << 8)
                       | (static_cast<std::uint32_t>(b) << 16) | (static_cast<std::uint32_t>(a) << 24);
             // u carries the DH face direction (EDhDirection order: 0 down, 1 up, 2 north, 3 south, 4 west, 5 east),
-            // v is unused (0). The DH_Terrain shader reads u as the face index.
+            // v = packed light (or 0 with CPU lighting). The DH_Terrain shader reads u as the face index.
             v[i].u = static_cast<float>(std::min<unsigned>(static_cast<std::uint8_t>(p[13]), 5u));
-            v[i].v = 0.0f;
+            // v: packed light for the shader lightmap lookup (hi nibble = sky, lo = block; swapped on request).
+            v[i].v =
+                params.cpuLighting ? 0.0f : (params.lightmapSwapAxes ? packLight(block, sky) : packLight(sky, block));
         }
 
         auto emit = [&](bool reversed) {
