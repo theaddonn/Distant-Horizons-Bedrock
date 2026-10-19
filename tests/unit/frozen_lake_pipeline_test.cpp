@@ -9,15 +9,16 @@
 #include <string>
 #include <vector>
 
-#include "dh/build/LodDataBuilder.h"
 #include "dh/build/LightingEngine.h"
+#include "dh/build/LodDataBuilder.h"
+#include "dh/fulldata/FullDataPoint.h"
 #include "dh/mesh/ColumnMeshBuilder.h"
 #include "dh/mesh/StageAVertex.h"
 #include "dh/platform/BlockTable.h"
+#include "dh/platform/FrozenSurface.h"
 #include "dh/platform/TableClientLevel.h"
 #include "dh/platform/testing/TestChunk.h"
 #include "dh/pos/SectionPos.h"
-#include "dh/fulldata/FullDataPoint.h"
 #include "dh/render/FullToRender.h"
 #include "dh/render/RenderDataPoint.h"
 #include "dh/util/Color.h"
@@ -43,14 +44,14 @@ BlockTable& lakeTable() {
 }
 
 struct LakeResult {
-    std::vector<StageAVertex>  verts;      // all vertices of the lake column (x=y=0 .. section), both lists
-    std::vector<std::uint64_t> renderCol;  // render datapoints of column (5,5)
+    std::vector<StageAVertex>  verts;     // all vertices of the lake column (x=y=0 .. section), both lists
+    std::vector<std::uint64_t> renderCol; // render datapoints of column (5,5)
     std::vector<std::uint64_t> fullCol;
 };
 
 /// stone -64..59, sand y=60, water 61..62, ice y=63, optional `top` block at y=64.
-LakeResult buildLake(const char* top) {
-    BlockTable& t = lakeTable();
+LakeResult buildLake(const char* top, bool glueFix = true) {
+    BlockTable& t     = lakeTable();
     auto*       stone = t.resolveBlock("minecraft:stone");
     auto*       sand  = t.resolveBlock("minecraft:sand");
     auto*       water = t.resolveBlock("minecraft:water");
@@ -69,6 +70,16 @@ LakeResult buildLake(const char* top) {
         c.fillLayer(64, b);
     }
 
+    if (glueFix) {
+        // what the Bedrock chunk adapter does before full-data conversion
+        stripSnowOverFrozenWater(
+            -64,
+            320,
+            t.air(),
+            [&](int x, int y, int z) { return c.blockAt(x, y, z); },
+            [&](int x, int y, int z, const BlockInfo* b) { c.setBlock(x, y, z, b); }
+        );
+    }
     auto fd = createFromChunk(c, BuildOptions{});
     REQUIRE(fd.has_value());
     bakeDataSourceSkyLight(*fd, 15);
@@ -94,16 +105,56 @@ LakeResult buildLake(const char* top) {
 
 } // namespace
 
-TEST_CASE("frozen lake: diagnostics") {
-    for (const char* top : {static_cast<const char*>(nullptr), "minecraft:snow_layer"}) {
-        LakeResult r = buildLake(top);
-        std::printf("== top=%s\n", top ? top : "(air)");
-        for (auto d : r.fullCol)
-            std::printf("  full id=%d y=%d h=%d sky=%d blk=%d\n", fdp::id(d), fdp::minY(d), fdp::height(d),
-                        fdp::skyLight(d), fdp::blockLight(d));
-        for (auto d : r.renderCol)
-            if (d != rdp::EMPTY_DATA)
-                std::printf("  rd top=%d bot=%d argb=%08x sky=%d blk=%d mat=%d\n", rdp::yMax(d), rdp::yMin(d),
-                            rdp::argb(d), rdp::skyLight(d), rdp::blockLight(d), (int)rdp::material(d));
+namespace {
+
+// Water/ice/snow region of the fixture: world y > 61. Nothing there may be near-black.
+void checkNoBlackVertices(const LakeResult& r) {
+    int checked = 0;
+    for (const StageAVertex& v : r.verts) {
+        if (v.y <= 61.0f) continue; // y=61 is the sand lake floor: sky 0 under ice, same as Java
+        const int maxChannel = std::max(
+            {static_cast<int>(v.rgba & 0xFF),
+             static_cast<int>((v.rgba >> 8) & 0xFF),
+             static_cast<int>((v.rgba >> 16) & 0xFF)}
+        );
+        // darkest legal result: a mid-grey surface (0x80) at the vanilla light floor of sky 0 / block 0
+        CHECK_MESSAGE(maxChannel >= 40, "near-black vertex at y=" << v.y << " rgba=" << std::hex << v.rgba);
+        checked++;
     }
+    CHECK(checked > 0);
+}
+
+int waterDatapoints(const LakeResult& r) {
+    int n = 0;
+    for (auto d : r.renderCol)
+        if (d != rdp::EMPTY_DATA && rdp::material(d) == BlockMaterial::Water) n++;
+    return n;
+}
+
+} // namespace
+
+TEST_CASE("frozen lake: ice over water over sand is ice coloured and lit") {
+    LakeResult r = buildLake(nullptr);
+    // water under ice is replaced by ice and merged into the ice datapoint (Java :443 + :691)
+    REQUIRE(r.renderCol[0] != rdp::EMPTY_DATA);
+    CHECK(rdp::yMax(r.renderCol[0]) == 128);
+    CHECK(rdp::yMin(r.renderCol[0]) == 125);
+    CHECK(rdp::skyLight(r.renderCol[0]) == 15);
+    CHECK(waterDatapoints(r) == 0);
+    checkNoBlackVertices(r);
+}
+
+TEST_CASE("frozen lake: snow layer on ice does not leave a dark water column") {
+    LakeResult r = buildLake("minecraft:snow_layer[height=0]");
+    CHECK(waterDatapoints(r) == 0);
+    // snow is dropped, ice + frozen water merge into one lit datapoint
+    CHECK(rdp::skyLight(r.renderCol[0]) == 15);
+    CHECK(rdp::yMin(r.renderCol[0]) == 125);
+    checkNoBlackVertices(r);
+}
+
+TEST_CASE("frozen lake: without the glue fix Java's rule misses (documents the root cause)") {
+    LakeResult r = buildLake("minecraft:snow_layer[height=0]", false);
+    // snow carry-over swaps the ice block, so the water below is NOT replaced and sits at sky light 0
+    CHECK(waterDatapoints(r) == 1);
 }
