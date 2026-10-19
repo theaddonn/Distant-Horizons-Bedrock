@@ -13,7 +13,9 @@
 #include "mc/client/game/IClientInstance.h"
 #include "mc/client/gui/screens/ScreenContext.h"
 #include "mc/client/renderer/BaseActorRenderContext.h"
+#include "mc/client/player/LocalPlayer.h"
 #include "mc/client/renderer/game/LevelRenderer.h"
+#include "mc/world/level/dimension/Dimension.h"
 #include "mc/client/renderer/game/LevelRendererPlayer.h"
 #include "mc/client/renderer/MinecraftGameplayGraphicsResources.h"
 #include "mc/client/renderer/MinecraftGraphics.h"
@@ -389,6 +391,11 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
             warnedNoLightmap_ = true;
         }
     }
+    // Daylight factor for the procedural lightmap: Dimension::getSkyDarken (Java getSkyDarken: 1 = day, ~0.2 =
+    // night, despite the name). ViewRenderData::mSkyBrightnessScalar was 0 in the first run (2026-10-19), so it is
+    // only shown on the HUD.
+    float daylight = 1.0f;
+    if (::LocalPlayer* lp = ci.getLocalPlayer()) daylight = std::clamp(lp->getDimension().getSkyDarken(1.0f), 0.0f, 1.0f);
     // Lighting mode follows the material: DH_Terrain with a bound lightmap keeps the colours unlit and sends the light
     // in uv0.y; every other case (other materials, no lightmap) applies the CPU light factor. A change re-converts all
     // sections.
@@ -398,8 +405,14 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
         const bool wantCpu = std::strcmp(matName, "DH_Terrain") != 0;
         dh::hud::set("render.lighting", wantCpu ? "cpu" : (lightmapOk ? "lightmap" : "shader"));
         {
-            char day[32];
-            std::snprintf(day, sizeof day, "%.2f", static_cast<double>(vs.skyBrightness));
+            char day[64];
+            std::snprintf(
+                day,
+                sizeof day,
+                "skyDarken=%.2f scalar=%.2f",
+                static_cast<double>(daylight),
+                static_cast<double>(vs.skyBrightness)
+            );
             dh::hud::set("render.daylight", day);
         }
         {
@@ -687,7 +700,7 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
                 g[1][3] = fogStart;
                 g[2][3] = fogEnd;
                 // [3][3]: 1 = lightmap texture at t0; -daylight (<= 0) = procedural lightmap in the FS (see the VS).
-                g[3][3] = lightmapOk ? 1.0f : -std::clamp(vs.skyBrightness, 0.0f, 1.0f);
+                g[3][3] = lightmapOk ? 1.0f : -daylight;
             }
             cam.worldMatrixStack->getTop() = m;
             for (auto const& part : parts) {
