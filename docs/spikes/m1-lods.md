@@ -168,3 +168,21 @@ Underwater/lava/blindness: not detectable directly; heuristic skips the push whe
 
 In game: stand at the vanilla render-distance edge with LODs on, cycle Numpad 1; report which mode removes the grey band
 on vanilla terrain, whether the log shows the fields changing, and whether underwater / lava / blindness fog still works.
+
+## Run 9: lighting
+
+DH_Terrain now samples the vanilla lightmap like Java DH (`uLightMap`): the FS gets a sampler `s_MatTexture` (slot 0, t0/s0, the
+slot the MeshFallback table used) and the renderer binds `LevelRenderer::mBrightnessTex` (16x16, u = block light, v = sky light,
+refreshed by the engine per frame for day/night and gamma) through the `renderMesh` texture-variant overload.
+Light travels per vertex in `uv0.y = (sky*16 + block)/255` (`packLight`; the FS recovers the nibbles with `round(v*255)` and samples
+texel centres `((block, sky) + 0.5)/16`). `texCoords` is `nointerpolation` in both VS variants and the FS (light is per quad).
+`ConvertParams.cpuLighting` is set automatically: false for DH_Terrain (colour left unlit), true for the fallback materials
+(old `lightFactor`, `skyBrightness`, v = 0). Config `lightmapSwapAxes` swaps the packed nibbles (= lookup axes) if the lightmap
+orientation turns out to be reversed. `DhParams.w < 0.5` would disable lightmap sampling in the material (default 1).
+Directional shade stays baked on the CPU; near clip, dither fade and far fog unchanged.
+
+What to look for: night darkens the LODs like vanilla terrain (and follows gamma); caves, overhangs and tunnel mouths are dark; block
+light from the chunk's own data (torches/lava/glowstone in generated LOD columns) brightens its surroundings with the usual warm
+lightmap tint; no seam in brightness at the vanilla/LOD fade band. If everything is black or uniformly flat: the texture did not
+bind (log "mBrightnessTex unavailable", or the UseTextures=Off material variant skips the sampler); if sky/block look swapped
+(sunlit areas orange-tinted, torches blue-white): set `lightmapSwapAxes`.

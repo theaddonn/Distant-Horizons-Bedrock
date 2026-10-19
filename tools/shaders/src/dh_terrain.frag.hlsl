@@ -1,7 +1,13 @@
 // Spike B3: DH_Terrain fragment shader (see dh_terrain.vert.hlsl for the signature).
-// FS uniform table (we define it): DhParams vec4 (fragment) @0, cbuf 16 B. No texture sampling.
+// FS uniform table (we define it): DhParams vec4 (fragment) @0, cbuf 16 B, plus the sampler s_MatTexture (slot 0 = t0/s0)
+// which the renderer binds to LevelRenderer::mBrightnessTex (the vanilla 16x16 lightmap: u = block light, v = sky light,
+// refreshed per frame for day/night/gamma). Light arrives in texCoords.y = (sky*16+block)/255 (CPU packLight; the
+// lightmapSwapAxes option swaps the nibbles, i.e. the lookup axes).
 // light.x = near clip radius (discard below it; 0 = off), light.w = fade end (dither fade between x and w), light.y/z =
 // fog start/end in blocks, fog.rgb = vanilla's current fog colour. Output: vertex colour * DhParams.rgb, far fog.
+Texture2D LightMap : register(t0);
+SamplerState LightSamp : register(s0);
+
 cbuffer FragmentUniforms : register(b1) {
     float4 DhParams;
 };
@@ -12,7 +18,7 @@ struct PSIn {
     float4 color : COLOR0;
     float4 fog : COLOR2;
     float4 light : COLOR1;
-    centroid float2 texCoords : TEXCOORD0;
+    nointerpolation float2 texCoords : TEXCOORD0; // x = face index, y = packed light (flat: per-quad)
     float3 worldPos : TEXCOORD3;
 };
 
@@ -42,6 +48,14 @@ float4 main(PSIn i) : SV_Target0 {
         }
     }
     float3 c = i.color.rgb * DhParams.rgb;
+    // lightmap lookup (Java frag.frag: texture(uLightMap, lightMapUV) * vertexColor). Texel centres of a 16x16 map.
+    // DhParams.w < 0.5 disables lighting (fullbright vertex colour).
+    if (DhParams.w >= 0.5) {
+        float  packedLight = round(saturate(i.texCoords.y) * 255.0);
+        float  hi = floor(packedLight / 16.0), lo = packedLight - hi * 16.0;
+        float2 uv = (float2(lo, hi) + 0.5) / 16.0;
+        c *= LightMap.SampleLevel(LightSamp, uv, 0).rgb;
+    }
 #if DH_SHADE_IN_SHADER
     static const float shade[6] = {0.5, 1.0, 0.8, 0.8, 0.6, 0.6};
     c *= shade[(int)clamp(i.texCoords.x + 0.5, 0.0, 5.0)];

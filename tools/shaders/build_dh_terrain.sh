@@ -44,6 +44,6 @@ else
     --code Direct3D_SM65:Vertex="$W/dh.vs65" --code Direct3D_SM65:Fragment="$W/dh.ps65" \
     --code Direct3D_SM60:Vertex="$W/dh.vs60" --code Direct3D_SM60:Fragment="$W/dh.ps60" \
     --uniforms Vertex="$VU" --cbuf Vertex=464 \
-    --uniforms Fragment="DhParams:vec4f:0:0:1" --cbuf Fragment=16 "${RASTER[@]}"
+    --uniforms Fragment="DhParams:vec4f:0:0:1,s_MatTexture:sampler:1:0:1" --cbuf Fragment=16 "${RASTER[@]}"
 fi
 sha256sum "$OUT/DH_Terrain.material.bin"
