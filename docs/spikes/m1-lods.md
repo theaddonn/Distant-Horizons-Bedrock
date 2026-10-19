@@ -97,7 +97,13 @@ that may not know them; if joining a vanilla server gets you kicked, tell me.
    noted (`ingest.chunks` stays 0) but never drained, this is the suspect.
 5. Matrix layout for the core frustum: if the list is empty or tiny while sections exist, press Ctrl+F5 (core cull off).
    `render.listed` vs `render.sections` tells you.
-6. World-gen quality: `Features` degrades to Surface (BdsWorldGenerator, logged once). Scratch chunk generation is the
+6. World-gen quality: `Features` (default mode) now decorates the scratch chunks (trees, grass, flowers; engine feature
+   placement via `decorateWorldGenPostProcess`, see PORTING.md; no structures). Expect trees on distant generated terrain
+   and generation noticeably slower than Surface (9 base chunks per requested chunk, shared per 16-chunk batch; decoration
+   is serialised per batch). Log: once `world gen: Features mode: ...`, first 10 tasks `... (base N ms), features=1 (M ms,
+   ring chunks 9/9), nonAir=...`, and the 10 s line `(avg M ms incl. features, ...), features avg K ms`. `features=0` =
+   decoration threw (base terrain delivered); a crash or junk blocks: set env `DH_BEDROCK_NO_FEATURES=1` to fall back to
+   Surface. Trees may be clipped at chunk edges. UNVALIDATED in game. Scratch chunk generation is the
    least certain part of the port; `world gen:` log lines and `gen.queued` not draining mean it fails.
    Distant generation is OFF by default until validated (`common.worldGenerator.allowUnvalidatedGenerator=false` forces
    `generatorPlan=Disabled`, with a `config:` warning). To test, set it to `true`; look for the `world gen task N (x,z): ...`

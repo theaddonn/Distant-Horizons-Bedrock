@@ -15,8 +15,13 @@
 //        3x3 neighbourhood: WorldGenerator::postProcessStructures + decorationPostProcessChunk).
 //     4. Generating -> Generated; wrap in an owning BedrockChunk, snapshot() it on the worker thread (blocks,
 //        biomes, height maps), release the LevelChunk, block-light it (lightChunk, block only) and deliver.
-//     TODO(Features): run structure + decoration post-processing on a scratch ChunkViewSource; until then
-//        Features degrades to Surface (logged once).
+//   Features: as Surface, but for each requested chunk the 3x3 neighbourhood of base-terrain scratch LevelChunks
+//        is generated (cached per batch, each cell once) and the centre is decorated with the engine's own
+//        `WorldGenerator::decorateWorldGenPostProcess(biome, lc, BlockSource&, Random&)` over a BlockSource backed
+//        by a private ChunkSource that serves ONLY those scratch chunks (never the live world's chunk map). A real
+//        `ChunkViewSource` cannot be constructed from the SDK (no exported ctor), so
+//        `decorationPostProcessChunk(ChunkViewSource&)` is not used. Structures (villages ...) are out of scope.
+//        Decoration + snapshot of one batch are serialised (ring chunks are shared and mutated).
 //   PreExistingOnly: only chunks that are currently loaded (ChunkSource::getAvailableChunk), snapshotted on
 //        the server thread; missing chunks are skipped (no error).
 //   InternalServer: let the real ChunkSource generate and load the chunk (getOrLoadChunk on the server
@@ -92,11 +97,14 @@ private:
     void                        runChunk(const std::shared_ptr<Batch>& batch, std::int32_t cx, std::int32_t cz);
     void                        workerLoop();
     void                        stopWorkers();
-    void                        noteChunkDone(long long ms, bool okChunk);
+    void                        noteChunkDone(long long ms, bool okChunk, long long featMs = -1);
     void                        startWorkersLocked();
     static long long            nowMs();
     void                        finishChunk(const std::shared_ptr<Batch>& batch, bool ok);
     std::shared_ptr<dh::IChunk> generateScratch(std::int32_t cx, std::int32_t cz);
+    /// Features mode: base terrain of the 3x3 scratch neighbourhood (cached per batch), decoration of the centre.
+    std::shared_ptr<dh::IChunk>
+    generateFeatures(const std::shared_ptr<Batch>& batch, std::int32_t cx, std::int32_t cz, long long& featMs);
     std::shared_ptr<dh::IChunk>
     snapshotLoaded(const std::shared_ptr<Batch>& batch, std::int32_t cx, std::int32_t cz, bool loadIfMissing);
 
@@ -111,6 +119,7 @@ private:
     std::atomic<std::uint64_t>         generated_{0}, failed_{0};
     std::shared_ptr<std::atomic<bool>> closing_ = std::make_shared<std::atomic<bool>>(false);
     std::atomic<bool>                  warnedFeatures_{false};
+    bool                               featuresDisabled_ = false; // env DH_BEDROCK_NO_FEATURES: Features -> Surface
 
     // Own FIFO worker threads (the shared DH picker pool is sized for CPU-only work and cannot be oversubscribed
     // by tasks that wait on the server thread).
@@ -122,6 +131,7 @@ private:
     bool                              stopWorkers_ = false, workersStarted_ = false;
     std::vector<std::thread>          workers_;
     std::atomic<long long>            statChunks_{0}, statFailed_{0}, statMs_{0}, lastStatMs_{0};
+    std::atomic<long long>            statFeatChunks_{0}, statFeatMs_{0};
 };
 
 } // namespace dh::bedrock
