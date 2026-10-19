@@ -107,7 +107,7 @@ struct LodRendererConfig {
 
     float        skyBrightness    = 1.0f;  ///< CPU light stand-in input (0 night .. 1 day); fallback materials only
     bool         lightmapSwapAxes = false; ///< DH_Terrain: swap the lightmap lookup axes (default u = block, v = sky)
-    LightmapMode lightmapMode     = LightmapMode::Shader; ///< Numpad 3 cycles
+    LightmapMode lightmapMode     = LightmapMode::Dynamic; ///< vanilla lightmap (verified in game 2026-10-19), shader formula as fallback; Numpad 3 cycles
     float        minYBlocks       = -64.0f;               ///< DH y 0 maps to this Bedrock y
 };
 
