@@ -150,6 +150,8 @@ std::optional<LodQuadBuilder> LodRenderSection::getAndBuildRenderData() {
     // sizes its arrays, makeLodRenderData skips every column and the empty upload makes canRender() true
     // (Java FullDataSourceProviderV2.get :210-213, transformer :123-127, LodRenderSection.java:191-195).
 
+    renderDark_.store(thisRenderSource->isDark(), std::memory_order_release);
+
     LodQuadBuilder lodQuadBuilder(ctx_.mesh.quad);
 
     // get the adjacent positions

@@ -306,6 +306,9 @@ public:
     /// Whether the last successful upload carried opaque / transparent buffers (LodBufferContainer vbo lists).
     bool hasOpaque() const { return hasOpaque_.load(std::memory_order_acquire); }
     bool hasTransparent() const { return hasTransparent_.load(std::memory_order_acquire); }
+    /// Diagnostic: the render data of the last build had sky 0 / block 0 on the top datapoint of every column
+    /// (the section renders near-black). false until a build ran.
+    bool renderDark() const { return renderDark_.load(std::memory_order_acquire); }
 
     //==============//
     // base methods //
@@ -356,6 +359,7 @@ private:
     std::atomic<bool> hasGpuBuffers_{false};
     std::atomic<bool> hasOpaque_{false};
     std::atomic<bool> hasTransparent_{false};
+    std::atomic<bool> renderDark_{false};
     std::atomic<bool> renderingEnabled_{false};
     std::atomic<bool> disposed_{false};
 };

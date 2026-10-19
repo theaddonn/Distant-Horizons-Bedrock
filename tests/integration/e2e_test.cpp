@@ -1023,6 +1023,30 @@ TEST_CASE("e2e SP generation: GenQueue -> FakeChunkGenerator -> reload, generate
     CHECK(leaves >= 16);
     CHECK_EQ(nonEmpty, leaves);
 
+    // sky light: every stored section (any detail) must have lit top datapoints - a section whose top datapoints are
+    // all sky 0 renders pitch black (StageAVertex lightFactor). Generated sections go through the updater's detail-6
+    // bake.
+    {
+        std::map<int, std::pair<int, int>> darkByDetail; // detail -> {sections, dark}
+        for (auto p : *storedPositions) {
+            auto src = level->provider().get(p);
+            if (!src || src->isEmpty) continue;
+            int lit = 0, cols = 0;
+            for (const auto& col : src->columns) {
+                if (col.empty()) continue;
+                ++cols;
+                if (fdp::skyLight(col.front()) > 0) ++lit;
+            }
+            auto& e = darkByDetail[sec::detail(p)];
+            ++e.first;
+            if (cols > 0 && lit == 0) ++e.second;
+        }
+        for (const auto& [d, e] : darkByDetail) {
+            MESSAGE("detail ", d, ": ", e.first, " sections, ", e.second, " dark");
+            CHECK_EQ(e.second, 0);
+        }
+    }
+
     // the view tiles and the generated area renders geometry (reload after onWorldGenTaskComplete / provider update)
     const auto enabled = enabledSections(getTree());
     const auto t       = tiling(getTree(), enabled);
@@ -1036,6 +1060,11 @@ TEST_CASE("e2e SP generation: GenQueue -> FakeChunkGenerator -> reload, generate
         if (it != resident.end() && it->second.opaqueBytes > 0) ++withGeometry;
     }
     CHECK(withGeometry > 0);
+    {
+        int dark = 0;
+        for (const auto& sct : enabled) dark += sct->renderDark() ? 1 : 0; // HUD render.darkSections
+        CHECK_EQ(dark, 0);
+    }
     CHECK_EQ(s.sink.violations(), 0u);
     MESSAGE(
         "SP generation: ",
