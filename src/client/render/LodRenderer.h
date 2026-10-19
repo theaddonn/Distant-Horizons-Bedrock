@@ -41,7 +41,9 @@ inline constexpr PrimChoice kPrimChoices[] = {
 inline constexpr int kPrimChoiceCount = static_cast<int>(sizeof(kPrimChoices) / sizeof(kPrimChoices[0]));
 
 struct LodRendererConfig {
-    MaterialChoice material   = MaterialChoice::Selection;
+    /// selectionOpaqueMaterial drops the green channel (magenta terrain, 2026-10-19); the fogged fallback is the
+    /// Stage-A default, F6 cycles back for comparison.
+    MaterialChoice material   = MaterialChoice::MeshFallback;
     OriginMode     origin     = OriginMode::CameraRelative;
     int            primChoice = 0; ///< index into kPrimChoices
     FarMode        farMode    = FarMode::LocalProjPush; // R3 (2026-10-19): zfar-override makes the clouds vanish

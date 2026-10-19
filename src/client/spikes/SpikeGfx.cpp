@@ -29,6 +29,7 @@
 #include <cmath>
 #include <map>
 #include <memory>
+#include <optional>
 #include <set>
 #include <variant>
 #include <vector>
@@ -192,8 +193,14 @@ bool materialValid(mce::MaterialPtr const& m) {
 }
 
 mce::MaterialPtr const& fallbackMaterial() {
-    static mce::MaterialPtr mat{mce::RenderMaterialGroup::common(), HashedString{"MeshFallbackPosUVNormalColor"}};
-    return mat;
+    // Re-resolved whenever it is invalid: the pointer resolves to nothing before the material group has loaded the
+    // list, and the group's entries are replaced on a clean reload (world exit / video settings), which left the
+    // old static dangling ("material invalid" on R1b after leaving a world, 2026-10-19).
+    static std::optional<mce::MaterialPtr> mat;
+    if (!mat || !materialValid(*mat)) {
+        mat.emplace(mce::RenderMaterialGroup::common(), HashedString{"MeshFallbackPosUVNormalColor"});
+    }
+    return *mat;
 }
 
 void resetMeshes() {
