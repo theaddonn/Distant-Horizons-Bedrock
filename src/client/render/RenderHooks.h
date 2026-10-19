@@ -8,6 +8,7 @@
 //   Shift+F7 chunk ingestion on/off (HUD toggle is plain F7)
 //   F4 primitive/winding cycle  Shift+F4 far-plane mode cycle   Ctrl+F4 near cut-off on/off
 //   F6 material cycle           Shift+F6 origin mode            Ctrl+F6 transparent pass on/off
+//   Numpad 1 vanilla fog mode   Numpad 2 DH clouds on/off
 //
 // Coexistence with the render spikes (src/client/spikes): both hook the same functions; the hook chain runs both, they
 // do not interfere as long as the spike toggles (F10-F12) are off. Leave them off while testing Stage A.
