@@ -26,6 +26,10 @@
 #endif
 #include <windows.h>
 
+#include <cstdlib>
+
+#pragma clang diagnostic ignored "-Wdeprecated-declarations" // std::getenv
+
 #include <atomic>
 #include <memory>
 
@@ -121,8 +125,17 @@ void onKeys(ll::event::AfterUIRenderEvent& e) {
         if (dh::input::pressed(VK_F5)) {
             auto& drv = bedrock::ClientWorldDriver::instance();
             if (shift) {
+                // The synthetic test feed (pre-GLUE-4 smoke path) is retired from the key map: it draws every
+                // uploaded section and disables the near cut-off, which kept confusing the real-pipeline tests.
+                // It stays available with DH_TEST_FEED=1 in the environment for Stage-A debugging.
+                static const bool feedAllowed = [] {
+                    char const* e = std::getenv("DH_TEST_FEED");
+                    return e && e[0] == '1';
+                }();
                 glm::dvec3 pos;
-                if (r.lastCameraPos(pos)) {
+                if (!feedAllowed) {
+                    DH_LOG_I("render: test feed is disabled (set DH_TEST_FEED=1 to enable Shift+F5)");
+                } else if (r.lastCameraPos(pos)) {
                     if (!gEnabled && !testfeed::active()) {
                         gEnabled = true;
                         DH_LOG_I("render: Stage-A renderer on (enabled by test feed)");

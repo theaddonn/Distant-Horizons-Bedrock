@@ -12,7 +12,7 @@ until you run it. Build + deploy: `scripts/build.sh client && scripts/deploy.sh 
 | Key | Action |
 |---|---|
 | F5 | whole pipeline on/off (world driver + hooks + renderer). Turning it on switches far-plane mode to `local-proj-push`. |
-| Shift+F5 | synthetic test feed (pre-GLUE-4 smoke path, still works with the pipeline off) |
+| Shift+F5 | synthetic test feed — disabled unless the game runs with `DH_TEST_FEED=1` (it draws every uploaded section and turns the near cut-off off) |
 | Ctrl+F5 | core RenderList frustum cull on/off (off = only the renderer's own 5-plane test; use if everything vanishes) |
 | Shift+F7 | chunk ingestion on/off (default on) |
 | F4 / Shift+F4 / Ctrl+F4 | primitive / far-plane mode / near cut-off (now on by default while the pipeline runs) |
