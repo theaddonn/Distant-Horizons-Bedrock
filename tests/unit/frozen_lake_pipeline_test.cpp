@@ -72,10 +72,9 @@ LakeResult buildLake(const char* top, bool glueFix = true) {
 
     if (glueFix) {
         // what the Bedrock chunk adapter does before full-data conversion
-        stripSnowOverFrozenWater(
+        freezeWaterUnderSnowCoveredIce(
             -64,
             320,
-            t.air(),
             [&](int x, int y, int z) { return c.blockAt(x, y, z); },
             [&](int x, int y, int z, const BlockInfo* b) { c.setBlock(x, y, z, b); }
         );
@@ -147,10 +146,76 @@ TEST_CASE("frozen lake: ice over water over sand is ice coloured and lit") {
 TEST_CASE("frozen lake: snow layer on ice does not leave a dark water column") {
     LakeResult r = buildLake("minecraft:snow_layer[height=0]");
     CHECK(waterDatapoints(r) == 0);
-    // snow is dropped, ice + frozen water merge into one lit datapoint
+    // the frozen water takes the ice, the snow is carried down onto it: one lit datapoint over the whole ice column
     CHECK(rdp::skyLight(r.renderCol[0]) == 15);
     CHECK(rdp::yMin(r.renderCol[0]) == 125);
     checkNoBlackVertices(r);
+}
+
+TEST_CASE("frozen lake: snow-covered ice renders as opaque white snow, not translucent ice (Run 13)") {
+    BlockTable&         t        = lakeTable();
+    TableClientLevel    level(t, LevelInfo{});
+    const std::uint32_t snowArgb = level.blockColor(0, 0, 0, nullptr, t.resolveBlock("minecraft:snow_layer"));
+    const std::uint32_t iceArgb  = level.blockColor(0, 0, 0, nullptr, t.resolveBlock("minecraft:ice"));
+    REQUIRE(color::getAlpha(iceArgb) < 255); // ice is translucent: bare ice over a dark floor reads lavender
+
+    LakeResult snowy = buildLake("minecraft:snow_layer[height=0]");
+    REQUIRE(snowy.renderCol[0] != rdp::EMPTY_DATA);
+    CHECK(rdp::argb(snowy.renderCol[0]) == color::setAlpha(snowArgb, 255));
+    CHECK(rdp::material(snowy.renderCol[0]) == BlockMaterial::Snow);
+    CHECK(rdp::yMax(snowy.renderCol[0]) == 128);
+
+    // bare ice (no snow) is unchanged: Java's own rule, translucent ice colour
+    LakeResult bare = buildLake(nullptr);
+    CHECK((rdp::argb(bare.renderCol[0]) & 0xFFFFFFu) == (iceArgb & 0xFFFFFFu));
+    CHECK(color::getAlpha(rdp::argb(bare.renderCol[0])) < 255); // render data quantises alpha
+}
+
+TEST_CASE("freezeWaterUnderSnowCoveredIce: only water directly under snow-covered ice") {
+    BlockTable& t       = lakeTable();
+    auto*       stone   = t.resolveBlock("minecraft:stone");
+    auto*       water   = t.resolveBlock("minecraft:water");
+    auto*       ice     = t.resolveBlock("minecraft:ice");
+    auto*       packed  = t.resolveBlock("minecraft:packed_ice");
+    auto*       snow    = t.resolveBlock("minecraft:snow_layer[height=1]");
+    auto*       grass   = t.resolveBlock("minecraft:grass_block");
+    auto*       seagras = t.resolveBlock("minecraft:seagrass");
+    REQUIRE((stone && water && ice && packed && snow && grass && seagras));
+
+    TestChunk c(0, 0, -64, 320, t.air(), t.defaultBiome());
+    c.fillLayers(-64, 50, stone);
+    c.fillLayers(50, 63, water);
+    c.fillLayer(63, ice);
+    c.fillLayer(64, snow);
+    // (1,1): packed ice; a seagrass at y=58 stops the run
+    c.setBlock(1, 63, 1, packed);
+    c.setBlock(1, 58, 1, seagras);
+    // (2,2): bare ice (no snow) -> untouched (Java's rule handles it)
+    c.setBlock(2, 64, 2, t.air());
+    // (3,3): snow on ice on land -> untouched
+    for (int y = 50; y < 63; ++y) c.setBlock(3, y, 3, stone);
+    // (4,4): snow on grass over water -> untouched
+    c.setBlock(4, 63, 4, grass);
+
+    const int n = freezeWaterUnderSnowCoveredIce(
+        -64,
+        320,
+        [&](int x, int y, int z) { return c.blockAt(x, y, z); },
+        [&](int x, int y, int z, const BlockInfo* b) { c.setBlock(x, y, z, b); }
+    );
+    // 252 plain columns with 13 water blocks each; (1,1): 4 water blocks (59..62) above the seagrass
+    CHECK(n == (256 - 4) * 13 + 4);
+    CHECK(c.blockAt(0, 64, 0) == snow); // the snow is kept
+    CHECK(c.blockAt(0, 63, 0) == ice);
+    CHECK(c.blockAt(0, 50, 0) == ice);
+    CHECK(c.blockAt(0, 49, 0) == stone);
+    CHECK(c.blockAt(1, 62, 1) == packed); // each column takes its own ice block
+    CHECK(c.blockAt(1, 59, 1) == packed);
+    CHECK(c.blockAt(1, 58, 1) == seagras);
+    CHECK(c.blockAt(1, 57, 1) == water);
+    CHECK(c.blockAt(2, 62, 2) == water);
+    CHECK(c.blockAt(3, 62, 3) == stone);
+    CHECK(c.blockAt(4, 62, 4) == water);
 }
 
 TEST_CASE("frozen lake: without the glue fix Java's rule misses (documents the root cause)") {
@@ -158,3 +223,4 @@ TEST_CASE("frozen lake: without the glue fix Java's rule misses (documents the r
     // snow carry-over swaps the ice block, so the water below is NOT replaced and sits at sky light 0
     CHECK(waterDatapoints(r) == 1);
 }
+
