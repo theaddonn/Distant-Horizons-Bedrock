@@ -43,7 +43,7 @@ inline constexpr int kPrimChoiceCount = static_cast<int>(sizeof(kPrimChoices) / 
 struct LodRendererConfig {
     /// selectionOpaqueMaterial drops the green channel (magenta terrain, 2026-10-19); the fogged fallback is the
     /// Stage-A default, F6 cycles back for comparison.
-    MaterialChoice material   = MaterialChoice::MeshFallback;
+    MaterialChoice material   = MaterialChoice::Dh; // -> MeshFallback (fogged) -> selection, whichever resolves
     OriginMode     origin     = OriginMode::CameraRelative;
     int            primChoice = 0; ///< index into kPrimChoices
     FarMode        farMode    = FarMode::LocalProjPush; // R3 (2026-10-19): zfar-override makes the clouds vanish
@@ -117,6 +117,7 @@ private:
     bool                loggedCutoff_    = false;
     bool                warnedDh_        = false;
     bool                warnedMaterialFallback_ = false;
+    bool                loggedDhMaterial_       = false;
 };
 
 } // namespace dh::render
