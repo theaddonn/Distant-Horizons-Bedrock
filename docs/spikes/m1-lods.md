@@ -45,8 +45,10 @@ PASS/FAIL (Run 1):
   executor does not tick in this DLL)
 - P4 `ingest.chunks` > 0 within 10 s, and `client ingest: rescan found N already-loaded chunks` with N > 0 (the chunks around
   spawn that were loaded before F5 are picked up by that rescan, radius 32 chunks)
-- P5 `render.listed` > 0 within 30 s and `render.drawn` > 0 once you are past the vanilla edge (FAIL with listed 0 but
-  `render.sections` > 0: press Ctrl+F5 and report whether it helps)
+- P5 `render.listed` > 0 within 30 s and `render.drawn` > 0 once you are past the vanilla edge. If listed stays 0 while
+  `render.sections` > 0, the three tree counters say why — send them: `tree.enabled` (sections the tick enabled),
+  `tree.culled` (core frustum rejects), `tree.notReady` (enabled but no GPU buffers yet). culled ≈ enabled → press
+  Ctrl+F5 (core cull off) and report whether listed rises; notReady ≈ enabled → upload bookkeeping; enabled 0 → tick.
 - P6 coloured LOD terrain visible beyond the vanilla edge (screenshot)
 - P7 `gen.queued` falls over time (generation works); `world gen:` lines show no repeated errors
 

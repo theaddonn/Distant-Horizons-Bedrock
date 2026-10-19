@@ -102,6 +102,15 @@ bool LodRenderer::lastCameraPos(glm::dvec3& out) const {
     return true;
 }
 
+void LodRenderer::observeCamera(ViewRenderObject const& vro) {
+    if (vro.mViewData->mIsShadowPass) return;
+    auto const& p = vro.mViewData->mCameraPos.get();
+    camX_         = p.x;
+    camY_         = p.y;
+    camZ_         = p.z;
+    haveCam_      = true;
+}
+
 char const* LodRenderer::materialName() const {
     switch (cfg_.material) {
     case MaterialChoice::Selection:
@@ -253,7 +262,8 @@ void LodRenderer::renderFrame(BaseActorRenderContext& rc, ViewRenderObject const
         params.exactCameraPosition = camRel ? camPos : glm::dvec3(0.0);
         listStatus = bedrock::ClientWorldDriver::instance().collectRenderList(params, cfg_.coreFrustum, list);
     }
-    const bool listMode = listStatus != bedrock::RenderListStatus::NoSession;
+    // test feed active: its sections belong to no tree, so draw everything the uploader holds
+    const bool listMode = listStatus != bedrock::RenderListStatus::NoSession && !cfg_.drawAllUploaded;
     if (listStatus == bedrock::RenderListStatus::Ready && (list.minY != static_cast<int>(cfg_.minYBlocks))) {
         cfg_.minYBlocks = static_cast<float>(list.minY); // DH y 0 == level min height
         applyMeshSettings();

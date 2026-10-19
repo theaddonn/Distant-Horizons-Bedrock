@@ -61,7 +61,11 @@ LL_TYPE_INSTANCE_HOOK(
     ::IClientInstance&        ci
 ) {
     origin(rc, vro, ci);
-    if (!gEnabled || !gRenderer) return;
+    if (!gRenderer) return;
+    if (!gEnabled) {
+        gRenderer->observeCamera(vro); // so Shift+F5 can place the test feed before the first drawn frame
+        return;
+    }
     try {
         gRenderer->renderFrame(rc, vro, ci);
     } catch (std::exception const& e) {
@@ -122,8 +126,10 @@ void onKeys(ll::event::AfterUIRenderEvent& e) {
                         DH_LOG_I("render: Stage-A renderer on (enabled by test feed)");
                     }
                     testfeed::toggle(r, pos);
+                    r.config().drawAllUploaded = testfeed::active(); // feed sections are in no quad tree
+                    DH_LOG_I("render: test feed %s (Shift+F5)", testfeed::active() ? "on" : "off");
                 } else {
-                    DH_LOG_W("render: test feed needs one rendered frame first; press F5, then Shift+F5");
+                    DH_LOG_W("render: test feed: no camera position seen yet (no world frame rendered?)");
                 }
             } else if (ctrl) {
                 r.config().coreFrustum = !r.config().coreFrustum;
@@ -178,7 +184,10 @@ void install() {
     auto& bus     = ll::event::EventBus::getInstance();
     gKeyListener  = bus.emplaceListener<ll::event::AfterUIRenderEvent>(onKeys);
     gExitListener = bus.emplaceListener<ll::event::ClientExitLevelEvent>([](auto&) {
-        if (gRenderer) gRenderer->sink().requestClear();
+        if (gRenderer) {
+            gRenderer->sink().requestClear();
+            gRenderer->config().drawAllUploaded = false;
+        }
         testfeed::reset();
     });
     updateHud();

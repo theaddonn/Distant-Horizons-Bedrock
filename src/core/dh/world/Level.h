@@ -316,6 +316,15 @@ public:
     /// Java RenderBufferHandler.buildRenderList for this frame; the returned entries stay valid until the next call.
     const std::vector<RenderListEntry>& collectRenderList(const RenderListParams& params);
 
+    /// Diagnostics of the last collectRenderList(): enabled = sections the tree tick enabled, culled = frustum
+    /// rejects, notRenderable = enabled but without GPU buffers (upload pending/failed), listed = entries.
+    struct RenderListStats {
+        int enabled = 0, culled = 0, notRenderable = 0, listed = 0;
+    };
+    RenderListStats lastRenderListStats() const {
+        return {rlEnabled_.load(), rlCulled_.load(), rlNotRenderable_.load(), rlListed_.load()};
+    }
+
     std::shared_ptr<tree::LodQuadTree> tree() const;
     const tree::RenderSectionContext&  context() const { return ctx_; }
 
@@ -342,6 +351,7 @@ private:
     BlockPos2D                                      lastPlayerPos_{0, 0};
     RenderList                                      renderList_;
     std::mutex                                      renderMutex_;
+    std::atomic<int>                                rlEnabled_{0}, rlCulled_{0}, rlNotRenderable_{0}, rlListed_{0};
 };
 
 //==================//

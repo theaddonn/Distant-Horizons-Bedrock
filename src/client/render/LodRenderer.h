@@ -44,13 +44,16 @@ struct LodRendererConfig {
     MaterialChoice material   = MaterialChoice::Selection;
     OriginMode     origin     = OriginMode::CameraRelative;
     int            primChoice = 0; ///< index into kPrimChoices
-    FarMode        farMode    = FarMode::Off;
+    FarMode        farMode    = FarMode::LocalProjPush; // R3 (2026-10-19): zfar-override makes the clouds vanish
     float          farBlocks  = 20000.0f; ///< far plane used by LocalProjPush / ZFarOverride
 
     std::size_t maxUploadsPerFrame = 8;
     bool        frustumCull        = true;
     bool        drawTransparent    = true;
     bool        coreFrustum        = true; ///< cull in the core RenderList (Ctrl+F5 toggles; off: only Frustum5)
+    /// Draw every uploaded section instead of the world pipeline's render list (set while the Shift+F5 test feed
+    /// is active, whose sections are not part of any quad tree).
+    bool        drawAllUploaded    = false;
 
     /// Near cut-off: skip a section whose horizontal footprint lies entirely within
     /// vanillaRenderDistanceBlocks * overdraw of the camera. vanillaRenderDistanceBlocks <= 0: take it from
@@ -82,6 +85,9 @@ public:
 
     /// Last camera position seen by renderFrame (block coordinates); false before the first frame.
     bool lastCameraPos(glm::dvec3& out) const;
+    /// Records the camera position from a frame the renderer did not draw (renderer off), so the test feed can be
+    /// placed around the player before anything has been rendered.
+    void observeCamera(ViewRenderObject const& vro);
 
     /// Cycle helpers used by the key handler (log the new value).
     void cycleMaterial();

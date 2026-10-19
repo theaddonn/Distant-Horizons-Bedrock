@@ -11,13 +11,13 @@ below is what to do and what to send back. The DLL is already deployed (`scripts
    If the HUD box shows but the text is missing, tell me: the text API (`drawDebugText` + `flushText`) is unverified.
 3. Log: `~/.steam/steam/steamapps/common/MinecraftBedrockGDK/builds/Retail-1.26.5101-Levi/mods/DistantHorizons/logs/dh.log`.
    Screenshots: `scripts/screenshot.sh <name>` -> `artifacts/screenshots/` (or any screenshot you like).
-4. Startup line to expect: `spikes installed (all off; F9 R0 dump, F10 R1/R2, F11 R1b, F12 R3, Shift+F10 origin, Shift+F11 primitive)`.
+4. Startup line to expect: `spikes installed (all off; F9 R0 dump, F10 R1/R2, Ctrl+F10 R1b, F12 R3, Shift+F10 origin, Shift+F12 primitive)`.
    All spikes are off at start; hooks are passthrough until toggled. Keys are read with `GetAsyncKeyState` only while the
    game window is focused and the HUD screen is up (no chat/menu open). Note F12 is also RenderDoc's capture key
    (harmless, it just saves a capture).
 
-Key map: F9 R0 dump | F10 R1(+R2) quads | F11 R1b | F12 cycle R3 (off / local-proj-push / mZFar-override) |
-Shift+F10 origin mode (camera-relative <-> absolute) | Shift+F11 primitive (QuadList <-> TriangleList, rebuilds meshes).
+Key map: F9 R0 dump | F10 R1(+R2) quads | Ctrl+F10 R1b | F12 cycle R3 (off / local-proj-push / mZFar-override) |
+Shift+F10 origin mode (camera-relative <-> absolute) | Shift+F12 primitive (QuadList <-> TriangleList, rebuilds meshes). F11 is Bedrock fullscreen and unused.
 
 Quads are placed when you toggle on: dead ahead along the dominant horizontal axis you are facing, base at your feet
 height minus 5. After toggling on, do not move for the first screenshot, then walk sideways for the second.
@@ -58,12 +58,12 @@ R2: note which of the three colours are visible and world-fixed (a hook that dra
 look wrong/stuck to the camera).
 
 If nothing is visible: (a) press Shift+F10 (origin mode -> absolute; the default assumes camera-relative rendering, so the
-translate is `world - cameraPos`), screenshot again; (b) press Shift+F11 (TriangleList) and repeat; (c) look for
+translate is `world - cameraPos`), screenshot again; (b) press Shift+F12 (TriangleList) and repeat; (c) look for
 `spike draw ... skipped: material invalid`. Send: log lines + screenshots (note the mode in the log: `spike origin mode ->`).
 
-## R1b fogged quad (F11)
+## R1b fogged quad (Ctrl+F10)
 
-Press F11 (leave F10 off or on). An orange 40x40 quad appears 160 blocks ahead using `MeshFallbackPosUVNormalColor`:
+Press Ctrl+F10 (leave F10 off or on). An orange 40x40 quad appears 160 blocks ahead using `MeshFallbackPosUVNormalColor`:
 `spike draw [R1b fogged MeshFallbackPosUVNormalColor @160] ok ...`. PASS = it is visibly fogged (colour blended toward the
 fog colour compared with the unfogged magenta R1 quad). Compare with F10 magenta at 8 blocks. Send a screenshot.
 

@@ -73,6 +73,10 @@ public:
 
     int visibleBufferCount() const { return visibleBufferCount_; }
     int culledBufferCount() const { return culledBufferCount_; }
+    /// Diagnostics for the last camera-pass build: sections the tree enabled, and enabled sections that survived
+    /// the frustum but had no GPU buffers yet (canRender() false) or were not rendering-enabled.
+    int enabledCount() const { return enabledCount_; }
+    int notRenderableCount() const { return notRenderableCount_; }
     int shadowVisibleBufferCount() const { return shadowVisibleBufferCount_; }
     int shadowCulledBufferCount() const { return shadowCulledBufferCount_; }
 
@@ -87,6 +91,8 @@ private:
 
     int visibleBufferCount_       = 0;
     int culledBufferCount_        = 0;
+    int enabledCount_             = 0;
+    int notRenderableCount_       = 0;
     int shadowVisibleBufferCount_ = 0;
     int shadowCulledBufferCount_  = 0;
 };

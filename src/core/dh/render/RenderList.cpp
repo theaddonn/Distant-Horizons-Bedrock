@@ -47,7 +47,7 @@ void RenderList::build(
     // clear the old list so we can start fresh
     entries_.clear();
 
-    int culled = 0;
+    int culled = 0, notRenderable = 0;
     for (const std::shared_ptr<tree::LodRenderSection>& renderSection : enabled) {
         if (!renderSection) {
             continue;
@@ -64,6 +64,7 @@ void RenderList::build(
 
         // RenderBufferHandler.java:247-255: no buffer container or not enabled -> skip
         if (!renderSection->canRender() || !renderSection->getRenderingEnabled()) {
+            notRenderable++;
             continue;
         }
 
@@ -92,6 +93,8 @@ void RenderList::build(
     } else {
         culledBufferCount_  = culled;
         visibleBufferCount_ = static_cast<int>(entries_.size());
+        enabledCount_       = static_cast<int>(enabled.size());
+        notRenderableCount_ = notRenderable;
     }
 }
 
