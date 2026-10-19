@@ -514,6 +514,14 @@ const std::vector<RenderListEntry>& ClientLevelModule::collectRenderList(const R
     rlCulled_.store(renderList_.culledBufferCount());
     rlNotRenderable_.store(renderList_.notRenderableCount());
     rlListed_.store(static_cast<int>(renderList_.entries().size()));
+    {
+        std::vector<tree::LodQuadTree::Section> enabled;
+        t->collectEnabled(enabled);
+        int dark = 0;
+        for (const auto& s : enabled)
+            if (s && s->renderDark()) ++dark;
+        rlDark_.store(dark);
+    }
     return renderList_.entries();
 }
 

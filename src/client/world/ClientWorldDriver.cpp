@@ -597,6 +597,10 @@ void ClientWorldDriver::Impl::updateHud(Session& s) {
     dh::hud::set("tree.enabled", s.lastEnabled.load());
     dh::hud::set("tree.culled", s.lastCulled.load());
     dh::hud::set("tree.notReady", s.lastNotReady.load());
+    // render.darkSections = enabled sections whose render data is sky 0 / block 0 on every top datapoint. >0: the DATA
+    // is dark (look at the generator/updater); 0 while the screen is black: the darkness is GPU-side
+    // (shader/fog/blend).
+    dh::hud::set("render.darkSections", s.lastDark.load());
     dh::hud::set("tick.ms", s.tickMs.load());
     dh::hud::set("ingest.chunks", static_cast<std::int64_t>(s.ingested.load()));
     dh::hud::set("ingest.skipped", static_cast<std::int64_t>(s.skipped.load() + s.unchanged.load()));
@@ -742,6 +746,7 @@ ClientWorldDriver::collectRenderList(dh::RenderListParams params, bool coreFrust
     s.lastEnabled.store(st.enabled);
     s.lastCulled.store(st.culled);
     s.lastNotReady.store(st.notRenderable);
+    s.lastDark.store(st.darkSections);
     return RenderListStatus::Ready;
 }
 

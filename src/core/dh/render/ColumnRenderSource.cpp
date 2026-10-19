@@ -213,4 +213,21 @@ bool ColumnRenderSource::hasNonVoidDataPoints() {
     return false;
 }
 
+bool ColumnRenderSource::isDark() const {
+    if (isEmpty || maxVerticalSlices <= 0) return false;
+    bool anyVisible = false;
+    for (int x = 0; x < WIDTH; ++x) {
+        for (int z = 0; z < WIDTH; ++z) {
+            for (int i = 0; i < maxVerticalSlices; ++i) {
+                const std::uint64_t d = dataPoint(x, z, i);
+                if (d == rdp::EMPTY_DATA || rdp::hasZeroHeight(d)) continue;
+                anyVisible = true;
+                if (rdp::skyLight(d) != 0 || rdp::blockLight(d) != 0) return false;
+                break; // top visible datapoint of the column only
+            }
+        }
+    }
+    return anyVisible;
+}
+
 } // namespace dh

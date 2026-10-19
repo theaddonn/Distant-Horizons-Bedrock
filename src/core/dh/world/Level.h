@@ -320,9 +320,11 @@ public:
     /// rejects, notRenderable = enabled but without GPU buffers (upload pending/failed), listed = entries.
     struct RenderListStats {
         int enabled = 0, culled = 0, notRenderable = 0, listed = 0;
+        /// enabled sections whose render data is dark (sky 0 / block 0 on every top datapoint): renders near-black
+        int darkSections = 0;
     };
     RenderListStats lastRenderListStats() const {
-        return {rlEnabled_.load(), rlCulled_.load(), rlNotRenderable_.load(), rlListed_.load()};
+        return {rlEnabled_.load(), rlCulled_.load(), rlNotRenderable_.load(), rlListed_.load(), rlDark_.load()};
     }
 
     std::shared_ptr<tree::LodQuadTree> tree() const;
@@ -351,7 +353,7 @@ private:
     BlockPos2D                                      lastPlayerPos_{0, 0};
     RenderList                                      renderList_;
     std::mutex                                      renderMutex_;
-    std::atomic<int>                                rlEnabled_{0}, rlCulled_{0}, rlNotRenderable_{0}, rlListed_{0};
+    std::atomic<int> rlEnabled_{0}, rlCulled_{0}, rlNotRenderable_{0}, rlListed_{0}, rlDark_{0};
 };
 
 //==================//

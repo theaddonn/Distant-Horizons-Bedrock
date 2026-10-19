@@ -115,6 +115,11 @@ struct ColumnRenderSource {
 
     /// Java hasNonVoidDataPoints (debug helper).
     bool hasNonVoidDataPoints();
+
+    /// Diagnostic ("black LOD section"): true when the source has at least one visible column and the top visible
+    /// datapoint of EVERY visible column has sky light 0 and block light 0 (StageAVertex lightFactor ~0.07: the whole
+    /// section renders near-black). Not a Java function.
+    bool isDark() const;
 };
 
 } // namespace dh
