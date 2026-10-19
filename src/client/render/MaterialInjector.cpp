@@ -35,6 +35,7 @@
 #include <fstream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <span>
 #include <sstream>
@@ -941,6 +942,49 @@ bool ensureDhMceMaterial(mce::MaterialPtr const& fallback, char const* sourceNam
         std::memset(mem, 0, kSize);
         static_cast<mce::RenderMaterial*>(mem)->$ctor(*src);
         dhInfo->mPtr.reset(reinterpret_cast<mce::RenderMaterial*>(mem));
+    }
+    {
+        // Force an ordinary opaque render state on the clone whatever the source was. The selection overlay source
+        // carried stateMask 0x0172 (Blending | DisableAlphaWrite | DisableDepthWrite | StencilWrite |
+        // EnableStencilTest), depthWriteMask 0 and a depth bias of -100/-15: no depth writes + bias = far sections
+        // drew over near ones (2026-10-19). Layouts: DepthStencilStateDescription {depthTest u8, stencilTest u8,
+        // depthFunc u8, front[4], back[4], depthWriteMask u8, ...}, BlendStateDescription {src,dst,asrc,adst,
+        // colorWriteMask, enableBlend, a2c}, RasterizerStateDescription {float depthBias, float slopeScaled, cull}.
+        mce::RenderMaterial* clone = dhInfo->mPtr.get();
+        auto*                dss   = reinterpret_cast<unsigned char*>(&clone->depthStencilStateDescription);
+        auto*                bsd   = reinterpret_cast<unsigned char*>(&clone->blendStateDescription);
+        auto*                rsd   = reinterpret_cast<unsigned char*>(&clone->rasterizerStateDescription);
+        // depthFunc: the enum is not in the SDK; take the byte from a material whose JSON says "LessEqual"
+        // (cracks_overlay_tile_entity, ui3D.material) when it is loaded, else keep the source's.
+        {
+            static std::optional<mce::MaterialPtr> cracks;
+            if (!cracks || !cracks->mRenderMaterialInfoPtr || !cracks->mRenderMaterialInfoPtr->mPtr.get())
+                cracks.emplace(mce::RenderMaterialGroup::common(), HashedString{"cracks_overlay_tile_entity"});
+            if (cracks->mRenderMaterialInfoPtr && cracks->mRenderMaterialInfoPtr->mPtr.get()) {
+                auto const* ref = reinterpret_cast<unsigned char const*>(
+                    &cracks->mRenderMaterialInfoPtr->mPtr.get()->depthStencilStateDescription
+                );
+                DH_LOG_I("materials: cracks_overlay_tile_entity depthFunc byte=%u (JSON LessEqual)", ref[2]);
+                dss[2] = ref[2];
+            }
+        }
+        reinterpret_cast<std::uint16_t&>(clone->mStateMask) = 0;   // RenderState::None
+        dss[0]                                              = 1;   // depthTestEnabled
+        dss[1]                                              = 0;   // stencilTestEnabled
+        dss[11]                                             = 1;   // depthWriteMask = All (D3D numbering)
+        bsd[4]                                              = 0xF; // colorWriteMask RGBA
+        bsd[5]                                              = 0;   // enableBlend
+        bsd[6]                                              = 0;   // alpha-to-coverage
+        float zero                                          = 0.0f;
+        std::memcpy(rsd + 0, &zero, 4); // depthBias
+        std::memcpy(rsd + 4, &zero, 4); // slopeScaledDepthBias
+        std::string hex;
+        char        b[4];
+        for (size_t i = 0; i < sizeof(clone->depthStencilStateDescription); ++i) {
+            snprintf(b, sizeof(b), "%02x", dss[i]);
+            hex += b;
+        }
+        DH_LOG_I("materials: DH clone forced opaque: stateMask=0 depthStencil=%s depthBias=0", hex.c_str());
     }
     gDhInfo = dhInfo.get();
     done    = true;
