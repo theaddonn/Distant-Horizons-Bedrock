@@ -97,14 +97,19 @@ private:
     void                        runChunk(const std::shared_ptr<Batch>& batch, std::int32_t cx, std::int32_t cz);
     void                        workerLoop();
     void                        stopWorkers();
-    void                        noteChunkDone(long long ms, bool okChunk, long long featMs = -1);
+    void                        noteChunkDone(long long ms, bool okChunk, long long featMs = -1, long long placed = 0);
     void                        startWorkersLocked();
     static long long            nowMs();
     void                        finishChunk(const std::shared_ptr<Batch>& batch, bool ok);
     std::shared_ptr<dh::IChunk> generateScratch(std::int32_t cx, std::int32_t cz);
     /// Features mode: base terrain of the 3x3 scratch neighbourhood (cached per batch), decoration of the centre.
-    std::shared_ptr<dh::IChunk>
-    generateFeatures(const std::shared_ptr<Batch>& batch, std::int32_t cx, std::int32_t cz, long long& featMs);
+    std::shared_ptr<dh::IChunk> generateFeatures(
+        const std::shared_ptr<Batch>& batch,
+        std::int32_t                  cx,
+        std::int32_t                  cz,
+        long long&                    featMs,
+        long long&                    placedOut
+    );
     std::shared_ptr<dh::IChunk>
     snapshotLoaded(const std::shared_ptr<Batch>& batch, std::int32_t cx, std::int32_t cz, bool loadIfMissing);
 
@@ -131,7 +136,7 @@ private:
     bool                              stopWorkers_ = false, workersStarted_ = false;
     std::vector<std::thread>          workers_;
     std::atomic<long long>            statChunks_{0}, statFailed_{0}, statMs_{0}, lastStatMs_{0};
-    std::atomic<long long>            statFeatChunks_{0}, statFeatMs_{0};
+    std::atomic<long long>            statFeatChunks_{0}, statFeatMs_{0}, statPlaced_{0};
 };
 
 } // namespace dh::bedrock

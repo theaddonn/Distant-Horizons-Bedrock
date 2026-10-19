@@ -61,6 +61,7 @@ public:
 class ScratchRegionSource final : public ::ChunkSource {
 public:
     ScratchRegionSource(::Dimension& dim, ::Level& level) : ::ChunkSource(nullptr) {
+        mChunkSide = 16; // hedge: the base ctor may copy it from the (null) parent
         mLevel     = &level;
         mDimension = &dim;
     }
@@ -132,13 +133,19 @@ struct BdsWorldGenerator::Batch {
     };
     std::mutex                                                             cellsMutex;
     std::map<std::pair<std::int32_t, std::int32_t>, std::shared_ptr<Cell>> cells;
-    std::mutex decoMutex; // decoration + snapshot are serialised per batch
+    std::mutex                         decoMutex; // decoration + snapshot are serialised per batch
+    std::shared_ptr<std::atomic<bool>> closing;   // generator shutdown flag (null = never closing)
     ~Batch() {
         // The scratch LevelChunks were constructed on the server thread: destroy them there.
         std::vector<std::shared_ptr<LevelChunk>> lcs;
         for (auto& kv : cells)
             if (kv.second && kv.second->lc) lcs.push_back(std::move(kv.second->lc));
         if (lcs.empty()) return;
+        // Closing: the Dimension may be gone by the time the server thread runs this; leak instead.
+        if (closing && closing->load()) {
+            for (auto& l : lcs) (void)new std::shared_ptr<LevelChunk>(std::move(l));
+            return;
+        }
         ll::thread::ServerThreadExecutor::getDefault().execute([lcs = std::move(lcs)]() mutable { lcs.clear(); });
     }
     std::shared_ptr<Cell> cell(std::int32_t x, std::int32_t z) {
@@ -174,7 +181,10 @@ BdsWorldGenerator::BdsWorldGenerator(
     serverThreadOnly_ = scratchThreads < 0;
     threads_          = serverThreadOnly_ ? 1 : (scratchThreads == 0 ? defaultScratchThreads() : scratchThreads);
     lastStatMs_.store(nowMs());
-    featuresDisabled_ = std::getenv("DH_BEDROCK_NO_FEATURES") != nullptr;
+    featuresDisabled_ = [] {
+        const char* e = std::getenv("DH_BEDROCK_NO_FEATURES");
+        return e != nullptr && std::string(e) == "1";
+    }();
     DH_LOG_I(
         "world gen: configured %d scratch worker thread(s)%s (started on first use)",
         threads_,
@@ -302,6 +312,7 @@ void BdsWorldGenerator::queue(
     }
 
     auto batch       = std::make_shared<Batch>();
+    batch->closing   = closing_;
     batch->mode      = mode;
     batch->onChunk   = std::move(onChunk);
     batch->done      = std::move(done);
@@ -329,12 +340,13 @@ void BdsWorldGenerator::queue(
     workCv_.notify_all();
 }
 
-void BdsWorldGenerator::noteChunkDone(long long ms, bool okChunk, long long featMs) {
+void BdsWorldGenerator::noteChunkDone(long long ms, bool okChunk, long long featMs, long long placed) {
     (okChunk ? statChunks_ : statFailed_).fetch_add(1);
     statMs_.fetch_add(ms);
     if (featMs >= 0) {
         statFeatChunks_.fetch_add(1);
         statFeatMs_.fetch_add(featMs);
+        statPlaced_.fetch_add(placed);
     }
     const long long now  = nowMs();
     long long       last = lastStatMs_.load();
@@ -345,6 +357,7 @@ void BdsWorldGenerator::noteChunkDone(long long ms, bool okChunk, long long feat
     const long long tot = n + nf;
     const long long fn  = statFeatChunks_.exchange(0);
     const long long fms = statFeatMs_.exchange(0);
+    const long long pl  = statPlaced_.exchange(0);
     if (tot > 0)
         DH_LOG_I(
             "world gen: %lld chunks in the last 10 s (avg %lld ms%s, in flight %d, threads %d; ok %lld, failed %lld)"
@@ -356,7 +369,10 @@ void BdsWorldGenerator::noteChunkDone(long long ms, bool okChunk, long long feat
             threads_,
             n,
             nf,
-            fn > 0 ? (std::string(", features avg ") + std::to_string(fms / fn) + " ms").c_str() : ""
+            fn > 0 ? (std::string(", features avg ") + std::to_string(fms / fn) + " ms, placedBlocks "
+                      + std::to_string(pl) + " (" + std::to_string(pl / fn) + "/chunk)")
+                         .c_str()
+                   : ""
         );
 }
 
@@ -376,7 +392,7 @@ void BdsWorldGenerator::runChunk(const std::shared_ptr<Batch>& batch, std::int32
     bool       ok     = true;
     const auto taskT0 = std::chrono::steady_clock::now();
     long long  taskMs = 0;
-    long long  featMs = -1;
+    long long  featMs = -1, placed = 0;
     try {
         std::shared_ptr<dh::IChunk> chunk;
         switch (batch->mode) {
@@ -389,7 +405,7 @@ void BdsWorldGenerator::runChunk(const std::shared_ptr<Batch>& batch, std::int32
             break;
         case GenerationMode::Features:
             if (!featuresDisabled_) {
-                chunk = generateFeatures(batch, cx, cz, featMs);
+                chunk = generateFeatures(batch, cx, cz, featMs, placed);
                 ok    = chunk != nullptr;
                 break;
             }
@@ -404,7 +420,7 @@ void BdsWorldGenerator::runChunk(const std::shared_ptr<Batch>& batch, std::int32
             std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - taskT0).count();
         if (chunk && !batch->cancelled.load() && batch->onChunk) {
             ++generated_;
-            noteChunkDone(taskMs, true, featMs);
+            noteChunkDone(taskMs, true, featMs, placed);
             batch->onChunk(std::move(chunk));
         } else if (!chunk && !ok) {
             ++failed_;
@@ -553,7 +569,8 @@ std::shared_ptr<dh::IChunk> BdsWorldGenerator::generateFeatures(
     const std::shared_ptr<Batch>& batch,
     std::int32_t                  cx,
     std::int32_t                  cz,
-    long long&                    featMs
+    long long&                    featMs,
+    long long&                    placedOut
 ) {
     static std::atomic<int> taskSeq{0};
     const int               seq     = taskSeq.fetch_add(1);
@@ -625,6 +642,20 @@ std::shared_ptr<dh::IChunk> BdsWorldGenerator::generateFeatures(
     // features write into them.
     std::lock_guard deco(batch->decoMutex);
     if (batch->cancelled.load() || closing_->load()) return nullptr;
+    auto countNonAir = [](ScratchChunk& w) {
+        long long n = 0;
+        for (int z = 0; z < 16; ++z)
+            for (int x = 0; x < 16; ++x)
+                for (std::int32_t y = w.minNonEmptyHeight(); y < w.maxNonEmptyHeight(); ++y)
+                    if (!w.blockAt(x, y, z)->isAir) ++n;
+        return n;
+    };
+    long long nonAirBefore = 0;
+    {
+        ScratchChunk pre(centre, serializer_);
+        (void)pre.freeze();
+        nonAirBefore = countNonAir(pre);
+    }
     const auto f0         = std::chrono::steady_clock::now();
     bool       decorated  = false;
     int        sourceHits = 0;
@@ -669,14 +700,12 @@ std::shared_ptr<dh::IChunk> BdsWorldGenerator::generateFeatures(
     (void)wrapped->freeze(); // the cache keeps the LevelChunk alive
     featMs = msSince(f0);
 
-    long long nonAir = 0;
-    for (int z = 0; z < 16; ++z)
-        for (int x = 0; x < 16; ++x)
-            for (std::int32_t y = wrapped->minNonEmptyHeight(); y < wrapped->maxNonEmptyHeight(); ++y)
-                if (!wrapped->blockAt(x, y, z)->isAir) ++nonAir;
+    const long long nonAir = countNonAir(*wrapped);
+    placedOut              = nonAir - nonAirBefore;
     if (logIt)
         DH_LOG_I(
-            "world gen task %d (%d,%d): %lld ms (base %lld ms), features=%d (%lld ms, ring chunks %d/9), nonAir=%lld",
+            "world gen task %d (%d,%d): %lld ms (base %lld ms), features=%d (%lld ms, ring chunks %d/9), "
+            "placedBlocks=%lld, nonAir=%lld",
             seq,
             cx,
             cz,
@@ -685,6 +714,7 @@ std::shared_ptr<dh::IChunk> BdsWorldGenerator::generateFeatures(
             decorated ? 1 : 0,
             featMs,
             sourceHits,
+            placedOut,
             nonAir
         );
     if (nonAir == 0) return nullptr;
