@@ -90,6 +90,13 @@ float4 main(PSIn i) : SV_Target0 {
     c *= shade[(int)clamp(round(i.texCoords.x * 8.0) - 1.0, 0.0, 5.0)];
 #endif
     float fogStart = i.light.y, fogEnd = i.light.z;
-    if (fogEnd > fogStart) c = lerp(c, i.fog.rgb, saturate((d - fogStart) / (fogEnd - fogStart)));
-    return float4(c, i.color.a);
+    float a = i.color.a;
+    if (fogEnd > fogStart) {
+        float f = saturate((d - fogStart) / (fogEnd - fogStart));
+        c = lerp(c, i.fog.rgb, f);
+        // unlit blended geometry (the DH cloud layer, texCoords.y >= 1.5) also fades out, so the square edge of the
+        // cloud mesh dissolves into the sky instead of ending as a fog-coloured border
+        if (i.texCoords.y >= 1.5) a *= 1.0 - f;
+    }
+    return float4(c, a);
 }

@@ -58,6 +58,15 @@ inline constexpr int kPrimChoiceCount = static_cast<int>(sizeof(kPrimChoices) / 
 enum class DrawHook : int { CameraAfter = 0, LevelRenderBefore = 1, LevelRenderAfter = 2, PostLevelRender = 3 };
 inline constexpr int kDrawHookCount = 4;
 
+/// Which dragon frame-graph pass the opaque LOD layer lands in (Numpad 4 / Ctrl+F7 cycle; Run 13). RenderDragon bins
+/// every draw by material pass kind and runs Opaque -> AlphaTest -> Transparent; Stars / SunMoon are Transparent-only,
+/// so they are drawn after (and depth-test in front of) opaque LODs whatever the hook. `Late` draws the opaque layer
+/// with DH_TerrainLate (Blending flag, One/Zero factors, depth write) so it lands in the Transparent pass after the
+/// sky inserts; `Overdraw` keeps the opaque draw and repeats it with DH_TerrainLate (2x draw calls; covers the case
+/// where the Transparent pass cannot write depth); `Opaque` is the pre-Run-13 behaviour.
+enum class SkyOrder : int { Late = 0, Overdraw = 1, Opaque = 2 };
+inline constexpr int kSkyOrderCount = 3;
+
 /// The per-frame view data the draw needs, copied from ViewRenderObject::mViewData.
 struct ViewSnapshot {
     bool       isShadowPass = false;
@@ -70,6 +79,7 @@ struct ViewSnapshot {
 
 struct LodRendererConfig {
     DrawHook drawHook = DrawHook::CameraAfter;
+    SkyOrder skyOrder = SkyOrder::Late;
     /// selectionOpaqueMaterial drops the green channel (magenta terrain, 2026-10-19); the fogged fallback is the
     /// Stage-A default, F6 cycles back for comparison.
     MaterialChoice material   = MaterialChoice::Dh; // -> MeshFallback (fogged) -> selection, whichever resolves
@@ -139,6 +149,9 @@ public:
     void cycleFarMode();
     void toggleNearCutoff();
     void toggleTransparent();
+    /// Numpad 4 / Ctrl+F7: cycle SkyOrder (which pass the opaque LOD layer is drawn in).
+    void        cycleSkyOrder();
+    char const* skyOrderName() const;
     /// Numpad 3: cycle the lightmap source / binding path (LightmapMode).
     void cycleLightmapMode();
     /// Numpad 2: DH clouds on/off (the vanilla clouds come back while off).
@@ -184,6 +197,7 @@ private:
     bool                                  warnedMaterialFallback_ = false;
     bool                                  loggedDhMaterial_       = false;
     bool                                  loggedTransMaterial_    = false;
+    bool                                  loggedSkyOrder_         = false;
     bool                                  warnedNoLightmap_       = false;
     bool                                  loggedLightmapSize_     = false;
     bool cpuLighting_      = false; ///< ConvertParams::cpuLighting currently applied (DH_Terrain default: off)

@@ -263,3 +263,32 @@ Root cause of the pitch-black LODs: no uv0 vertex stream (see docs/PORTING.md "R
 4. Night (`/time set night`): in `shader` mode LODs darken (blue-ish tint) and `skyDarken` in the diag line drops below 1
    (Java night value 0.2; Bedrock's night value is unverified, report it); torch-lit areas stay warm. Dusk transition is smooth (per-frame uniform, no re-upload).
 5. Report: the mode colours above, the day/night look, and the dh.log lines from steps 1 and 3.
+## Run 13: stars over LODs, cyan clouds
+
+Root causes and RE evidence: `docs/PORTING.md`, "Run 13". Expected log lines after F5 (first frames):
+`materials: DH clone forced transparent: stateMask=0x0002 ... blend=060803080f0100`,
+`materials: DH clone forced late: stateMask=0x0002 ... blend=030203020f0100`, `materials: DH_TerrainLate mce material
+cloned`, `render: sky order late -> opaque layer drawn with DH_TerrainLate`, `materials: DH binding first use:
+DH_Terrain|DH_TerrainTransparent|DH_TerrainLate -> pass=N` (report the N per clone), `clouds: pattern from
+...environment.brarchive:clouds.png (256x256, N/65536 cloud texels)`. HUD: `render.skyOrder`.
+
+In game (checklist):
+1. Night, clear sky, stand where LOD land and LOD ocean fill the horizon (sky order `late`, the default). Expect: no
+   stars, sun or moon on LOD terrain or LOD water; stars only above the LOD skyline. Note whether far LOD sections now
+   draw over near ones (that means the Transparent pass does not write depth).
+2. Numpad 4 (or Ctrl+F7) -> `overdraw`: same expectation, at about twice the draw calls (`render.ms`). If `late` was
+   broken (step 1) but `overdraw` is right, report it: `overdraw` becomes the default. `overdraw` repeats the draw
+   at equal depth, so it needs depth func LessEqual: check that `materials: cracks_overlay_tile_entity depthFunc
+   byte=6` was logged before the clone lines (otherwise the source's func is kept and the repeat may be rejected).
+3. Numpad 4 -> `opaque`: the old behaviour (stars through the LODs) must come back. This confirms the pass-bin cause.
+   If all three modes look the same, report the `pass=N` lines.
+4. With `late`, Ctrl+F8 through the draw hooks: `level-before` is expected to show stars over the LODs again (it
+   inserts before the sky); report the other hooks.
+5. Sunset/sunrise: the sun/moon disc is hidden by LOD mountains in front of it.
+6. Clouds from the ground: white/grey and translucent (sky visible through them at alpha 0.8), not cyan, not opaque.
+   From above (fly to y > 200): LOD terrain visible through the layer, not brightened. Clouds fade out toward the
+   horizon, and no square edge of the layer is visible. The cloud pattern now matches the vanilla clouds.png (compare with
+   Numpad 2 off).
+7. LOD water (sea beyond the vanilla distance): blue translucent with the seabed darkened, not brightened (it used
+   the same broken blend). At the vanilla/LOD overlap band (about 115-144 blocks), check whether LOD seabed shows
+   untinted through vanilla water (a known side effect of late/overdraw); compare with `opaque`.

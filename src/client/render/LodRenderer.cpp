@@ -208,6 +208,24 @@ void LodRenderer::toggleTransparent() {
     DH_LOG_I("render: transparent pass -> %s", cfg_.drawTransparent ? "on" : "off");
 }
 
+char const* LodRenderer::skyOrderName() const {
+    switch (cfg_.skyOrder) {
+    case SkyOrder::Late:
+        return "late";
+    case SkyOrder::Overdraw:
+        return "overdraw";
+    case SkyOrder::Opaque:
+        return "opaque";
+    }
+    return "?";
+}
+
+void LodRenderer::cycleSkyOrder() {
+    cfg_.skyOrder = static_cast<SkyOrder>((static_cast<int>(cfg_.skyOrder) + 1) % kSkyOrderCount);
+    loggedSkyOrder_ = false; // log which material the next frame really uses
+    DH_LOG_I("render: sky order -> %s (Numpad 4 / Ctrl+F7)", skyOrderName());
+}
+
 bool LodRenderer::cloudsWanted() const {
     return cloudsToggle_ && bedrock::ConfigBridge::instance().config().options().client.graphics.clouds.renderDhClouds;
 }
@@ -681,8 +699,27 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
     const float packedClip = std::floor(std::min(clipRadius, 4095.0f) + 0.5f)
                            + std::floor(std::min(std::max(fadeEnd, clipRadius), 4095.0f) + 0.5f) * 4096.0f;
 
+    // Opaque layer pass bin (SkyOrder, Run 13): DH_TerrainLate lands in the frame graph's Transparent pass, after the
+    // stars / sun / moon inserted by the vanilla sky; needs the DH shader and the clone (else the plain opaque draw).
+    mce::MaterialPtr const* lateMaterial = nullptr;
+    if (dhShader && cfg_.skyOrder != SkyOrder::Opaque && spikes::materialValid(spikes::dhLateMaterial()))
+        lateMaterial = &spikes::dhLateMaterial();
+    dh::hud::set("render.skyOrder", lateMaterial ? skyOrderName() : "opaque");
+    if (!loggedSkyOrder_ && !vis.empty()) {
+        loggedSkyOrder_ = true;
+        DH_LOG_I(
+            "render: sky order %s -> opaque layer drawn with %s",
+            skyOrderName(),
+            !lateMaterial                          ? "DH_Terrain (Opaque pass; DH_TerrainLate unavailable or off)"
+            : cfg_.skyOrder == SkyOrder::Overdraw ? "DH_Terrain + DH_TerrainLate redraw"
+                                                   : "DH_TerrainLate"
+        );
+    }
+
     std::size_t drawnSections = 0, drawCalls = 0;
-    auto        drawLayer = [&](bool transparent) {
+    // `material` (the parameter) shadows the outer opaque material on purpose: the opaque layer is drawn with
+    // whichever pass-bin material the SkyOrder picks; countSections = false for the Overdraw repeat.
+    auto drawLayer = [&](bool transparent, mce::MaterialPtr const* material, bool countSections) {
         if (transparent)
             std::sort(vis.begin(), vis.end(), [](Visible const& a, Visible const& b) { return a.dist2 > b.dist2; });
         else std::sort(vis.begin(), vis.end(), [](Visible const& a, Visible const& b) { return a.dist2 < b.dist2; });
@@ -714,13 +751,15 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
                 );
                 ++drawCalls;
             }
-            if (!transparent) ++drawnSections;
+            if (!transparent && countSections) ++drawnSections;
         }
     };
     std::size_t cloudCalls = 0;
     auto        drawAll    = [&] {
-        drawLayer(false);
-        if (cfg_.drawTransparent) drawLayer(true);
+        // insertion order inside the Transparent bin: opaque LODs (late), then DH water, then clouds
+        if (!lateMaterial || cfg_.skyOrder == SkyOrder::Overdraw) drawLayer(false, material, true);
+        if (lateMaterial) drawLayer(false, lateMaterial, cfg_.skyOrder != SkyOrder::Overdraw);
+        if (cfg_.drawTransparent) drawLayer(true, material, true);
         if (cloudsReady && transMaterial != material) {
             cloudCalls = clouds_.draw(mctx, *transMaterial, camPos, camRel, fogStart, fogEnd);
             if (cloudCalls) cloudsDrawnNs_ = nowNs();
