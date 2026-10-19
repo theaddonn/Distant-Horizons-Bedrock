@@ -328,12 +328,12 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
     // Dynamic*: the live RenderDragon lightmap, dynamic texture BrightnessTexture<subClientId> in
     // MinecraftGameplayGraphicsResources::mDynamicTextures (read-only lookup, never creates the entry; see
     // docs/spikes/lightmap-texture.md), bound at slot 0. Without it the draw falls back to the procedural path.
-    // (LevelRenderer::mBrightnessTex has a NULL client texture under RenderDragon and is no longer tried.)
+    // LevelRenderer::mBrightnessTex is not tried any more: its client texture is NULL under RenderDragon (Run 11).
     bool               lightmapOk = false;
     char const*        lightSrc   = "none";
     Texture            lightTex{std::monostate{}};
     const LightmapMode lmode    = cfg_.lightmapMode;
-    const bool         swapAxes = (lmode == LightmapMode::DynamicSwapped) != cfg_.lightmapSwapAxes;
+    const bool         wantSwap = (lmode == LightmapMode::DynamicSwapped) != cfg_.lightmapSwapAxes;
     if (std::strcmp(matName, "DH_Terrain") == 0
         && (lmode == LightmapMode::Dynamic || lmode == LightmapMode::DynamicSwapped)) {
         if (::MinecraftGraphics* gfx = ci.getMinecraftGraphics().get().get()) {
@@ -363,6 +363,8 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
             warnedNoLightmap_ = true;
         }
     }
+    // The nibble swap only applies to a bound texture: the procedural FS path always decodes hi = sky, lo = block.
+    const bool swapAxes = wantSwap && lightmapOk;
     // Daylight factor for the procedural lightmap: Dimension::getSkyDarken (Java getSkyDarken: 1 = day, ~0.2 =
     // night, despite the name). ViewRenderData::mSkyBrightnessScalar was 0 in the first run (2026-10-19), so it is
     // only shown on the HUD.

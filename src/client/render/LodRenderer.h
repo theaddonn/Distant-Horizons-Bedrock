@@ -25,8 +25,8 @@ namespace dh::render {
 enum class MaterialChoice : int { Selection = 0, MeshFallback = 1, Dh = 2 };
 enum class OriginMode : int { CameraRelative = 0, Absolute = 1 };
 enum class FarMode : int { Off = 0, LocalProjPush = 1, ZFarOverride = 2 };
-/// DH_Terrain lighting path; Numpad 3 cycles. Run 13 (2026-10-19): every earlier "black" result (dynamic texture,
-/// procedural shader) was the missing uv0 vertex field (MeshUploader), not the light sources themselves.
+/// DH_Terrain lighting path; Numpad 3 cycles. Run 13 (2026-10-19): the earlier "black" results (dynamic texture,
+/// procedural shader) are explained by the missing uv0 vertex field (MeshUploader); pending in-game confirmation.
 enum class LightmapMode : int {
     Shader  = 0, ///< no texture: procedural Java lightmap in the FS (packed light + skyDarken) [default]
     Dynamic = 1, ///< vanilla lightmap: dynamic texture BrightnessTexture<subClientId> at slot 0 (u = block, v = sky)

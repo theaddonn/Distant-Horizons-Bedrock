@@ -193,6 +193,8 @@ lightmap tint; no seam in brightness at the vanilla/LOD fade band. If everything
 bind (log "mBrightnessTex unavailable", or the UseTextures=Off material variant skips the sampler); if sky/block look swapped
 (sunlit areas orange-tinted, torches blue-white): set `lightmapSwapAxes`.
 
+(Superseded by Run 13 below: Numpad 3 now cycles the lighting modes, `mBrightnessTex` is no longer used, and the GPU
+uv0.x is `(face + 1) / 8`.)
 Run 9 follow-ups: Numpad 3 toggles `lightmapSwapAxes` live (HUD `render.lightmap` = `block,sky` / `sky,block` / `cpu`, `render.lighting` =
 `lightmap` / `cpu`). If `mBrightnessTex` is missing, DH_Terrain is replaced by the MeshFallback/selection material with CPU lighting
 (logged once). The FS reads the lightmap size with `GetDimensions` (texel centres for any size) and the real size is logged once.
@@ -245,7 +247,8 @@ In game (checklist):
 Root cause of the pitch-black LODs: no uv0 vertex stream (see docs/PORTING.md "Run 13"). Expected after this build:
 
 1. Load a world by day, F5 on (or startup with `client.enableRendering`). dh.log: `render: native vertex format ok:
-   mFieldEnabled=110000100000000 (DH meshes also enable uv0=[4], uv2=[6]) ...`. The 10 s line
+   mFieldEnabled=110000100000000 (DH meshes also enable uv0=[4], uv2=[6]) ...` and, after the first upload,
+   `render: DH mesh vertex fields uploaded: mFieldEnabled=1...1.1........` (position 4 must be 1). The 10 s line
    `render: lighting diag mode=shader lightmapOk=0 src=none flag=-1.00 skyDarken=1.00 ...` (flag = -skyDarken).
 2. Default mode `shader` (HUD `render.lightmap=shader: none(shader)`): LODs lit like vanilla by day (sky-lit tops at
    full colour, not black); they should blend with vanilla terrain at the clip border.
