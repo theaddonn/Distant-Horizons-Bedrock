@@ -54,6 +54,9 @@ mce::MaterialPtr const& fallbackMaterial();
 mce::MaterialPtr const& dhMaterial(mce::MaterialPtr const* altSource = nullptr);
 /// `DH_TerrainTransparent`: same compiled shader, blended render state (depth test, no depth write). May be invalid.
 mce::MaterialPtr const& dhTransparentMaterial();
+/// `DH_TerrainLate`: same compiled shader, opaque output and depth write, but flagged Blending so the dragon frame
+/// graph draws it in the Transparent pass, after the stars / sun / moon (Run 13). May be invalid.
+mce::MaterialPtr const& dhLateMaterial();
 
 /// Drops cached meshes (call when the buffer service changes or on level exit).
 void resetMeshes();
