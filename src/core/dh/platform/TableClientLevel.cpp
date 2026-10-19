@@ -1,6 +1,5 @@
 #include "dh/platform/TableClientLevel.h"
 
-#include "dh/platform/ILogger.h"
 #include "dh/util/Color.h"
 
 namespace dh {
@@ -32,25 +31,7 @@ TableClientLevel::blockColor(std::int32_t, std::int32_t, std::int32_t, const Bio
     const BlockColorInfo* c = table_.colorInfo(block);
     if (c == nullptr) return 0; // not a table block
     if (c->tint == TintKind::None) return c->argb;
-    const std::uint32_t tint = tintColor(c->tint, biome);
-    const std::uint32_t out  = color::multiplyARGBwithRGB(c->argb, tint);
-    if (c->tint == TintKind::Water) {
-        // one-time diagnostic (2026-10-19: LOD water looked pale cyan-white in game)
-        static bool logged = false;
-        if (!logged) {
-            logged = true;
-            log::logf(
-                LogLevel::Info,
-                "water colour: block %s base 0x%08x tint 0x%08x (biome %s) -> 0x%08x",
-                block ? block->serial.c_str() : "?",
-                c->argb,
-                tint,
-                biome ? biome->serial.c_str() : "default",
-                out
-            );
-        }
-    }
-    return out;
+    return color::multiplyARGBwithRGB(c->argb, tintColor(c->tint, biome));
 }
 
 std::uint32_t TableClientLevel::dirtBlockColor() {
