@@ -25,6 +25,18 @@ namespace dh::render {
 enum class MaterialChoice : int { Selection = 0, MeshFallback = 1, Dh = 2 };
 enum class OriginMode : int { CameraRelative = 0, Absolute = 1 };
 enum class FarMode : int { Off = 0, LocalProjPush = 1, ZFarOverride = 2 };
+/// Where DH_Terrain's lightmap (sampler slot 0) comes from; Numpad 3 cycles (2026-10-19 bisect: the dynamic texture
+/// bound through the variant overload samples black).
+enum class LightmapMode : int {
+    Dynamic        = 0, ///< MinecraftGameplayGraphicsResources dynamic texture BrightnessTexture<subClientId>, variant overload
+    DynamicSwapped = 1, ///< same, lookup axes swapped (u = sky, v = block)
+    DynamicSpan    = 2, ///< same texture through the renderMesh(span<ClientTexture const*>) overload
+    AtlasTest      = 3, ///< binds LevelRenderer::mAtlasTexture instead: coloured noise = the binding path works
+    Legacy         = 4, ///< LevelRenderer::mBrightnessTex (NULL client texture under RenderDragon so far)
+    Cpu            = 5, ///< no lightmap: CPU light factor baked into the vertex colours
+};
+inline constexpr int         kLightmapModeCount   = 6;
+inline constexpr char const* kLightmapModeNames[] = {"dynamic", "dynamic-swapped", "dynamic-span", "atlas-test", "legacy", "cpu"};
 
 /// Primitive / winding choices cycled by F4.
 struct PrimChoice {
@@ -84,6 +96,7 @@ struct LodRendererConfig {
 
     float skyBrightness    = 1.0f;   ///< CPU light stand-in input (0 night .. 1 day); fallback materials only
     bool  lightmapSwapAxes = false;  ///< DH_Terrain: swap the lightmap lookup axes (default u = block, v = sky)
+    LightmapMode lightmapMode = LightmapMode::Dynamic; ///< Numpad 3 cycles
     float minYBlocks       = -64.0f; ///< DH y 0 maps to this Bedrock y
 };
 
@@ -125,7 +138,8 @@ public:
     void cycleFarMode();
     void toggleNearCutoff();
     void toggleTransparent();
-    void toggleLightmapAxes();
+    /// Numpad 3: cycle the lightmap source / binding path (LightmapMode).
+    void cycleLightmapMode();
     /// Numpad 2: DH clouds on/off (the vanilla clouds come back while off).
     void toggleClouds();
 

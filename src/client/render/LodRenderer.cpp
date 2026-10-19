@@ -41,6 +41,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <optional>
 #include <variant>
 #include <vector>
 
@@ -102,7 +103,7 @@ void LodRenderer::applyMeshSettings() {
     s.params.doubleSided      = pc.doubleSided;
     s.params.skyBrightness    = cfg_.skyBrightness;
     s.params.cpuLighting      = cpuLighting_;
-    s.params.lightmapSwapAxes = cfg_.lightmapSwapAxes;
+    s.params.lightmapSwapAxes = lightSwapApplied_;
     s.yOffsetBlocks           = cfg_.minYBlocks;
     uploader_.setSettings(s);
 }
@@ -195,9 +196,9 @@ void LodRenderer::toggleNearCutoff() {
     DH_LOG_I("render: near cut-off -> %s", cfg_.nearCutoff ? "on" : "off");
 }
 
-void LodRenderer::toggleLightmapAxes() {
-    cfg_.lightmapSwapAxes = !cfg_.lightmapSwapAxes;
-    DH_LOG_I("render: lightmap axes -> %s (Numpad 3)", cfg_.lightmapSwapAxes ? "u=sky,v=block" : "u=block,v=sky");
+void LodRenderer::cycleLightmapMode() {
+    cfg_.lightmapMode = static_cast<LightmapMode>((static_cast<int>(cfg_.lightmapMode) + 1) % kLightmapModeCount);
+    DH_LOG_I("render: lightmap mode -> %s (Numpad 3)", kLightmapModeNames[static_cast<int>(cfg_.lightmapMode)]);
 }
 
 void LodRenderer::toggleTransparent() {
@@ -328,30 +329,44 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
     // Without either the material is KEPT (2026-10-19: falling back to selectionOpaqueMaterial painted everything
     // magenta) and the draw switches to CPU lighting: u_model[0][3][3] = 0 tells the VS to flag the varying so the FS
     // skips the lightmap lookup.
-    bool        lightmapOk = false;
-    char const* lightSrc   = "none";
-    Texture     lightTex{std::monostate{}};
-    if (std::strcmp(matName, "DH_Terrain") == 0) {
-        if (::MinecraftGraphics* gfx = ci.getMinecraftGraphics().get().get()) {
-            auto const& res = gfx->mMinecraftGameplayGraphicsResources.get();
-            const auto  key = static_cast<::mce::DynamicTexture>(static_cast<unsigned char>(ci.getClientSubId()));
-            std::shared_ptr<::mce::ClientTexture> tex = res.mDynamicTextures->getResource(key);
-            // ResourceBlockTemplate::get() is not exported, so only the block's presence can be checked here.
-            if (tex && static_cast<bool>(*tex)) {
-                if (!loggedLightmapSize_) {
-                    DH_LOG_I(
-                        "render: lightmap source = dynamic texture BrightnessTexture%u; Numpad 3 swaps the lookup axes "
-                        "if light looks wrong",
-                        static_cast<unsigned>(key)
-                    );
-                    loggedLightmapSize_ = true;
+    bool               lightmapOk  = false;
+    char const*        lightSrc    = "none";
+    Texture            lightTex{std::monostate{}};
+    std::optional<mce::ClientTexture> lightClient; // DynamicSpan: bound through the span overload (no default ctor)
+    const LightmapMode lmode       = cfg_.lightmapMode;
+    const bool         useSpan     = lmode == LightmapMode::DynamicSpan;
+    const bool         swapAxes    = (lmode == LightmapMode::DynamicSwapped) != cfg_.lightmapSwapAxes;
+    if (std::strcmp(matName, "DH_Terrain") == 0 && lmode != LightmapMode::Cpu) {
+        const bool wantDynamic = lmode == LightmapMode::Dynamic || lmode == LightmapMode::DynamicSwapped || useSpan;
+        if (wantDynamic) {
+            if (::MinecraftGraphics* gfx = ci.getMinecraftGraphics().get().get()) {
+                auto const& res = gfx->mMinecraftGameplayGraphicsResources.get();
+                const auto  key = static_cast<::mce::DynamicTexture>(static_cast<unsigned char>(ci.getClientSubId()));
+                std::shared_ptr<::mce::ClientTexture> tex = res.mDynamicTextures->getResource(key);
+                // ResourceBlockTemplate::get() is not exported, so only the block's presence can be checked here.
+                if (tex && static_cast<bool>(*tex)) {
+                    if (!loggedLightmapSize_) {
+                        DH_LOG_I(
+                            "render: lightmap source = dynamic texture BrightnessTexture%u (Numpad 3 cycles the binding "
+                            "path / source)",
+                            static_cast<unsigned>(key)
+                        );
+                        loggedLightmapSize_ = true;
+                    }
+                    lightClient.emplace(*tex);
+                    lightTex    = *tex;
+                    lightmapOk  = true;
+                    lightSrc    = "dynamic";
                 }
-                lightTex   = *tex;
+            }
+        } else if (lmode == LightmapMode::AtlasTest) {
+            if (lr && lr->mAtlasTexture->mClientTexture.get()) {
+                lightTex   = *lr->mAtlasTexture;
                 lightmapOk = true;
-                lightSrc   = "dynamic";
+                lightSrc   = "atlas-test";
             }
         }
-        if (!lightmapOk) {
+        if (!lightmapOk && (lmode == LightmapMode::Legacy || wantDynamic)) {
             auto const* bt = lr ? lr->mBrightnessTex->mClientTexture.get() : nullptr;
             if (bt) {
                 auto const& d = bt->mTextureDescription.get();
@@ -366,8 +381,9 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
         }
         if (!lightmapOk && !warnedNoLightmap_) {
             DH_LOG_W(
-                "render: no lightmap texture (dynamic BrightnessTexture missing, LevelRenderer::mBrightnessTex has no "
-                "client texture); drawing DH_Terrain with CPU lighting"
+                "render: no lightmap texture for mode %s (dynamic BrightnessTexture missing / LevelRenderer::mBrightnessTex "
+                "has no client texture); drawing DH_Terrain with CPU lighting",
+                kLightmapModeNames[static_cast<int>(lmode)]
             );
             warnedNoLightmap_ = true;
         }
@@ -378,17 +394,21 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
     {
         const bool wantCpu = !lightmapOk;
         dh::hud::set("render.lighting", wantCpu ? "cpu" : "lightmap");
-        dh::hud::set(
-            "render.lightmap",
-            lightmapOk ? (cfg_.lightmapSwapAxes ? (std::strcmp(lightSrc, "dynamic") == 0 ? "dynamic sky,block"
-                                                                                            : "legacy sky,block")
-                                                : (std::strcmp(lightSrc, "dynamic") == 0 ? "dynamic block,sky"
-                                                                                            : "legacy block,sky"))
-                       : (std::strcmp(matName, "DH_Terrain") == 0 ? "none(cpu)" : "cpu")
-        );
-        if (wantCpu != cpuLighting_ || lightSwapApplied_ != cfg_.lightmapSwapAxes) {
+        {
+            char hud[96];
+            std::snprintf(
+                hud,
+                sizeof hud,
+                "%s: %s%s",
+                kLightmapModeNames[static_cast<int>(lmode)],
+                lightmapOk ? lightSrc : "none(cpu)",
+                lightmapOk ? (swapAxes ? " u=sky,v=block" : " u=block,v=sky") : ""
+            );
+            dh::hud::set("render.lightmap", hud);
+        }
+        if (wantCpu != cpuLighting_ || lightSwapApplied_ != swapAxes) {
             cpuLighting_      = wantCpu;
-            lightSwapApplied_ = cfg_.lightmapSwapAxes;
+            lightSwapApplied_ = swapAxes;
             applyMeshSettings();
         }
     }
@@ -662,15 +682,28 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
             }
             cam.worldMatrixStack->getTop() = m;
             for (auto const& part : parts) {
-                part.mesh->renderMesh(
-                    mctx,
-                    transparent ? *transMaterial : *material,
-                    drawTex,
-                    0,
-                    part.verts,
-                    OffscreenCaptureDescription{},
-                    nullptr
-                );
+                if (dhShader && lightmapOk && useSpan && lightClient) {
+                    mce::ClientTexture const* texs[1] = {&*lightClient};
+                    part.mesh->renderMesh(
+                        mctx,
+                        transparent ? *transMaterial : *material,
+                        ::gsl::span<mce::ClientTexture const*>(texs, 1),
+                        0,
+                        part.verts,
+                        OffscreenCaptureDescription{},
+                        nullptr
+                    );
+                } else {
+                    part.mesh->renderMesh(
+                        mctx,
+                        transparent ? *transMaterial : *material,
+                        drawTex,
+                        0,
+                        part.verts,
+                        OffscreenCaptureDescription{},
+                        nullptr
+                    );
+                }
                 ++drawCalls;
             }
             if (!transparent) ++drawnSections;
