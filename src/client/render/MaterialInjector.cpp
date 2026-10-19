@@ -189,14 +189,18 @@ uintptr_t vslot(char const* vftableSym, MemFn fn) {
     return reinterpret_cast<uintptr_t>(vt[*idx]);
 }
 
+uintptr_t slot_TraceArlLoad1() {
+    return vslot<AppResourceLoader>(
+        kVtArl,
+        static_cast<bool (AppResourceLoader::*)(ResourceLocation const&, std::string&) const>(&AppResourceLoader::load)
+    );
+}
+
 LL_TYPE_INSTANCE_HOOK(
     TraceArlLoad1,
     ll::memory::HookPriority::Normal,
     AppResourceLoader,
-    vslot<AppResourceLoader>(
-        kVtArl,
-        static_cast<bool (AppResourceLoader::*)(ResourceLocation const&, std::string&) const>(&AppResourceLoader::load)
-    ),
+    slot_TraceArlLoad1(),
     bool,
     ::ResourceLocation const& loc,
     ::std::string&            stream
@@ -207,15 +211,19 @@ LL_TYPE_INSTANCE_HOOK(
     return r;
 }
 
+uintptr_t slot_TraceArlLoad2() {
+    return vslot<AppResourceLoader>(
+        kVtArl,
+        static_cast<bool (AppResourceLoader::*)(ResourceLocation const&, std::string&, gsl::span<std::string const>)
+                        const>(&AppResourceLoader::load)
+    );
+}
+
 LL_TYPE_INSTANCE_HOOK(
     TraceArlLoad2,
     ll::memory::HookPriority::Normal,
     AppResourceLoader,
-    vslot<AppResourceLoader>(
-        kVtArl,
-        static_cast<bool (AppResourceLoader::*)(ResourceLocation const&, std::string&, gsl::span<std::string const>)
-                        const>(&AppResourceLoader::load)
-    ),
+    slot_TraceArlLoad2(),
     bool,
     ::ResourceLocation const&        loc,
     ::std::string&                   stream,
@@ -227,15 +235,19 @@ LL_TYPE_INSTANCE_HOOK(
     return r;
 }
 
+uintptr_t slot_TraceArlLoad3() {
+    return vslot<AppResourceLoader>(
+        kVtArl,
+        static_cast<bool (AppResourceLoader::*)(ResourceLocationPair const&, std::string&, gsl::span<std::string const>)
+                        const>(&AppResourceLoader::load)
+    );
+}
+
 LL_TYPE_INSTANCE_HOOK(
     TraceArlLoad3,
     ll::memory::HookPriority::Normal,
     AppResourceLoader,
-    vslot<AppResourceLoader>(
-        kVtArl,
-        static_cast<bool (AppResourceLoader::*)(ResourceLocationPair const&, std::string&, gsl::span<std::string const>)
-                        const>(&AppResourceLoader::load)
-    ),
+    slot_TraceArlLoad3(),
     bool,
     ::ResourceLocationPair const&    loc,
     ::std::string&                   stream,
@@ -247,11 +259,13 @@ LL_TYPE_INSTANCE_HOOK(
     return r;
 }
 
+uintptr_t slot_TraceArlAllVersions() { return vslot<AppResourceLoader>(kVtArl, &AppResourceLoader::loadAllVersionsOf); }
+
 LL_TYPE_INSTANCE_HOOK(
     TraceArlAllVersions,
     ll::memory::HookPriority::Normal,
     AppResourceLoader,
-    vslot<AppResourceLoader>(kVtArl, &AppResourceLoader::loadAllVersionsOf),
+    slot_TraceArlAllVersions(),
     std::vector<LoadedResourceData>,
     ::ResourceLocation const& loc
 ) {
@@ -289,11 +303,15 @@ LL_TYPE_INSTANCE_HOOK(
     return r;
 }
 
+uintptr_t slot_TraceSfsReadFile() {
+    return vslot<Core::StandardFileSystem>(kVtSfs, &Core::StandardFileSystem::readFile);
+}
+
 LL_TYPE_INSTANCE_HOOK(
     TraceSfsReadFile,
     ll::memory::HookPriority::Normal,
     Core::StandardFileSystem,
-    vslot<Core::StandardFileSystem>(kVtSfs, &Core::StandardFileSystem::readFile),
+    slot_TraceSfsReadFile(),
     ::Bedrock::Result<std::string>,
     ::Core::PathView path
 ) {
@@ -303,11 +321,15 @@ LL_TYPE_INSTANCE_HOOK(
     return r;
 }
 
+uintptr_t slot_TraceSfsReadFileData() {
+    return vslot<Core::StandardFileSystem>(kVtSfs, &Core::StandardFileSystem::readFileData);
+}
+
 LL_TYPE_INSTANCE_HOOK(
     TraceSfsReadFileData,
     ll::memory::HookPriority::Normal,
     Core::StandardFileSystem,
-    vslot<Core::StandardFileSystem>(kVtSfs, &Core::StandardFileSystem::readFileData),
+    slot_TraceSfsReadFileData(),
     ::Core::Result,
     ::Core::PathView              path,
     ::std::vector<unsigned char>& data
@@ -318,11 +340,15 @@ LL_TYPE_INSTANCE_HOOK(
     return r;
 }
 
+uintptr_t slot_TraceSfsOpenFile() {
+    return vslot<Core::StandardFileSystem>(kVtSfs, &Core::StandardFileSystem::openFile);
+}
+
 LL_TYPE_INSTANCE_HOOK(
     TraceSfsOpenFile,
     ll::memory::HookPriority::Normal,
     Core::StandardFileSystem,
-    vslot<Core::StandardFileSystem>(kVtSfs, &Core::StandardFileSystem::openFile),
+    slot_TraceSfsOpenFile(),
     ::Core::Result,
     ::Core::PathView            path,
     ::Core::File&               fileOut,
@@ -333,11 +359,15 @@ LL_TYPE_INSTANCE_HOOK(
     return origin(path, fileOut, mode, buf);
 }
 
+uintptr_t slot_TraceSfsReadFileDataExt() {
+    return vslot<Core::StandardFileSystem>(kVtSfs, &Core::StandardFileSystem::readFileDataExt);
+}
+
 LL_TYPE_INSTANCE_HOOK(
     TraceSfsReadFileDataExt,
     ll::memory::HookPriority::Normal,
     Core::StandardFileSystem,
-    vslot<Core::StandardFileSystem>(kVtSfs, &Core::StandardFileSystem::readFileDataExt),
+    slot_TraceSfsReadFileDataExt(),
     ::Core::Result,
     ::Core::PathView              path,
     uint64                        pos,
@@ -358,6 +388,12 @@ LL_TYPE_INSTANCE_HOOK(
 } // namespace
 
 #define DH_TRACE_HOOK(H) DH_LOG_I("materials: trace hook " #H " -> %d", (int)H::hook())
+// vtable-slot hooks: never hand the hook engine a null target
+#define DH_TRACE_VHOOK(H)                                                                                              \
+    do {                                                                                                               \
+        if (slot_##H()) DH_TRACE_HOOK(H);                                                                              \
+        else DH_LOG_W("materials: trace hook " #H " skipped (vtable slot unresolved)");                                \
+    } while (0)
 
 void installMaterialInjector() {
     if (gInstalled.exchange(true)) return;
@@ -385,16 +421,16 @@ void installMaterialInjector() {
     MaterialLoadHook::hook();
     MaterialLoadExtHook::hook();
     LoadListProbeHook::hook();
-    DH_TRACE_HOOK(TraceArlLoad1);
-    DH_TRACE_HOOK(TraceArlLoad2);
-    DH_TRACE_HOOK(TraceArlLoad3);
-    DH_TRACE_HOOK(TraceArlAllVersions);
+    DH_TRACE_VHOOK(TraceArlLoad1);
+    DH_TRACE_VHOOK(TraceArlLoad2);
+    DH_TRACE_VHOOK(TraceArlLoad3);
+    DH_TRACE_VHOOK(TraceArlAllVersions);
     DH_TRACE_HOOK(TraceRpmAllVersions);
     DH_TRACE_HOOK(TraceRpmLoadNv);
-    DH_TRACE_HOOK(TraceSfsReadFile);
-    DH_TRACE_HOOK(TraceSfsReadFileData);
-    DH_TRACE_HOOK(TraceSfsOpenFile);
-    DH_TRACE_HOOK(TraceSfsReadFileDataExt);
+    DH_TRACE_VHOOK(TraceSfsReadFile);
+    DH_TRACE_VHOOK(TraceSfsReadFileData);
+    DH_TRACE_VHOOK(TraceSfsOpenFile);
+    DH_TRACE_VHOOK(TraceSfsReadFileDataExt);
     DH_LOG_I("materials: injector on, DH_Terrain.material.bin %zu bytes", gMaterialBytes.size());
 }
 
