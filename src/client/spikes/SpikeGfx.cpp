@@ -240,10 +240,14 @@ mce::MaterialPtr const& fallbackMaterial() {
     return *mat;
 }
 
-mce::MaterialPtr const& dhMaterial() {
+mce::MaterialPtr const& dhMaterial(mce::MaterialPtr const* altSource) {
     static std::optional<mce::MaterialPtr> mat;
     if (!mat || !materialValid(*mat)) {
+        // Clone source: MeshFallbackPosUVNormalColor when the engine has loaded it (lazily, minutes into a session),
+        // otherwise any valid mce material the caller offers (selectionOpaqueMaterial is valid from the first frame;
+        // its legacy shaders map to the same MeshFallback* dragon family, and the request is renamed anyway).
         if (materialValid(fallbackMaterial())) dh::render::ensureDhMceMaterial(fallbackMaterial());
+        else if (altSource && materialValid(*altSource)) dh::render::ensureDhMceMaterial(*altSource);
         mat.emplace(mce::RenderMaterialGroup::switchable(), HashedString{"DH_Terrain"});
     }
     return *mat;

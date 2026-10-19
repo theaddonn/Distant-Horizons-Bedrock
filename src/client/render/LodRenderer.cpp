@@ -207,6 +207,12 @@ void LodRenderer::renderFrame(BaseActorRenderContext& rc, ViewRenderObject const
     case MaterialChoice::Dh:
         // B3 DH_Terrain: vertex colour, no fog (the FS ignores the fog varying) - the first "LODs beyond the vanilla
         // fog" picture. Falls back to the fogged vanilla material until the injector's splice has been loaded.
+        {
+            // clone source for the DH mce material if MeshFallback is not loaded yet: the selection material
+            mce::MaterialPtr const* alt =
+                (lr && lr->mLevelRendererPlayer) ? &lr->mLevelRendererPlayer->selectionOpaqueMaterial.get() : nullptr;
+            (void)spikes::dhMaterial(alt);
+        }
         if (spikes::materialValid(spikes::dhMaterial())) {
             material = &spikes::dhMaterial();
             matName  = "DH_Terrain";

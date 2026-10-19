@@ -36,13 +36,13 @@ struct QuadSpec {
 /// Builds (or reuses) the mesh and draws it with its base-centre at `world` (x, baseY, z). Returns false and logs on
 /// failure. `material` must be valid (see materialValid).
 bool drawQuad(
-    ScreenContext&         ctx,
-    QuadSpec const&        quad,
+    ScreenContext&          ctx,
+    QuadSpec const&         quad,
     mce::MaterialPtr const& material,
-    glm::dvec3 const&      world,
-    glm::dvec3 const&      cameraPos,
-    char const*            tag,
-    float                  localFar = 0.0f /* >0: push a projection with this far plane around the draw */
+    glm::dvec3 const&       world,
+    glm::dvec3 const&       cameraPos,
+    char const*             tag,
+    float                   localFar = 0.0f /* >0: push a projection with this far plane around the draw */
 );
 
 bool materialValid(mce::MaterialPtr const& m);
@@ -51,7 +51,7 @@ bool materialValid(mce::MaterialPtr const& m);
 mce::MaterialPtr const& fallbackMaterial();
 /// Stage-B `DH_Terrain` (served by the MaterialInjector, looked up in switchable()); invalid until the injector's
 /// index splice has been loaded. Re-resolved whenever invalid, like fallbackMaterial().
-mce::MaterialPtr const& dhMaterial();
+mce::MaterialPtr const& dhMaterial(mce::MaterialPtr const* altSource = nullptr);
 
 /// Drops cached meshes (call when the buffer service changes or on level exit).
 void resetMeshes();
