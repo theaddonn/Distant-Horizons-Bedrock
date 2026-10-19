@@ -254,7 +254,9 @@ In game (checklist):
    stars, sun or moon on LOD terrain or LOD water; stars only above the LOD skyline. Note whether far LOD sections now
    draw over near ones (that means the Transparent pass does not write depth).
 2. Numpad 4 (or Ctrl+F7) -> `overdraw`: same expectation, at about twice the draw calls (`render.ms`). If `late` was
-   broken (step 1) but `overdraw` is right, report it: `overdraw` becomes the default.
+   broken (step 1) but `overdraw` is right, report it: `overdraw` becomes the default. `overdraw` repeats the draw
+   at equal depth, so it needs depth func LessEqual: check that `materials: cracks_overlay_tile_entity depthFunc
+   byte=6` was logged before the clone lines (otherwise the source's func is kept and the repeat may be rejected).
 3. Numpad 4 -> `opaque`: the old behaviour (stars through the LODs) must come back. This confirms the pass-bin cause.
    If all three modes look the same, report the `pass=N` lines.
 4. With `late`, Ctrl+F8 through the draw hooks: `level-before` is expected to show stars over the LODs again (it
