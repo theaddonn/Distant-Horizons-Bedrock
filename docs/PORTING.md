@@ -220,3 +220,67 @@ Format: date — WP — decision — why — evidence.
 - **Features mode (decoration; first in-game run crashed in the ChunkSource ctor, fixed in Run 11, otherwise still unvalidated):** `GenerationMode::Features` no longer degrades to Surface. Entry points tried: `ChunkSource::decorationPostProcessChunk(ChunkViewSource&)` / `OverworldGenerator::$decorationPostProcessChunk` exist, but `ChunkViewSource` has no exported constructor (only the copy ctor, `move(...)`, `rebuildSpecificArea`; `GridArea` internals are private game state), so a scratch view cannot be built safely. Used instead: `WorldGenerator::decorateWorldGenPostProcess(Biome const&, LevelChunk&, BlockSource&, Random&)` (public pure virtual; the Multinoise override ignores the biome and runs `BiomeDecorationSystem::decorate` per unique biome). The BlockSource is `BlockSource(Level&, Dimension&, ChunkSource&, publicSource=false, allowUnpopulatedChunks=true, allowClientTickingChanges=false, markChangedBlocksForSaving=false)` over a private `ScratchRegionSource : ChunkSource` (built with the dimension's live chunk source as non-owning parent -- `ChunkSource(nullptr)` crashes, see Run 11 -- and overriding every ChunkSource virtual) that serves only the 3x3 scratch LevelChunks, never the live chunk map. Per batch (`Batch::cells`) each base-terrain cell of the 3x3 is generated once (construct on the server thread, `loadChunk` on the worker, destroyed on the server thread when the batch dies); decoration + snapshot of the centre are serialised per batch (`decoMutex`; ring chunks are shared and mutated). Decoration seed = classic populate scheme from `Level::getSeed()` and the chunk pos. Known limits: only the centre is decorated, so tree parts that spill over a chunk edge into the neighbour are clipped there (the neighbour is decorated on its own turn but without spill from its neighbours); no structures (villages etc. need `structurePostProcessChunk` and the live level); the exact vanilla seed and the pass order (`decorateWorldGenLoadChunk` large features) are not reproduced; ores/caves features that run in the load pass are already part of base terrain. Confirmed limits: decoration spill only reaches +x/+z neighbours inside the batch (earlier-decorated cells), ring chunks outside the batch are never decorated (trees cut at batch borders), the seed differs from vanilla, no structures. `placedBlocks=N` (non-air delta of the centre across decoration) in the task lines/10 s line detects a silent no-op (e.g. BlockSource seeing no chunks because they are only in state Generated): `placedBlocks=0` everywhere with `features=1` means the BlockSource path is not reaching the scratch chunks. If it crashes or places junk set env `DH_BEDROCK_NO_FEATURES=1` (Features -> Surface) and send the log. A future RE pass could instead call `OverworldGenerator::decorationPostProcessChunk` with a ChunkViewSource constructed by `ChunkViewSource(ChunkSource& main, LoadMode)` (not exported; needs the address) over `ScratchRegionSource`.
 - Vanilla fog: `LevelRendererCamera::$setupFog` hook pushes fog start/end to the LOD far distance (Java disableVanillaFog); Numpad 1 cycles which fields are written (experiment, see spikes/m1-lods.md Run 8).
 - Clouds (spikes/m1-lods.md Run 10): vanilla clouds hidden by clearing `ViewRenderData::mDrawClouds` per non-shadow view in the `LevelRenderer::renderLevel` and `LevelRendererCamera::$render` hooks (restored after the call; there is no MCAPI cloud-draw function, only the `mCloudMeshes`/`cloudMaterial` fields). Cloud height = `LevelRendererCamera::mCloudHeight` (`Dimension::getCloudHeight`, Overworld expected 192); texture `data/resource_packs/vanilla/textures/environment/clouds.png` (256x256 RGBA, alpha 255 = cloud, 12-block texels assumed from Java, drift -X 0.6 b/s assumed); DH layer = `CloudRenderer` (own boxes through `MeshUploader` as a reserved detail-0 section, `DH_TerrainTransparent` after the LODs). `CloudRenderObject` (fancy/meshSize/gridSize) is logged once to verify the assumptions. Numpad 2 toggles; options `client.graphics.clouds.renderDhClouds` / `hideVanillaClouds`.
+
+## Run 13 (LOD content, 2026-10-19 report: frozen ocean / taiga)
+
+User report: LOD trees do not match the trees that appear when the real chunks load; frozen ocean ice and snowy ground
+are lavender / blue-grey instead of white; grass cover looks off. Everything below is from static RE of 1.26.51
+(`~/.cache/dh-re`, image RVAs) and host tests; nothing was run in game.
+
+**Vanilla decoration (RE).** `OverworldGenerator::decorationPostProcessChunk` @0xc594e80 (shared by Multinoise/2d,
+vtable slot 10) runs from the scheduler @0x29db3c0 over a 3x3 `ChunkViewSource` centred on the chunk:
+1. lock the 3x3, copy the view, drop neighbours whose state is >= CheckingForReplacementData (no spill into them);
+2. `BlockSource(level, dim, view, publicSource=false, allowUnpopulatedChunks=true, allowClientTickingChanges=TRUE,
+   markChangedBlocksForSaving=false)`;
+3. seed, all 32-bit: `r.setSeed(levelSeed); xs = r.nextInt()/2*2+1; zs = r.nextInt()/2*2+1;
+   seed = levelSeed ^ (cx*xs + cz*zs)` (`dh/build/DecorationOrder.h`);
+4. legacy lakes/dungeons/bonus chest (gated by a generator byte, probably the legacy-world flag; not reproduced);
+5. `decorateWorldGenPostProcess(biome, lc, bs, random)` (Multinoise @0xc59fc70: unique biomes of the chunk, then
+   `BiomeDecorationSystem::decorate` per pass `first_pass` .. `final_pass`; each feature rule reseeds from the chunk
+   seed with a hash_combine of a rule id, positions are chunk origin + rule distribution, so trees spill into all 8
+   neighbours);
+6. **freeze/snow pass**: per column `top = lc.getTopRainBlockPos(...)`; `shouldFreeze(bs, top-1, false)` -> ice;
+   `shouldSnow(bs, top)` -> snow_layer (no Random). This is where sea ice and ground snow come from; `loadChunk`
+   has no ice/snow (surface builders only place icebergs);
+7. water-tick pass and pending-tick drain, finishing calls (not reproduced; ticks are irrelevant to a snapshot).
+Order: `ChunkStateNeighborDependency::DecorationParity` tables @0xe840350..68 selected by `(x&1)+2*(z&1)`: (even,even)
+first, (odd,even) after its x neighbours, (even,odd) after the rows z±1, (odd,odd) last.
+
+**Root causes.**
+- A (trees disagree): our scratch decoration (Run 11) used a `nextLong` 64-bit seed (every feature rule seed differed
+  from vanilla -> every tree elsewhere), decorated only the requested chunk (no spill in from its neighbours, ring
+  chunks never decorated -> trees cut at chunk and batch borders) and had no order. The real-chunk path was already
+  right: ingestion reads chunks at `ChunkState::Loaded` (after post-processing); later spill from a neighbour decorated
+  afterwards reaches the LOD through the `DBChunkStorage::saveLiveChunk` re-ingest.
+- B (lavender / blue-grey): (1) the freeze/snow pass is part of `decorationPostProcessChunk`, not of
+  `decorateWorldGenPostProcess`, so generated LODs had no snow and no sea ice: frozen ocean = open water tinted
+  `#2570B5`, snowy ground = grass tinted `#80B496`. (2) the Run 12 glue fix (`stripSnowOverFrozenWater`) dropped the
+  snow lying on ice-over-water (Bedrock puts snow on ice, Java never does), which left bare translucent ice
+  (`#92B8FE`, alpha 190) over the dark sea floor in the ingested real chunks too: lavender.
+- Checked and fine: block table (`ice`/`packed_ice`/`blue_ice`/`frosted_ice` isIce, opacity 16; `snow_layer` Snow,
+  non-solid, 8 height states; `snow`/`powder_snow` Snow, solid; `grass_block` Grass, tint on `up` only); snow layer
+  detection (`height` 0..2 = Java layers 1..3 -> height reduction + white carried down with alpha 255, the grass below
+  becomes Snow material so it gets no dirt fade, as in Java); `FADE_TO_DIRT` is identical to Java
+  `LodQuadBuilder.putQuad` (dirt `#8A6346`, shaded per face, bottom two vertices). No unknown-block warnings in the log.
+
+**Changes.**
+- `FrozenSurface.h`: `freezeWaterUnderSnowCoveredIce` replaces the strip: the snow stays and the contiguous water run
+  under snow-covered ice takes that ice block (what Java's :443 rule produces without snow) -> opaque white snow
+  datapoint over the ice column, sky light 15, no water datapoint. Bare ice keeps Java's look.
+- `BdsWorldGenerator` Features: base terrain for the batch + 2 rings (4x4 batch: 64 cells instead of 36, generated in
+  parallel by the batch's tasks); the last task decorates the batch + 1 ring (36 cells) in parity order, each cell over
+  its own 3x3, with the vanilla seed, then the freeze/snow pass (`WeatherHelpers::shouldFreeze/shouldSnow`,
+  `LevelChunk::getTopRainBlockPos`, `BlockSource::setBlockAndRetainCompatibleBlockActor(.., 2)`), and delivers all
+  chunks. Every delivered chunk has all 8 neighbours decorated, so LOD content no longer depends on batch borders.
+  First 10 batches log `world gen features batch (x,z) 4x4: ... decorated D of 36 cells ... placedBlocks=N`.
+- Compare mode (env `DH_BEDROCK_GEN_COMPARE=1`, singleplayer): every ingested real chunk is regenerated through the
+  Features path and `dh::compareChunks` is logged (`gen compare (x,z): ...`, `gen compare TOTAL ...` every 10).
+
+**Remaining known differences.** No structures (villages, ruins, shipwrecks ...); no legacy lakes/dungeons (only
+legacy worlds, unproven); vanilla drops spill into neighbours that were already finished (terrain next to older
+chunks), we never do; order inside a parity class and between neighbourhoods follows load order in vanilla;
+`allowClientTickingChanges` is false here; `shouldFreeze/shouldSnow` read block light/brightness of the scratch
+chunk, which may differ from a vanilla chunk at the same stage (unverified); ice under a vanilla chunk's snow may
+also have been changed by weather later (random ticks), which no generator reproduces. Rule-seed details
+(`rule+0xf0`), the Level `getSeed` slot and the pass list are engine internals reached through the real calls, so
+they need no reproduction. Cost: ~1.8x base terrain per batch.
