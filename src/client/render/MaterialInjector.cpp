@@ -900,12 +900,37 @@ void installMaterialInjector() {
     DH_LOG_I("materials: injector on, DH_Terrain.material.bin %zu bytes", gMaterialBytes.size());
 }
 
-bool ensureDhMceMaterial(mce::MaterialPtr const& fallback) {
+bool ensureDhMceMaterial(mce::MaterialPtr const& fallback, char const* sourceName) {
     static bool done = false;
     if (done) return true;
     if (!gBinderInstalled.load() || !fallback.mRenderMaterialInfoPtr) return false;
     mce::RenderMaterial* src = fallback.mRenderMaterialInfoPtr->mPtr.get();
     if (!src) return false;
+    {
+        // The clone inherits the source's render state (depth test/write, blending, culling). Log it: an overlay
+        // source (selectionOpaqueMaterial) made far LOD sections draw over near ones (2026-10-19).
+        auto const* dss = reinterpret_cast<unsigned char const*>(&src->depthStencilStateDescription);
+        auto const* bsd = reinterpret_cast<unsigned char const*>(&src->blendStateDescription);
+        auto const* rsd = reinterpret_cast<unsigned char const*>(&src->rasterizerStateDescription);
+        std::string hex;
+        auto        dump = [&](unsigned char const* p, size_t n) {
+            char b[4];
+            for (size_t i = 0; i < n; ++i) {
+                snprintf(b, sizeof(b), "%02x", p[i]);
+                hex += b;
+            }
+            hex += ' ';
+        };
+        dump(dss, sizeof(src->depthStencilStateDescription));
+        dump(bsd, sizeof(src->blendStateDescription));
+        dump(rsd, sizeof(src->rasterizerStateDescription));
+        DH_LOG_I(
+            "materials: DH clone source %s: stateMask=0x%04x depthStencil/blend/rasterizer bytes: %s",
+            sourceName,
+            static_cast<unsigned>(static_cast<std::uint16_t>(src->mStateMask)),
+            hex.c_str()
+        );
+    }
     static std::shared_ptr<mce::RenderMaterialInfo> dhInfo;
     dhInfo = mce::RenderMaterialGroup::switchable().getMaterialInfo(HashedString{"DH_Terrain"});
     if (!dhInfo) return false;

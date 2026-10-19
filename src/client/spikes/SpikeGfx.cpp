@@ -246,8 +246,17 @@ mce::MaterialPtr const& dhMaterial(mce::MaterialPtr const* altSource) {
         // Clone source: MeshFallbackPosUVNormalColor when the engine has loaded it (lazily, minutes into a session),
         // otherwise any valid mce material the caller offers (selectionOpaqueMaterial is valid from the first frame;
         // its legacy shaders map to the same MeshFallback* dragon family, and the request is renamed anyway).
-        if (materialValid(fallbackMaterial())) dh::render::ensureDhMceMaterial(fallbackMaterial());
-        else if (altSource && materialValid(*altSource)) dh::render::ensureDhMceMaterial(*altSource);
+        // Order matters for the render STATE the clone inherits (depth test/write, blending): selectionOpaqueMaterial
+        // is an overlay (2026-10-19: far LOD sections drew over near ones). entity_static (legacy, common()) is a
+        // plain depth-tested opaque material with entity.vertex -> the MeshFallback dragon family, like the others.
+        static std::optional<mce::MaterialPtr> entityStatic;
+        if (!entityStatic || !materialValid(*entityStatic))
+            entityStatic.emplace(mce::RenderMaterialGroup::common(), HashedString{"entity_static"});
+        if (materialValid(fallbackMaterial()))
+            dh::render::ensureDhMceMaterial(fallbackMaterial(), "MeshFallbackPosUVNormalColor");
+        else if (materialValid(*entityStatic)) dh::render::ensureDhMceMaterial(*entityStatic, "entity_static");
+        else if (altSource && materialValid(*altSource))
+            dh::render::ensureDhMceMaterial(*altSource, "selectionOpaqueMaterial");
         mat.emplace(mce::RenderMaterialGroup::switchable(), HashedString{"DH_Terrain"});
     }
     return *mat;
