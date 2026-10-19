@@ -201,6 +201,18 @@ Table table() {
             true,
             "Push Bedrock's vanilla distance fog out to the LOD far distance so DH applies the only fog."
         ),
+        DH_BOOL(
+            "client.graphics.clouds.renderDhClouds",
+            client.graphics.clouds.renderDhClouds,
+            true,
+            "Draw Distant Horizons' own cloud layer out to the LOD far distance."
+        ),
+        DH_BOOL(
+            "client.graphics.clouds.hideVanillaClouds",
+            client.graphics.clouds.hideVanillaClouds,
+            true,
+            "Hide the vanilla clouds while the LOD pipeline is rendering."
+        ),
 
         DH_FLOAT(
             "client.graphics.culling.overdrawPrevention",

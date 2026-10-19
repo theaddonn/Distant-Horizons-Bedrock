@@ -22,6 +22,7 @@
 #include "mc/client/renderer/game/LevelRenderer.h"
 #include "mc/client/renderer/game/LevelRendererCamera.h"
 #include "mc/client/renderer/game/LevelRendererPlayer.h"
+#include "mc/deps/minecraft_renderer/objects/FrameRenderObject.h"
 #include "mc/deps/minecraft_renderer/objects/ViewRenderObject.h"
 #include "mc/deps/renderer/Camera.h"
 #include "mc/deps/renderer/MatrixStack.h"
@@ -37,6 +38,7 @@
 
 #include <atomic>
 #include <memory>
+#include <vector>
 
 namespace dh::render {
 
@@ -75,6 +77,7 @@ void updateHud() {
     dh::hud::set("render.hook", r.drawHookName());
     dh::hud::set("render.vanillaFog", vfogName(gVFog));
     dh::hud::set("render.feed", testfeed::active() ? "on" : "off");
+    if (!gEnabled) dh::hud::set("render.clouds", r.cloudsWanted() ? "on (pipeline off)" : "off");
 }
 
 void guardedDraw(ScreenContext& sc, IClientInstance& ci, char const* where) {
@@ -92,6 +95,39 @@ void guardedDraw(ScreenContext& sc, IClientInstance& ci, char const* where) {
 // The IClientInstance for the LevelRenderer-based hooks (they do not receive one).
 IClientInstance* gClient = nullptr;
 
+
+// ---- vanilla clouds (Java DH: vanilla clouds render on top of the LODs, so they are disabled while DH draws) ------
+// Hook result (Run 10): there is no MCAPI cloud-draw function in the SDK (LevelRendererPlayer/Camera only expose the
+// cloud mesh fields), but the per-frame view data the renderer consumes carries ViewRenderData::mDrawClouds. We clear
+// it on every non-shadow view before the vanilla world is drawn (LevelRenderer::renderLevel and
+// LevelRendererCamera::$render, whichever sees the view first) and put it back right after, so vanilla comes back the
+// frame the pipeline / DH clouds turn off. Hidden only once the DH cloud layer has actually been drawn (hand-off).
+bool shouldHideVanillaClouds() {
+    if (!gRenderer || !gEnabled || !bedrock::ClientWorldDriver::instance().pipeline()) return false;
+    if (!bedrock::ConfigBridge::instance().config().options().client.graphics.clouds.hideVanillaClouds) return false;
+    return gRenderer->cloudsWanted() && gRenderer->cloudsRecentlyDrawn();
+}
+
+/// Clears mDrawClouds on `vro` if vanilla clouds should be hidden; true = cleared (restore after the draw).
+bool hideVanillaCloudsOn(ViewRenderObject const& vro, char const* where) {
+    auto& vd = const_cast<ViewRenderObject&>(vro).mViewData.get();
+    if (vd.mIsShadowPass || !vd.mDrawClouds) return false;
+    gRenderer->noteVanillaClouds();
+    static int lastState = -1;
+    const bool hide      = shouldHideVanillaClouds();
+    if (lastState != static_cast<int>(hide)) {
+        lastState = static_cast<int>(hide);
+        DH_LOG_I(
+            "clouds: vanilla clouds %s via ViewRenderData::mDrawClouds (%s hook)",
+            hide ? "hidden (true -> false)" : "restored (left on)",
+            where
+        );
+    }
+    if (!hide) return false;
+    vd.mDrawClouds = false;
+    return true;
+}
+
 // Draw the LODs right after the vanilla world (same hook point as spike R1); also caches the view every frame.
 LL_TYPE_INSTANCE_HOOK(
     LodRenderHook,
@@ -103,7 +139,44 @@ LL_TYPE_INSTANCE_HOOK(
     ::ViewRenderObject const& vro,
     ::IClientInstance&        ci
 ) {
+    bool hidden = false;
+    if (gRenderer) {
+        try {
+            auto const& vd = vro.mViewData.get();
+            if (!vd.mIsShadowPass) {
+                const float h = static_cast<float>(mCloudHeight);
+                if (h > 0.0f && h < 4096.0f) gRenderer->noteCloudHeight(h);
+                static float loggedH = -1.0f;
+                if (h != loggedH) {
+                    loggedH         = h;
+                    auto const& cs  = vro.mCloudState.get();
+                    auto const  col = cs.mCloudColor.get();
+                    DH_LOG_I(
+                        "clouds: LevelRendererCamera::mCloudHeight=%d mDrawClouds=%d aboveClouds=%d | "
+                        "CloudRenderObject "
+                        "fancy=%d meshSize=%d gridSize=%d yTranslation=%.2f color=(%.2f,%.2f,%.2f,%.2f)",
+                        static_cast<int>(h),
+                        static_cast<int>(vd.mDrawClouds),
+                        static_cast<int>(vd.mCameraAboveClouds),
+                        static_cast<int>(cs.mIsFancy),
+                        static_cast<int>(cs.mMeshSize),
+                        static_cast<int>(cs.mGridSize),
+                        cs.mYTranslation,
+                        col.r,
+                        col.g,
+                        col.b,
+                        col.a
+                    );
+                }
+            }
+            hidden = hideVanillaCloudsOn(vro, "camera");
+        } catch (...) {
+            static int n = 0;
+            if (n++ < 3) DH_LOG_E("clouds: camera hook threw");
+        }
+    }
     origin(rc, vro, ci);
+    if (hidden) const_cast<ViewRenderObject&>(vro).mViewData.get().mDrawClouds = true;
     if (!gRenderer) return;
     gClient = &ci;
     gRenderer->noteView(vro);
@@ -136,7 +209,18 @@ LL_TYPE_INSTANCE_HOOK(
     bool     active =
         gRenderer && gEnabled && gClient && gRenderer->lastView().valid && !gRenderer->lastView().isShadowPass;
     if (active && m == DrawHook::LevelRenderBefore) guardedDraw(sc, *gClient, "level-before");
+    std::vector<ViewRenderObject*> hiddenViews;
+    if (gRenderer) {
+        try {
+            for (auto& v : const_cast<FrameRenderObject&>(fro).mViews.get())
+                if (hideVanillaCloudsOn(v, "level")) hiddenViews.push_back(&v);
+        } catch (...) {
+            static int n = 0;
+            if (n++ < 3) DH_LOG_E("clouds: level hook threw");
+        }
+    }
     origin(sc, fro);
+    for (auto* v : hiddenViews) v->mViewData.get().mDrawClouds = true;
     if (active && m == DrawHook::LevelRenderAfter) guardedDraw(sc, *gClient, "level-after");
 }
 
@@ -328,6 +412,7 @@ void onKeys(ll::event::AfterUIRenderEvent& e) {
             else if (ctrl) r.toggleTransparent();
             else r.cycleMaterial();
         }
+        if (dh::input::pressed(VK_NUMPAD2)) r.toggleClouds();
         if (dh::input::pressed(VK_NUMPAD1)) {
             gVFogInit = true;
             gVFog     = static_cast<VFogMode>((static_cast<int>(gVFog) + 1) % 4);
