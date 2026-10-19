@@ -31,6 +31,9 @@ DistantHorizons& DistantHorizons::getInstance() {
 bool DistantHorizons::load() {
     dh::bedrock::installCoreLogger();
     DH_LOG_I("DH loaded v%s build %s (core %s)", dh::kModVersion, dh::kGitSha, dh::coreVersion());
+    // As early as possible: the compiled-material index is read during engine start-up, before enable() runs
+    // (the first trace build installed its file hooks ~6 s after load() and never saw materials.index.json).
+    dh::render::installMaterialInjector();
     return true;
 }
 
@@ -40,7 +43,7 @@ bool DistantHorizons::enable() {
     exitListener = bus.emplaceListener<ll::event::ClientExitLevelEvent>([](auto&) { DH_LOG_I("level: exit"); });
     dh::hud::install();
     dh::spikes::install();
-    dh::render::installMaterialInjector();
+    dh::render::installMaterialInjector(); // no-op if load() already installed it
     dh::render::install();
     dh::bedrock::ClientWorldDriver::instance().install();
     DH_LOG_I("DH enabled");
