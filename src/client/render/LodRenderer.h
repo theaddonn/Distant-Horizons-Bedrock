@@ -78,6 +78,7 @@ struct LodRendererConfig {
     bool  nearCutoff                  = true; ///< applies only while the world pipeline supplies the list
     float vanillaRenderDistanceBlocks = 0.0f;
     float overdraw                    = 1.0f;
+    float fogStartFraction            = 0.6f; ///< DH_Terrain far fog starts at this fraction of the LOD far distance
 
     float skyBrightness = 1.0f;   ///< CPU light stand-in input (0 night .. 1 day)
     float minYBlocks    = -64.0f; ///< DH y 0 maps to this Bedrock y

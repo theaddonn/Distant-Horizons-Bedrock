@@ -3,7 +3,9 @@
 //   SV_Position, COLOR3 clipPosition, COLOR0 color, COLOR2 fog, COLOR1 light, TEXCOORD0 texCoords (centroid), TEXCOORD3 worldPos
 // Constant buffer layout == vanilla MeshFallback group A (cbuf 464 B): u_proj@0 u_view@64 FogControl@128 u_model[4]@144
 // FogColor@400 SubPixelOffset@416 UVAnimation@432 ZShiftValue@448 (only u_proj/u_view/u_model are read).
-// u_model[0] smuggling test: frac(u_model[0][3] / 64) is passed to the FS in `light.xyz`.
+// Per-draw parameters are smuggled through the projective row of u_model[0] (row 3, entries 0..2, zero in an affine
+// matrix): [3][0] = near clip radius (blocks, 0 = off), [3][1] = fog start, [3][2] = fog end. They are passed to the FS
+// in `light.xyz`; the geometry is transformed with row 3 reset to (0,0,0,1) so they never affect positions.
 cbuffer VertexUniforms : register(b0) {
     column_major float4x4 u_proj;
     column_major float4x4 u_view;
@@ -34,13 +36,15 @@ struct VSOut {
 
 VSOut main(VSIn i) {
     VSOut o;
-    float4 world = mul(u_model[0], float4(i.position, 1.0));
+    float4x4 M = u_model[0];
+    float4 p = float4(i.position, 1.0);
+    float4 world = float4(dot(M[0], p), dot(M[1], p), dot(M[2], p), 1.0);
     float4 clip = mul(u_proj, mul(u_view, world));
     o.pos = clip;
     o.clipPosition = clip;
     o.color = i.color;
-    o.fog = float4(0, 0, 0, 0);
-    o.light = float4(frac(u_model[0][0][3] / 64.0), frac(u_model[0][1][3] / 64.0), frac(u_model[0][2][3] / 64.0), 1.0);
+    o.fog = FogColor;
+    o.light = float4(M[3][0], M[3][1], M[3][2], 1.0);
     o.texCoords = i.texCoords;
     o.worldPos = world.xyz;
     return o;

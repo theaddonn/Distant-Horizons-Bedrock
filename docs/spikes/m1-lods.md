@@ -127,3 +127,15 @@ LODs drawn after the whole level (camera-after) show through Bedrock's depth-les
 looking at the LOD edge and press Numpad 0 (log `render: draw hook -> <name>`, HUD `render.hook`). For each mode report:
 (a) whether the under-water LOD faces disappear or tint blue, (b) whether LODs still appear at all. level-before is the
 Java-like order (LODs before the translucent pass); level-after / post-level are for comparison.
+
+## Run 6: near clip + fog
+
+With the `DH_Terrain` material the renderer no longer drops sections inside the near cut-off radius; every listed section
+is drawn and the fragment shader discards fragments whose horizontal camera distance is below the radius (Java DH
+behaviour; the inner section's top faces still hide the border overdraw walls, vanilla terrain in front hides the rest).
+The radius, fog start and fog end travel in the projective row of the world matrix (HUD `render.clip`, `render.fog`
+"start..end"; fog start = `fogStartFraction` (0.6) x LOD far distance, end = LOD far distance). Ctrl+F4 toggles the clip
+(off: radius 0, nothing discarded). Expect: no cliff ring at the vanilla edge, LODs fading to the vanilla fog colour toward
+the LOD far distance. If LODs are invisible or misplaced with the custom VS, run `tools/shaders/build_dh_terrain.sh
+--vanilla-vs`, deploy, and retest: if that draws, the custom VS matrix convention is wrong (report it). Other materials
+still use the section cut-off (`render.cutoff`).

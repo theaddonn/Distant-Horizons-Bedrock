@@ -74,3 +74,11 @@ Signatures (1.26.51, IDA-style; log line `materials: sig <name> -> 0x<rva>`; re-
 - `mce::RenderMaterial` copy ctor: SDK export `$ctor(RenderMaterial const&)` (RVA 0x05A5C0F0).
 
 Evidence in the log after a run: `sig ...` lines, `DH_Terrain mce material cloned`, `dragon request MeshFallback* -> DH_Terrain`, `trace[CreateFileW] ...DH_Terrain.material.bin` + `redirect`, then `render: material DH_Terrain resolved`. Known risk: a parse failure gives an empty definition (undefined behaviour at bind).
+
+## DH_Terrain build (Run 6: near clip + fog)
+`tools/shaders/build_dh_terrain.sh` builds `artifacts/shaders/B3/DH_Terrain.material.bin` in all seven passes
+(AlphaTest, RasterizedTransparent, DepthOnlyAlphaTest, Opaque, RasterizedAlphaTest, Transparent, RasterizedOpaque).
+Default: custom VS (`dh_terrain.vert.hlsl`) + custom FS (`dh_terrain.frag.hlsl`). Per-draw parameters ride in `u_model[0]` row 3
+(`[3][0]` near clip radius, `[3][1]` fog start, `[3][2]` fog end; the VS resets row 3 before transforming).
+`--vanilla-vs`: vanilla MeshFallback VS + `dh_terrain_vanillavs.frag.hlsl` (plain vertex colour) to isolate the VS matrix convention.
+The previously shipped vanilla-VS bin is kept at `artifacts/shaders/B3-vanillavs/`. `build_stage_b.sh` calls this script for B3.
