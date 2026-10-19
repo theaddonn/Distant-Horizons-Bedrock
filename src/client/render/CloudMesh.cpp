@@ -57,6 +57,33 @@ Pattern proceduralPattern() {
     return p;
 }
 
+bool findInBrArchive(std::uint8_t const* data, std::size_t n, char const* name, std::size_t& off, std::size_t& len) {
+    constexpr std::uint64_t kMagic = 0x267052A0B125277DULL;
+    constexpr std::size_t   kEntry = 256, kHeader = 16, kNameMax = 247;
+    auto u32 = [&](std::size_t at) {
+        return static_cast<std::uint32_t>(data[at]) | (static_cast<std::uint32_t>(data[at + 1]) << 8)
+             | (static_cast<std::uint32_t>(data[at + 2]) << 16) | (static_cast<std::uint32_t>(data[at + 3]) << 24);
+    };
+    if (!data || !name || n < kHeader) return false;
+    const std::uint64_t magic = static_cast<std::uint64_t>(u32(0)) | (static_cast<std::uint64_t>(u32(4)) << 32);
+    if (magic != kMagic) return false;
+    const std::size_t count = u32(8);
+    if (count > (n - kHeader) / kEntry) return false;
+    const std::size_t base    = kHeader + count * kEntry;
+    const std::size_t nameLen = std::strlen(name);
+    for (std::size_t i = 0; i < count; ++i) {
+        const std::size_t e = kHeader + i * kEntry;
+        const std::size_t l = data[e];
+        if (l > kNameMax || l != nameLen || std::memcmp(data + e + 1, name, l) != 0) continue;
+        const std::size_t o = u32(e + 248), s = u32(e + 252);
+        if (o > n - base || s > n - base - o) return false;
+        off = base + o;
+        len = s;
+        return true;
+    }
+    return false;
+}
+
 namespace {
 
 constexpr int kDown = 0, kUp = 1, kNorth = 2, kSouth = 3, kWest = 4, kEast = 5;

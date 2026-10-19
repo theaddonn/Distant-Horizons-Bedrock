@@ -36,6 +36,7 @@ using Texture = std::variant<std::monostate, mce::TexturePtr, mce::ClientTexture
 using Clock   = std::chrono::steady_clock;
 
 constexpr char kCloudTexture[] = "data/resource_packs/vanilla/textures/environment/clouds.png";
+constexpr char kCloudArchive[] = "data/resource_packs/vanilla/__brarchive/textures/environment.brarchive";
 
 std::string exeDirectory() {
     wchar_t w[MAX_PATH * 2];
@@ -70,15 +71,28 @@ double CloudRenderer::offsetX() const {
 void CloudRenderer::loadPattern() {
     patternTried_ = true;
     // The vanilla pack is read-only game data: <game dir>/data/resource_packs/vanilla/textures/environment/clouds.png
+    // 1.26.51 ships no loose file: the texture lives in __brarchive/textures/environment.brarchive (Run 13).
     const std::string dir = exeDirectory();
-    for (std::string path : {dir + kCloudTexture, std::string(kCloudTexture)}) {
+    for (std::string path :
+         {dir + kCloudArchive, std::string(kCloudArchive), dir + kCloudTexture, std::string(kCloudTexture)}) {
         std::ifstream f(path, std::ios::binary);
         if (!f) continue;
         std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
-        tinypng::Image            img;
-        if (!tinypng::decode(bytes.data(), bytes.size(), img)) {
-            DH_LOG_W("clouds: %s is not a supported PNG; using the procedural pattern", path.c_str());
-            break;
+        std::uint8_t const*       png = bytes.data();
+        std::size_t               len = bytes.size();
+        if (path.size() >= 10 && path.compare(path.size() - 10, 10, ".brarchive") == 0) {
+            std::size_t off = 0;
+            if (!cloud::findInBrArchive(bytes.data(), bytes.size(), "clouds.png", off, len)) {
+                DH_LOG_W("clouds: %s has no readable clouds.png entry", path.c_str());
+                continue;
+            }
+            png = bytes.data() + off;
+            path += ":clouds.png";
+        }
+        tinypng::Image img;
+        if (!tinypng::decode(png, len, img)) {
+            DH_LOG_W("clouds: %s is not a supported PNG; trying the next source", path.c_str());
+            continue;
         }
         auto pat = cloud::patternFromRgba(img.rgba.data(), img.width, img.height);
         DH_LOG_I(

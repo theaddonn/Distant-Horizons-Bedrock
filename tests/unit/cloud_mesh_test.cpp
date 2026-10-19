@@ -838,3 +838,37 @@ TEST_CASE("tinypng: truncated, corrupted and oversized inputs are rejected or su
     v[24] = 0x01; // height = 1
     CHECK_FALSE(tinypng::decode(v.data(), v.size(), img));
 }
+
+TEST_CASE("cloud brarchive: finds an entry by name and rejects bad archives") {
+    // two entries, layout as in data/resource_packs/vanilla/__brarchive/textures/environment.brarchive (1.26.51)
+    std::vector<std::uint8_t> a(16 + 2 * 256 + 8, 0);
+    const std::uint8_t        magic[8] = {0x7d, 0x27, 0x25, 0xb1, 0xa0, 0x52, 0x70, 0x26};
+    std::memcpy(a.data(), magic, 8);
+    a[8]  = 2; // count
+    a[12] = 1; // version
+    auto entry = [&](std::size_t i, char const* name, std::uint32_t off, std::uint32_t size) {
+        const std::size_t e = 16 + i * 256;
+        a[e]                = static_cast<std::uint8_t>(std::strlen(name));
+        std::memcpy(a.data() + e + 1, name, std::strlen(name));
+        for (int k = 0; k < 4; ++k) {
+            a[e + 248 + k] = static_cast<std::uint8_t>(off >> (8 * k));
+            a[e + 252 + k] = static_cast<std::uint8_t>(size >> (8 * k));
+        }
+    };
+    entry(0, "clouds.png", 0, 5);
+    entry(1, "sun.png", 5, 3);
+    std::memcpy(a.data() + 16 + 512, "ABCDEXYZ", 8);
+    std::size_t off = 0, len = 0;
+    REQUIRE(cloud::findInBrArchive(a.data(), a.size(), "clouds.png", off, len));
+    CHECK(off == 16 + 512);
+    CHECK(len == 5);
+    REQUIRE(cloud::findInBrArchive(a.data(), a.size(), "sun.png", off, len));
+    CHECK(std::memcmp(a.data() + off, "XYZ", 3) == 0);
+    CHECK_FALSE(cloud::findInBrArchive(a.data(), a.size(), "clouds.pn", off, len)); // exact name only
+    CHECK_FALSE(cloud::findInBrArchive(a.data(), a.size() - 1, "sun.png", off, len)); // data out of bounds
+    a[8] = 200;                                                                         // count beyond the file
+    CHECK_FALSE(cloud::findInBrArchive(a.data(), a.size(), "clouds.png", off, len));
+    a[8] = 2;
+    a[0] = 0; // bad magic
+    CHECK_FALSE(cloud::findInBrArchive(a.data(), a.size(), "clouds.png", off, len));
+}

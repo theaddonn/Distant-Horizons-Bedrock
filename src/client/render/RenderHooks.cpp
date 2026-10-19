@@ -402,6 +402,8 @@ void onKeys(ll::event::AfterUIRenderEvent& e) {
                 DH_LOG_I("render: pipeline %s (F5)", on ? "on" : "off");
             }
         }
+        if (dh::input::pressed(VK_NUMPAD4) || (dh::input::pressed(VK_F7) && ctrl && !shift))
+            r.cycleSkyOrder(); // which frame-graph pass the opaque LODs land in (Run 13: stars over LODs)
         if (dh::input::pressed(VK_F7) && shift) {
             auto& drv = bedrock::ClientWorldDriver::instance();
             drv.setIngestion(!drv.ingestion());
@@ -464,7 +466,7 @@ void install() {
         "render: Stage-A renderer installed (off; F5 pipeline on/off, Shift+F5 test feed, Ctrl+F5 core frustum, "
         "Shift+F7 ingestion, F4 prim, Shift+F4 far plane, Ctrl+F4 "
         "near cut-off, "
-        "F6 material, Shift+F6 origin, Ctrl+F6 transparent, Ctrl+F8 draw hook)"
+        "F6 material, Shift+F6 origin, Ctrl+F6 transparent, Ctrl+F8 draw hook, Numpad 4 / Ctrl+F7 sky order)"
     );
 }
 
