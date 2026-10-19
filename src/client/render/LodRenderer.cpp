@@ -18,6 +18,7 @@
 #include "mc/deps/core/math/Color.h"
 #include "mc/deps/core/math/Matrix.h"
 #include "mc/deps/minecraft_renderer/objects/ViewRenderObject.h"
+#include "mc/deps/minecraft_renderer/renderer/BedrockTextureData.h"
 #include "mc/deps/minecraft_renderer/renderer/MaterialPtr.h"
 #include "mc/deps/minecraft_renderer/renderer/Mesh.h"
 #include "mc/deps/minecraft_renderer/renderer/MeshContext.h"
@@ -188,6 +189,11 @@ void LodRenderer::toggleNearCutoff() {
     DH_LOG_I("render: near cut-off -> %s", cfg_.nearCutoff ? "on" : "off");
 }
 
+void LodRenderer::toggleLightmapAxes() {
+    cfg_.lightmapSwapAxes = !cfg_.lightmapSwapAxes;
+    DH_LOG_I("render: lightmap axes -> %s (Numpad 3)", cfg_.lightmapSwapAxes ? "u=sky,v=block" : "u=block,v=sky");
+}
+
 void LodRenderer::toggleTransparent() {
     cfg_.drawTransparent = !cfg_.drawTransparent;
     DH_LOG_I("render: transparent pass -> %s", cfg_.drawTransparent ? "on" : "off");
@@ -286,10 +292,40 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
         }
     }
 
+    // DH_Terrain needs the lightmap bound; without it the FS would sample an unbound t0. Draw with the fallback
+    // material (CPU lighting) instead and say so once.
+    bool lightmapOk = false;
+    if (std::strcmp(matName, "DH_Terrain") == 0) {
+        auto const* bt = lr ? lr->mBrightnessTex->mClientTexture.get() : nullptr;
+        lightmapOk     = bt != nullptr;
+        if (lightmapOk && !loggedLightmapSize_) {
+            auto const& d = bt->mTextureDescription.get();
+            DH_LOG_I("render: lightmap texture %ux%u (shader maps light 0..15 to texel centres)", d.mWidth, d.mHeight);
+            loggedLightmapSize_ = true;
+        }
+        if (!lightmapOk) {
+            if (!warnedNoLightmap_) {
+                DH_LOG_W(
+                    "render: LevelRenderer::mBrightnessTex unavailable; drawing LODs with the CPU-lit fallback material"
+                );
+                warnedNoLightmap_ = true;
+            }
+            if (spikes::materialValid(spikes::fallbackMaterial())) {
+                material = &spikes::fallbackMaterial();
+                matName  = "MeshFallbackPosUVNormalColor(no-lightmap)";
+            } else if (lr && lr->mLevelRendererPlayer
+                       && spikes::materialValid(lr->mLevelRendererPlayer->selectionOpaqueMaterial.get())) {
+                material = &lr->mLevelRendererPlayer->selectionOpaqueMaterial.get();
+                matName  = "selectionOpaqueMaterial(no-lightmap)";
+            }
+        }
+    }
     // Lighting mode follows the material: DH_Terrain samples the vanilla lightmap (colours stay unlit, light travels in
     // uv0.y); every other material cannot, so it keeps the CPU light factor. A change re-converts all sections.
     {
         const bool wantCpu = std::strcmp(matName, "DH_Terrain") != 0;
+        dh::hud::set("render.lighting", wantCpu ? "cpu" : "lightmap");
+        dh::hud::set("render.lightmap", wantCpu ? "cpu" : (cfg_.lightmapSwapAxes ? "sky,block" : "block,sky"));
         if (wantCpu != cpuLighting_ || lightSwapApplied_ != cfg_.lightmapSwapAxes) {
             cpuLighting_      = wantCpu;
             lightSwapApplied_ = cfg_.lightmapSwapAxes;
@@ -471,13 +507,7 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
     // DH_Terrain: slot 0 (s_MatTexture) = the vanilla lightmap (LevelRenderer::mBrightnessTex), refreshed by the engine
     // every frame for day/night and gamma. Copy of the TexturePtr (shared_ptr members), valid for this frame.
     Texture lightTex{std::monostate{}};
-    if (dhShader) {
-        if (lr && lr->mBrightnessTex->mClientTexture.get()) lightTex = *lr->mBrightnessTex;
-        else if (!warnedNoLightmap_) {
-            DH_LOG_W("render: LevelRenderer::mBrightnessTex unavailable; DH_Terrain is drawn without a lightmap");
-            warnedNoLightmap_ = true;
-        }
-    }
+    if (dhShader && lr) lightTex = *lr->mBrightnessTex; // dhShader implies lightmapOk (checked above)
     Texture const& drawTex = dhShader ? lightTex : none;
     auto&          sc      = mctx.currentShaderColor;
     mce::Color     saved   = sc.color.get();

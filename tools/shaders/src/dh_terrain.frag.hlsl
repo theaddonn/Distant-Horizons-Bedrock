@@ -53,7 +53,9 @@ float4 main(PSIn i) : SV_Target0 {
     if (DhParams.w >= 0.5) {
         float  packedLight = round(saturate(i.texCoords.y) * 255.0);
         float  hi = floor(packedLight / 16.0), lo = packedLight - hi * 16.0;
-        float2 uv = (float2(lo, hi) + 0.5) / 16.0;
+        float2 dim;
+        LightMap.GetDimensions(dim.x, dim.y);
+        float2 uv = (float2(lo, hi) / 15.0 * (dim - 1.0) + 0.5) / dim; // texel centres for any lightmap size (16 -> (l+0.5)/16)
         c *= LightMap.SampleLevel(LightSamp, uv, 0).rgb;
     }
 #if DH_SHADE_IN_SHADER

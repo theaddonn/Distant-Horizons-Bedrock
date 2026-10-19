@@ -123,6 +123,7 @@ public:
     void cycleFarMode();
     void toggleNearCutoff();
     void toggleTransparent();
+    void toggleLightmapAxes();
 
     char const* materialName() const;
     char const* farModeName() const;
@@ -146,6 +147,7 @@ private:
     bool                                  loggedDhMaterial_       = false;
     bool                                  loggedTransMaterial_    = false;
     bool                                  warnedNoLightmap_       = false;
+    bool                                  loggedLightmapSize_     = false;
     bool                                  cpuLighting_      = true; ///< ConvertParams::cpuLighting currently applied
     bool                                  lightSwapApplied_ = false;
 };
