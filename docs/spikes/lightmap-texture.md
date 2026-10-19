@@ -106,3 +106,7 @@ already in the repo (`ConvertParams.cpuLighting`) is the safer fallback than rep
 2. **Keep the shipped CPU-lit DH_Terrain** (no texture; already working per Run 11). Zero risk; loses vanilla night/underground-dim parity only to the extent the CPU formula differs. Use as the automatic fallback if (1) returns null/invalid.
 3. **Own 16x16 texture via `BedrockTexture::load(TextureResourceService&, TextureContainer&&, ...)`** with a CPU-computed table. Highest effort/uncertainty (TextureContainer API unexplored, per-update re-load, formula unknown); only worth it if (1) is invalid and CPU vertex lighting is visibly wrong.
 Not recommended: hooking the chunk-pass binder (`0x05F06070`) or a material-level auto-bind (none exists).
+
+## 5. Run 13 update (2026-10-19)
+
+The dynamic `BrightnessTexture0` "sampling black" was not evidence against the texture: the LOD meshes had no uv0 vertex stream (MeshUploader seeded its template with `Tessellator::tex2`, which writes uv set 2), so every lookup sampled texel (0, 0) = block 0 / sky 0, which is black in any lightmap. With uv0 fixed the `dynamic` / `dynamic-swapped` modes (Numpad 3) are a valid test again: a correct lightmap gives daylight brightness on sky-lit surfaces; still black means the entry is the placeholder (or not bound); bright where it should be dark and vice versa means the axes are swapped. The default stays the procedural shader lightmap.

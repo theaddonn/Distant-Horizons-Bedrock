@@ -56,6 +56,12 @@ float lightFactor(int sky, int block, float skyBrightness);
 /// Default order for the shader: hi = sky, lo = block.
 float packLight(int hi, int lo);
 
+/// GPU encoding of the face index for uv0.x: `(face + 1) / 8`, in [0.125, 0.75]. The engine clamps texture UVs to
+/// [0, 1] (Tessellator::tex2 does), so the raw index 0..5 must not be uploaded; the +1 keeps the value non-zero, which
+/// lets the DH_Terrain vertex shader tell a delivered uv0 from a missing TEXCOORD0 stream (reads 0). The shader
+/// decodes `round(x * 8) - 1`.
+inline constexpr float encodeFaceU(float face) { return (face + 1.0f) / 8.0f; }
+
 inline constexpr std::size_t verticesPerQuad(Primitive p, bool doubleSided = false) {
     return (p == Primitive::QuadList ? 4u : 6u) * (doubleSided ? 2u : 1u);
 }

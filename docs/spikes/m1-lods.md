@@ -239,3 +239,24 @@ In game (checklist):
    the rebuild swaps in (walk ~300 blocks).
 4. Day/night: clouds darken at dusk (tint steps, a short pop per step is expected); rain: vanilla greys its clouds, ours do not.
 5. F5 off: vanilla clouds return immediately. Clouds setting off in video options / Nether / End: no DH clouds.
+
+## Run 13 (lighting): checklist
+
+Root cause of the pitch-black LODs: no uv0 vertex stream (see docs/PORTING.md "Run 13"). Expected after this build:
+
+1. Load a world by day, F5 on (or startup with `client.enableRendering`). dh.log: `render: native vertex format ok:
+   mFieldEnabled=110000100000000 (DH meshes also enable uv0=[4], uv2=[6]) ...`. The 10 s line
+   `render: lighting diag mode=shader lightmapOk=0 src=none flag=-1.00 skyDarken=1.00 ...` (flag = -skyDarken).
+2. Default mode `shader` (HUD `render.lightmap=shader: none(shader)`): LODs lit like vanilla by day (sky-lit tops at
+   full colour, not black); they should blend with vanilla terrain at the clip border.
+3. Numpad 3 cycles: shader -> dynamic -> dynamic-swapped -> unlit-test -> light-debug -> shader (log line
+   `render: lightmap mode -> <name> (Numpad 3)`).
+   - `light-debug`: open terrain RED (sky 15), caves/overhangs darker, torches/lava add GREEN; blue 0.25 everywhere.
+     Uniform dark blue = light 0 everywhere (CPU side; check `convertedV[...]` in the diag line). MAGENTA (R 1, B 1) =
+     uv0 still not delivered (the VS fallback): report it, the vertex field index assumption is then wrong.
+   - `unlit-test`: raw vertex colours (brighter than `shader` in shade, same by day on sky-lit surfaces).
+   - `dynamic`: vanilla lightmap texture. Daylight brightness = the texture works (report it; it could become the
+     default). Black = the entry is a placeholder; inverted (caves bright, open terrain dark) = try `dynamic-swapped`.
+4. Night (`/time set night`): in `shader` mode LODs darken (blue-ish tint) and `skyDarken` in the diag line drops below 1
+   (Java night value 0.2; Bedrock's night value is unverified, report it); torch-lit areas stay warm. Dusk transition is smooth (per-frame uniform, no re-upload).
+5. Report: the mode colours above, the day/night look, and the dh.log lines from steps 1 and 3.
