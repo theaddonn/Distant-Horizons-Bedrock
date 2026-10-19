@@ -93,7 +93,7 @@ struct Session {
     std::atomic<double>       tickMs{0.0};
     dh::Options               noCull; ///< render thread only (collectRenderList)
     std::uint32_t             noCullAge = 0;
-    std::atomic<int>          lastEnabled{0}, lastCulled{0};
+    std::atomic<int>          lastEnabled{0}, lastCulled{0}, lastNotReady{0};
 
     // chunk ingestion
     std::mutex                         pendingMutex;

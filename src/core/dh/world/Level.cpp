@@ -510,6 +510,10 @@ const std::vector<RenderListEntry>& ClientLevelModule::collectRenderList(const R
     RenderListParams params = paramsIn;
     if (params.options == nullptr) params.options = deps_.options;
     renderList_.build(*t, params);
+    rlEnabled_.store(renderList_.enabledCount());
+    rlCulled_.store(renderList_.culledBufferCount());
+    rlNotRenderable_.store(renderList_.notRenderableCount());
+    rlListed_.store(static_cast<int>(renderList_.entries().size()));
     return renderList_.entries();
 }
 

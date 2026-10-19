@@ -1,6 +1,7 @@
 #include "dh/gen/GenQueue.h"
 
 #include <algorithm>
+#include <atomic>
 #include <map>
 #include <mutex>
 #include <string>
@@ -442,7 +443,16 @@ struct GenQueue::Impl : std::enable_shared_from_this<GenQueue::Impl> {
             const Error& error = result.error();
             // don't log the shutdown exceptions (:407)
             if (!isInterruptOrReject(error)) {
-                log::error("Error generating data for pos: " + sec::toString(taskPos) + ": " + error.message);
+                // Java logged every failure; a misconfigured generator fails thousands of times per second and
+                // rotates the log away, so after the first 20 only every 1000th is logged (with the count).
+                static std::atomic<long> failures{0};
+                const long               n = failures.fetch_add(1) + 1;
+                if (n <= 20 || n % 1000 == 0) {
+                    log::error(
+                        "Error generating data for pos: " + sec::toString(taskPos) + ": " + error.message
+                        + " (failure #" + std::to_string(n) + ")"
+                    );
+                }
             }
             worldGenTask->future->complete(
                 isInterruptOrReject(error) ? RetrievalResult::rejected(error.message)

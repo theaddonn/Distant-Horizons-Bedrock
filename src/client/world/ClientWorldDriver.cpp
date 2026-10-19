@@ -587,7 +587,11 @@ void ClientWorldDriver::Impl::updateHud(Session& s) {
     s.lastHud = now;
 
     dh::hud::set("world.levels", s.world->loadedLevelCount());
+    // tree.enabled = sections the tick enabled; tree.culled = core frustum rejects; tree.notReady = enabled but no
+    // GPU buffers yet. render.listed = enabled - culled - notReady.
     dh::hud::set("tree.enabled", s.lastEnabled.load());
+    dh::hud::set("tree.culled", s.lastCulled.load());
+    dh::hud::set("tree.notReady", s.lastNotReady.load());
     dh::hud::set("tick.ms", s.tickMs.load());
     dh::hud::set("ingest.chunks", static_cast<std::int64_t>(s.ingested.load()));
     dh::hud::set("ingest.skipped", static_cast<std::int64_t>(s.skipped.load() + s.unchanged.load()));
@@ -729,7 +733,10 @@ ClientWorldDriver::collectRenderList(dh::RenderListParams params, bool coreFrust
     const auto& list = module.collectRenderList(params);
     out.positions.reserve(list.size());
     for (const auto& e : list) out.positions.push_back(e.pos);
-    s.lastEnabled.store(static_cast<int>(list.size()));
+    const auto st = module.lastRenderListStats();
+    s.lastEnabled.store(st.enabled);
+    s.lastCulled.store(st.culled);
+    s.lastNotReady.store(st.notRenderable);
     return RenderListStatus::Ready;
 }
 

@@ -4,6 +4,7 @@
 #include "dh/pos/SectionPos.h"
 
 #include <algorithm>
+#include <atomic>
 #include <utility>
 
 namespace dh {
@@ -158,14 +159,20 @@ void GeneratedProvider::onRetrievalResult(std::uint64_t pos, const RetrievalResu
             for (IWorldGenCompleteListener* l : copy) l->onWorldGenTaskComplete(result.pos);
         }
     } else if (result.kind == RetrievalResult::Kind::Failed) {
-        log::logf(
-            LogLevel::Error,
-            "Uncaught Gen Task Exception at [%d,%d,%d], error: [%s].",
-            static_cast<int>(sec::detail(pos)),
-            sec::x(pos),
-            sec::z(pos),
-            result.error.c_str()
-        );
+        // GenQueue already logs the failure itself (throttled); this line is throttled the same way
+        static std::atomic<long> failures{0};
+        const long               n = failures.fetch_add(1) + 1;
+        if (n <= 20 || n % 1000 == 0) {
+            log::logf(
+                LogLevel::Error,
+                "Uncaught Gen Task Exception at [%d,%d,%d], error: [%s] (failure #%ld).",
+                static_cast<int>(sec::detail(pos)),
+                sec::x(pos),
+                sec::z(pos),
+                result.error.c_str(),
+                n
+            );
+        }
     }
     // Split (:162-166) and Rejected (shutdown, not logged :136): nothing to do
     std::lock_guard lock(mutex_);

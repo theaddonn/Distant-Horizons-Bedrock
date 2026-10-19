@@ -286,7 +286,9 @@ LL_TYPE_INSTANCE_HOOK(
 
 void onKeys(ll::event::AfterUIRenderEvent& e) {
     if (e.screenView().getScreenName() != "hud_screen") return;
+    // F11 is Bedrock's fullscreen toggle (GDK build) and is not used here.
     bool shift = dh::input::shiftDown();
+    bool ctrl  = dh::input::ctrlDown();
     if (dh::input::pressed(VK_F9)) {
         gDumpR0 = true;
         DH_LOG_I("R0: dump requested (F9); it runs on the next world render");
@@ -296,28 +298,27 @@ void onKeys(ll::event::AfterUIRenderEvent& e) {
             auto& s = settings();
             s.origin = s.origin == OriginMode::CameraRelative ? OriginMode::Absolute : OriginMode::CameraRelative;
             DH_LOG_I("spike origin mode -> %s", s.origin == OriginMode::CameraRelative ? "camera-relative" : "absolute");
+        } else if (ctrl) {
+            gR1b = !gR1b;
+            if (gR1b) gAnchor.set = false;
+            DH_LOG_I("R1b: %s (Ctrl+F10)", gR1b ? "on" : "off");
         } else {
             gR1 = !gR1;
             if (gR1) gAnchor.set = false;
             DH_LOG_I("R1/R2: %s (F10)", gR1 ? "on" : "off");
         }
     }
-    if (dh::input::pressed(VK_F11)) {
+    if (dh::input::pressed(VK_F12)) {
         if (shift) {
             auto& s = settings();
             s.prim  = s.prim == PrimMode::QuadList ? PrimMode::TriangleList : PrimMode::QuadList;
             resetMeshes();
-            DH_LOG_I("spike primitive mode -> %s", s.prim == PrimMode::QuadList ? "QuadList" : "TriangleList");
+            DH_LOG_I("spike primitive mode -> %s (Shift+F12)", s.prim == PrimMode::QuadList ? "QuadList" : "TriangleList");
         } else {
-            gR1b = !gR1b;
-            if (gR1b) gAnchor.set = false;
-            DH_LOG_I("R1b: %s (F11)", gR1b ? "on" : "off");
+            gR3 = (gR3 + 1) % 3;
+            if (gR3 > 0) gAnchor.set = false;
+            DH_LOG_I("R3 mode -> %s (F12)", r3Name(gR3));
         }
-    }
-    if (dh::input::pressed(VK_F12)) {
-        gR3 = (gR3 + 1) % 3;
-        if (gR3 > 0) gAnchor.set = false;
-        DH_LOG_I("R3 mode -> %s (F12)", r3Name(gR3));
     }
     updateHud();
 }
@@ -338,7 +339,7 @@ void install() {
         gAnchor.set = false;
     });
     updateHud();
-    DH_LOG_I("spikes installed (all off; F9 R0 dump, F10 R1/R2, F11 R1b, F12 R3, Shift+F10 origin, Shift+F11 primitive)");
+    DH_LOG_I("spikes installed (all off; F9 R0 dump, F10 R1/R2, Ctrl+F10 R1b, F12 R3, Shift+F10 origin, Shift+F12 primitive)");
 }
 
 void uninstall() {
