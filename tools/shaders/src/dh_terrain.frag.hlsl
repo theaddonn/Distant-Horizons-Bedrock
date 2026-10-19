@@ -1,7 +1,7 @@
 // Spike B3: DH_Terrain fragment shader (see dh_terrain.vert.hlsl for the signature).
 // FS uniform table (we define it): DhParams vec4 (fragment) @0, cbuf 16 B, plus the sampler s_MatTexture (slot 0 = t0/s0)
 // which the renderer binds to LevelRenderer::mBrightnessTex (the vanilla 16x16 lightmap: u = block light, v = sky light,
-// refreshed per frame for day/night/gamma). Light arrives in texCoords.y = (sky*16+block)/255 (CPU packLight; the
+// refreshed per frame for day/night/gamma). Light arrives in texCoords.y (uv0.y, see dh_terrain_light.hlsli) = (sky*16+block)/255 (CPU packLight; the
 // lightmapSwapAxes option swaps the nibbles, i.e. the lookup axes).
 // light.x = near clip radius (discard below it; 0 = off), light.w = fade end (dither fade between x and w), light.y/z =
 // fog start/end in blocks, fog.rgb = vanilla's current fog colour. Output: vertex colour * DhParams.rgb, far fog.
@@ -18,13 +18,14 @@ struct PSIn {
     float4 color : COLOR0;
     float4 fog : COLOR2;
     float4 light : COLOR1;
-    nointerpolation float2 texCoords : TEXCOORD0; // x = face index, y = packed light (flat: per-quad)
+    nointerpolation float2 texCoords : TEXCOORD0; // see dh_terrain_light.hlsli (flat: per-quad)
     float3 worldPos : TEXCOORD3;
 };
 
 // Face shade by DH direction index (down, up, north, south, west, east) = Java ClientLevelWrapper.getShade. Java bakes
 // it into the vertex colour on the CPU (ColumnMeshBuilder / LodQuadBuilder do the same here), so it is OFF by default;
-// set to 1 only if the CPU path is changed to leave colours unshaded (otherwise it would be applied twice).
+// set to 1 only if the CPU path is changed to leave colours unshaded (otherwise it would be applied twice). The face is
+// only in texCoords.x on the lightmap-texture path (x = (face + 1) / 8).
 #define DH_SHADE_IN_SHADER 0
 
 // Ordered 4x4 Bayer matrix in [0,1), as the Java DH shader's bayerMatrix4x4.
@@ -65,8 +66,9 @@ float4 main(PSIn i) : SV_Target0 {
             // Packed light = sky * 16 + block.
             float  packedLight = round(saturate(-i.texCoords.y - 1.0) * 255.0);
             float  sky = floor(packedLight / 16.0), block = packedLight - sky * 16.0;
-            // debug paint (x > 2.5): R = sky/15, G = block/15, B = 0.25 marker
-            if (i.texCoords.x > 2.5) return float4(sky / 15.0, block / 15.0, 0.25, 1.0);
+            // debug paint (x > 2.5): R = sky/15, G = block/15, B = 0.25 (uv0 delivered) or 1.0 (x = 4: TEXCOORD0
+            // missing, light forced to sky 15 by the VS -> bright magenta)
+            if (i.texCoords.x > 2.5) return float4(sky / 15.0, block / 15.0, i.texCoords.x > 3.5 ? 1.0 : 0.25, 1.0);
             float  skyDarken = clamp(i.texCoords.x, 0.2, 1.0);
             float  fs = sky / 15.0, fb = block / 15.0;
             float  rampS = fs / (4.0 - 3.0 * fs), rampB = fb / (4.0 - 3.0 * fb);
@@ -84,7 +86,7 @@ float4 main(PSIn i) : SV_Target0 {
     }
 #if DH_SHADE_IN_SHADER
     static const float shade[6] = {0.5, 1.0, 0.8, 0.8, 0.6, 0.6};
-    c *= shade[(int)clamp(i.texCoords.x + 0.5, 0.0, 5.0)];
+    c *= shade[(int)clamp(round(i.texCoords.x * 8.0) - 1.0, 0.0, 5.0)];
 #endif
     float fogStart = i.light.y, fogEnd = i.light.z;
     if (fogEnd > fogStart) c = lerp(c, i.fog.rgb, saturate((d - fogStart) / (fogEnd - fogStart)));

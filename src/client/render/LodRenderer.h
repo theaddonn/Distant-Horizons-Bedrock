@@ -25,21 +25,18 @@ namespace dh::render {
 enum class MaterialChoice : int { Selection = 0, MeshFallback = 1, Dh = 2 };
 enum class OriginMode : int { CameraRelative = 0, Absolute = 1 };
 enum class FarMode : int { Off = 0, LocalProjPush = 1, ZFarOverride = 2 };
-/// Where DH_Terrain's lightmap (sampler slot 0) comes from; Numpad 3 cycles (2026-10-19 bisect: the dynamic texture
-/// bound through the variant overload samples black).
+/// DH_Terrain lighting path; Numpad 3 cycles. Run 13 (2026-10-19): every earlier "black" result (dynamic texture,
+/// procedural shader) was the missing uv0 vertex field (MeshUploader), not the light sources themselves.
 enum class LightmapMode : int {
-    Dynamic        = 0, ///< MinecraftGameplayGraphicsResources dynamic texture BrightnessTexture<subClientId>, variant overload
-    DynamicSwapped = 1, ///< same, lookup axes swapped (u = sky, v = block)
-    DynamicSpan    = 2, ///< same texture through the renderMesh(span<ClientTexture const*>) overload
-    AtlasTest      = 3, ///< binds LevelRenderer::mAtlasTexture instead: coloured noise = the binding path works
-    Legacy         = 4, ///< LevelRenderer::mBrightnessTex (NULL client texture under RenderDragon so far)
-    Shader         = 5, ///< no lightmap texture: procedural lightmap in the FS (packed light + daylight factor) [default]
-    UnlitTest      = 6, ///< u_model[3][3] = 2: the FS keeps the raw vertex colour (flag-path self test)
-    LightDebug     = 7, ///< u_model[3][3] = -3: the FS paints R = sky/15, G = block/15 (decoded packed light)
+    Shader  = 0, ///< no texture: procedural Java lightmap in the FS (packed light + skyDarken) [default]
+    Dynamic = 1, ///< vanilla lightmap: dynamic texture BrightnessTexture<subClientId> at slot 0 (u = block, v = sky)
+    DynamicSwapped = 2, ///< same, lookup axes swapped (u = sky, v = block)
+    UnlitTest      = 3, ///< u_model[3][3] = 2: the FS keeps the raw vertex colour (flag-path self test)
+    LightDebug     = 4, ///< u_model[3][3] = -3: the FS paints R = sky/15, G = block/15, B = 0.25 (1.0: uv0 missing)
 };
-inline constexpr int         kLightmapModeCount   = 8;
+inline constexpr int         kLightmapModeCount = 5;
 inline constexpr char const* kLightmapModeNames[] =
-    {"dynamic", "dynamic-swapped", "dynamic-span", "atlas-test", "legacy", "shader", "unlit-test", "light-debug"};
+    {"shader", "dynamic", "dynamic-swapped", "unlit-test", "light-debug"};
 
 /// Primitive / winding choices cycled by F4.
 struct PrimChoice {
@@ -98,10 +95,10 @@ struct LodRendererConfig {
     float overdraw                    = 1.0f;
     float fogStartFraction            = 0.6f; ///< DH_Terrain far fog starts at this fraction of the LOD far distance
 
-    float skyBrightness    = 1.0f;   ///< CPU light stand-in input (0 night .. 1 day); fallback materials only
-    bool  lightmapSwapAxes = false;  ///< DH_Terrain: swap the lightmap lookup axes (default u = block, v = sky)
-    LightmapMode lightmapMode = LightmapMode::Shader; ///< Numpad 3 cycles (2026-10-19: the dynamic texture samples black)
-    float minYBlocks       = -64.0f; ///< DH y 0 maps to this Bedrock y
+    float        skyBrightness    = 1.0f;  ///< CPU light stand-in input (0 night .. 1 day); fallback materials only
+    bool         lightmapSwapAxes = false; ///< DH_Terrain: swap the lightmap lookup axes (default u = block, v = sky)
+    LightmapMode lightmapMode     = LightmapMode::Shader; ///< Numpad 3 cycles
+    float        minYBlocks       = -64.0f;               ///< DH y 0 maps to this Bedrock y
 };
 
 class LodRenderer {
@@ -189,8 +186,8 @@ private:
     bool                                  loggedTransMaterial_    = false;
     bool                                  warnedNoLightmap_       = false;
     bool                                  loggedLightmapSize_     = false;
-    bool                                  cpuLighting_      = false; ///< ConvertParams::cpuLighting currently applied (DH_Terrain default: off)
-    bool                                  lightSwapApplied_ = false;
+    bool cpuLighting_      = false; ///< ConvertParams::cpuLighting currently applied (DH_Terrain default: off)
+    bool lightSwapApplied_ = false;
     std::chrono::steady_clock::time_point lastLightDiag_{};
 };
 

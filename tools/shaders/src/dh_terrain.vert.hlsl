@@ -9,7 +9,10 @@
 // Smuggled per-draw parameters (row 3 of u_model[0]): [3][0] = clipStart + fadeEnd * 4096 (clipStart = near clip
 // radius in blocks, 0 = off; fadeEnd = vanilla render distance in blocks, the dither-fade band is [clipStart, fadeEnd]),
 // [3][1] = fog start, [3][2] = fog end. Passed to the FS as light = (clipStart, fogStart, fogEnd, fadeEnd).
-// texCoords = (face direction index 0 down,1 up,2 north,3 south,4 west,5 east ; packed light (sky*16+block)/255), passed flat.
+// texCoords (uv0) = ((face + 1) / 8 with face 0 down,1 up,2 north,3 south,4 west,5 east ; packed light (sky*16+block)/255).
+// The mesh MUST enable the uv0 vertex field (MeshUploader: mFieldEnabled[4]); without it TEXCOORD0 reads 0.
+#include "dh_terrain_light.hlsli"
+
 cbuffer VertexUniforms : register(b0) {
     column_major float4x4 u_proj;
     column_major float4x4 u_view;
@@ -34,7 +37,7 @@ struct VSOut {
     float4 color : COLOR0;
     float4 fog : COLOR2;
     float4 light : COLOR1;
-    nointerpolation float2 texCoords : TEXCOORD0; // x = face index, y = packed light (flat: per-quad)
+    nointerpolation float2 texCoords : TEXCOORD0; // see dh_terrain_light.hlsli (flat: per-quad)
     float3 worldPos : TEXCOORD3;
 };
 
@@ -52,15 +55,8 @@ VSOut main(VSIn i) {
     float fadeEnd = floor(M[3][0] / 4096.0 + 0.001);
     float clipStart = M[3][0] - fadeEnd * 4096.0;
     o.light = float4(clipStart, M[3][1], M[3][2], fadeEnd);
-    // [3][3] selects the lighting path (see LodRenderer): 1 = lightmap texture bound (texCoords passed through),
-    // > 1.5 = unlit (clouds; y = 2 marks it), <= 0 = shader lighting with daylight = -[3][3]: x = daylight,
-    // y = -(1 + packed light) so the FS can tell the three apart from the sign/magnitude of y.
-    {
-        float m = M[3][3];
-        if (m > 1.5) o.texCoords = float2(-1.0, 2.0);
-        else if (m >= 0.5) o.texCoords = i.texCoords;
-        else o.texCoords = float2(m < -2.5 ? 3.0 : saturate(-m), -(1.0 + i.texCoords.y)); // m < -2.5: debug paint
-    }
+    // [3][3] selects the lighting path (see dh_terrain_light.hlsli and LodRenderer).
+    o.texCoords = dhLightVarying(M[3][3], i.texCoords);
     o.worldPos = world.xyz;
     return o;
 }

@@ -246,3 +246,12 @@ TEST_CASE("stagea: LodQuadBuilder output converts to the expected vertex count")
         CHECK(v.x <= 4.011f);
     }
 }
+
+TEST_CASE("stagea: GPU face encoding stays inside [0, 1], non-zero and round-trips") {
+    for (int f = 0; f <= 5; ++f) {
+        const float u = encodeFaceU(static_cast<float>(f));
+        CHECK(u > 0.06f); // the VS sentinel: below this uv0 is treated as missing
+        CHECK(u <= 1.0f);
+        CHECK(static_cast<int>(std::lround(u * 8.0f)) - 1 == f);
+    }
+}

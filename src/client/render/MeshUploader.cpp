@@ -25,6 +25,13 @@ namespace {
 /// uses one for QuadList) can never overflow.
 constexpr std::uint32_t kMaxPartVertices = 65000;
 
+/// mce::MeshData::mFieldEnabled indices (static RE, 1.26.51, 2026-10-19): the Tessellator setters store
+/// mNextUV[0] / [1] / [2] (+0x18C / +0x198 / +0x1A4) and enable byte +0x15C / +0x15D / +0x15E of the Tessellator,
+/// i.e. mFieldEnabled[4] / [5] / [6] (mFieldEnabled at Tessellator +0x158); colour (+0x1B0) enables [1].
+/// Tessellator::tex2 (RVA 0x59CA3D0) clamps to [0, 1] and writes uv set 2 -> field 6.
+constexpr std::size_t kFieldUV0 = 4;
+constexpr std::size_t kFieldUV2 = 6;
+
 template <class V>
 void replicate(V& v, std::size_t n) {
     if (v.size() == 1) v.assign(n, v.front());
@@ -105,7 +112,7 @@ void MeshUploader::convertInto(MeshBuffers const& b, std::uint64_t pos, MeshSett
     for (auto const& buf : b.transparent)
         convertDhBuffer(buf, detail, s.yOffsetBlocks, out.transparent, s.prim, s.params);
     if (!out.opaque.empty()) {
-        float vmin = 1e9f, vmax = -1e9f;
+        float       vmin = 1e9f, vmax = -1e9f;
         std::size_t zeros = 0;
         for (auto const& v : out.opaque) {
             vmin = std::min(vmin, v.v);
@@ -280,7 +287,8 @@ bool MeshUploader::ensureFormat(ScreenContext& ctx) {
         f->tmpl[p] = std::make_unique<mce::MeshData>(seed.mMeshData.get());
     }
     DH_LOG_I(
-        "render: native vertex format ok: mFieldEnabled=%s colour shifts r=%u g=%u b=%u alphaMask=0x%08x",
+        "render: native vertex format ok: mFieldEnabled=%s (DH meshes also enable uv0=[4], uv2=[6]) colour shifts r=%u "
+        "g=%u b=%u alphaMask=0x%08x",
         f->fieldString.c_str(),
         f->red,
         f->green,
@@ -320,18 +328,25 @@ void buildLayer(
             StageAVertex const& v = verts[begin + i];
             pos[i]                = glm::vec3{v.x, v.y, v.z};
             col[i]                = fmt.pack(v.rgba);
-            uv[i]                 = glm::vec2{v.u, v.v};
+            uv[i]                 = glm::vec2{dh::encodeFaceU(v.u), v.v};
             lo                    = glm::min(lo, pos[i]);
             hi                    = glm::max(hi, pos[i]);
         }
-        if (md.mTextureUVs[0]->size() == 1) md.mTextureUVs[0] = std::move(uv);
-        md.mPositions = std::move(pos);
-        md.mColors    = std::move(col);
+        // uv0 carries (encoded face index, packed light). The template comes from Tessellator::tex2, which writes the
+        // THIRD uv set (mNextUV[2], field kFieldUV2) and leaves uv0 disabled and empty, so uv0 has to be switched on
+        // explicitly: without it the mesh has no TEXCOORD0 stream and the DH_Terrain VS reads (0, 0) = light 0 =
+        // pitch-black LODs (Run 13). uv2 gets the same values so the data is present whichever uv set the engine
+        // binds.
+        md.mTextureUVs[2]                 = uv;
+        md.mTextureUVs[0]                 = std::move(uv);
+        md.mFieldEnabled.get()[kFieldUV0] = true;
+        md.mFieldEnabled.get()[kFieldUV2] = true;
+        md.mPositions                     = std::move(pos);
+        md.mColors                        = std::move(col);
         replicate(md.mNormals.get(), n);
         replicate(md.mTangents.get(), n);
         replicate(md.mBoneId0s.get(), n);
         replicate(md.mTextureUVs[1].get(), n);
-        replicate(md.mTextureUVs[2].get(), n);
         replicate(md.mPBRTextureIndices.get(), n);
         replicate(md.mMERS.get(), n);
         replicate(md.mGeoType.get(), n);

@@ -12,21 +12,19 @@
 
 #include "mc/client/game/IClientInstance.h"
 #include "mc/client/gui/screens/ScreenContext.h"
-#include "mc/client/renderer/BaseActorRenderContext.h"
 #include "mc/client/player/LocalPlayer.h"
-#include "mc/client/renderer/game/LevelRenderer.h"
-#include "mc/world/level/dimension/Dimension.h"
-#include "mc/client/renderer/game/LevelRendererPlayer.h"
+#include "mc/client/renderer/BaseActorRenderContext.h"
 #include "mc/client/renderer/MinecraftGameplayGraphicsResources.h"
 #include "mc/client/renderer/MinecraftGraphics.h"
+#include "mc/client/renderer/game/LevelRenderer.h"
+#include "mc/client/renderer/game/LevelRendererPlayer.h"
 #include "mc/common/SubClientId.h"
-#include "mc/deps/core/utility/NonOwnerPointer.h"
-#include "mc/deps/minecraft_renderer/renderer/DynamicTexture.h"
-#include "mc/deps/minecraft_renderer/resources/mcr/DynamicTextureResourceManager.h"
 #include "mc/deps/core/math/Color.h"
 #include "mc/deps/core/math/Matrix.h"
+#include "mc/deps/core/utility/NonOwnerPointer.h"
 #include "mc/deps/minecraft_renderer/objects/ViewRenderObject.h"
 #include "mc/deps/minecraft_renderer/renderer/BedrockTextureData.h"
+#include "mc/deps/minecraft_renderer/renderer/DynamicTexture.h"
 #include "mc/deps/minecraft_renderer/renderer/MaterialPtr.h"
 #include "mc/deps/minecraft_renderer/renderer/Mesh.h"
 #include "mc/deps/minecraft_renderer/renderer/MeshContext.h"
@@ -34,9 +32,11 @@
 #include "mc/deps/minecraft_renderer/resources/ClientTexture.h"
 #include "mc/deps/minecraft_renderer/resources/OffscreenCaptureDescription.h"
 #include "mc/deps/minecraft_renderer/resources/ServerTexture.h"
+#include "mc/deps/minecraft_renderer/resources/mcr/DynamicTextureResourceManager.h"
 #include "mc/deps/renderer/Camera.h"
 #include "mc/deps/renderer/MatrixStack.h"
 #include "mc/deps/renderer/ShaderColor.h"
+#include "mc/world/level/dimension/Dimension.h"
 
 #include <algorithm>
 #include <chrono>
@@ -324,69 +324,40 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
         }
     }
 
-    // DH_Terrain samples the vanilla lightmap from slot 0 when one is bound. Sources, in order:
-    //  1. the live RenderDragon lightmap: dynamic texture BrightnessTexture<subClientId> in
-    //     MinecraftGameplayGraphicsResources::mDynamicTextures (read-only lookup, never creates the entry; see
-    //     docs/spikes/lightmap-texture.md),
-    //  2. the legacy LevelRenderer::mBrightnessTex (NULL client texture under RenderDragon, kept as a fallback).
-    // Without either the material is KEPT (2026-10-19: falling back to selectionOpaqueMaterial painted everything
-    // magenta) and the draw switches to CPU lighting: u_model[0][3][3] = 0 tells the VS to flag the varying so the FS
-    // skips the lightmap lookup.
-    bool               lightmapOk  = false;
-    char const*        lightSrc    = "none";
+    // DH_Terrain lighting (LightmapMode, Numpad 3). Default: the procedural Java lightmap in the FS (no texture).
+    // Dynamic*: the live RenderDragon lightmap, dynamic texture BrightnessTexture<subClientId> in
+    // MinecraftGameplayGraphicsResources::mDynamicTextures (read-only lookup, never creates the entry; see
+    // docs/spikes/lightmap-texture.md), bound at slot 0. Without it the draw falls back to the procedural path.
+    // (LevelRenderer::mBrightnessTex has a NULL client texture under RenderDragon and is no longer tried.)
+    bool               lightmapOk = false;
+    char const*        lightSrc   = "none";
     Texture            lightTex{std::monostate{}};
-    std::optional<mce::ClientTexture> lightClient; // DynamicSpan: bound through the span overload (no default ctor)
-    const LightmapMode lmode       = cfg_.lightmapMode;
-    const bool         useSpan     = lmode == LightmapMode::DynamicSpan;
-    const bool         swapAxes    = (lmode == LightmapMode::DynamicSwapped) != cfg_.lightmapSwapAxes;
-    if (std::strcmp(matName, "DH_Terrain") == 0 && lmode != LightmapMode::Shader && lmode != LightmapMode::UnlitTest
-        && lmode != LightmapMode::LightDebug) {
-        const bool wantDynamic = lmode == LightmapMode::Dynamic || lmode == LightmapMode::DynamicSwapped || useSpan;
-        if (wantDynamic) {
-            if (::MinecraftGraphics* gfx = ci.getMinecraftGraphics().get().get()) {
-                auto const& res = gfx->mMinecraftGameplayGraphicsResources.get();
-                const auto  key = static_cast<::mce::DynamicTexture>(static_cast<unsigned char>(ci.getClientSubId()));
-                std::shared_ptr<::mce::ClientTexture> tex = res.mDynamicTextures->getResource(key);
-                // ResourceBlockTemplate::get() is not exported, so only the block's presence can be checked here.
-                if (tex && static_cast<bool>(*tex)) {
-                    if (!loggedLightmapSize_) {
-                        DH_LOG_I(
-                            "render: lightmap source = dynamic texture BrightnessTexture%u (Numpad 3 cycles the binding "
-                            "path / source)",
-                            static_cast<unsigned>(key)
-                        );
-                        loggedLightmapSize_ = true;
-                    }
-                    lightClient.emplace(*tex);
-                    lightTex    = *tex;
-                    lightmapOk  = true;
-                    lightSrc    = "dynamic";
-                }
-            }
-        } else if (lmode == LightmapMode::AtlasTest) {
-            if (lr && lr->mAtlasTexture->mClientTexture.get()) {
-                lightTex   = *lr->mAtlasTexture;
-                lightmapOk = true;
-                lightSrc   = "atlas-test";
-            }
-        }
-        if (!lightmapOk && (lmode == LightmapMode::Legacy || wantDynamic)) {
-            auto const* bt = lr ? lr->mBrightnessTex->mClientTexture.get() : nullptr;
-            if (bt) {
-                auto const& d = bt->mTextureDescription.get();
+    const LightmapMode lmode    = cfg_.lightmapMode;
+    const bool         swapAxes = (lmode == LightmapMode::DynamicSwapped) != cfg_.lightmapSwapAxes;
+    if (std::strcmp(matName, "DH_Terrain") == 0
+        && (lmode == LightmapMode::Dynamic || lmode == LightmapMode::DynamicSwapped)) {
+        if (::MinecraftGraphics* gfx = ci.getMinecraftGraphics().get().get()) {
+            auto const& res = gfx->mMinecraftGameplayGraphicsResources.get();
+            const auto  key = static_cast<::mce::DynamicTexture>(static_cast<unsigned char>(ci.getClientSubId()));
+            std::shared_ptr<::mce::ClientTexture> tex = res.mDynamicTextures->getResource(key);
+            // ResourceBlockTemplate::get() is not exported, so only the block's presence can be checked here.
+            if (tex && static_cast<bool>(*tex)) {
                 if (!loggedLightmapSize_) {
-                    DH_LOG_I("render: lightmap source = LevelRenderer::mBrightnessTex %ux%u", d.mWidth, d.mHeight);
+                    DH_LOG_I(
+                        "render: lightmap source = dynamic texture BrightnessTexture%u (Numpad 3 cycles the lighting "
+                        "path)",
+                        static_cast<unsigned>(key)
+                    );
                     loggedLightmapSize_ = true;
                 }
-                lightTex   = *lr->mBrightnessTex;
+                lightTex   = *tex;
                 lightmapOk = true;
-                lightSrc   = "mBrightnessTex";
+                lightSrc   = "dynamic";
             }
         }
         if (!lightmapOk && !warnedNoLightmap_) {
             DH_LOG_W(
-                "render: no lightmap texture for mode %s (dynamic BrightnessTexture missing / LevelRenderer::mBrightnessTex "
-                "has no client texture); drawing DH_Terrain with CPU lighting",
+                "render: no dynamic BrightnessTexture for mode %s; drawing DH_Terrain with the procedural lightmap",
                 kLightmapModeNames[static_cast<int>(lmode)]
             );
             warnedNoLightmap_ = true;
@@ -396,10 +367,13 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
     // night, despite the name). ViewRenderData::mSkyBrightnessScalar was 0 in the first run (2026-10-19), so it is
     // only shown on the HUD.
     float daylight = 1.0f;
-    if (::LocalPlayer* lp = ci.getLocalPlayer()) daylight = std::clamp(lp->getDimension().getSkyDarken(1.0f), 0.0f, 1.0f);
+    if (::LocalPlayer* lp = ci.getLocalPlayer())
+        daylight = std::clamp(lp->getDimension().getSkyDarken(1.0f), 0.0f, 1.0f);
     // u_model[0][3][3] for the VS: 1 = lightmap texture at t0, 2 = unlit, -daylight = procedural lightmap.
-    const float lightFlag = lightmapOk ? 1.0f
-                          : (lmode == LightmapMode::UnlitTest ? 2.0f : (lmode == LightmapMode::LightDebug ? -3.0f : -daylight));
+    const float lightFlag =
+        lightmapOk
+            ? 1.0f
+            : (lmode == LightmapMode::UnlitTest ? 2.0f : (lmode == LightmapMode::LightDebug ? -3.0f : -daylight));
     if (const auto tnow = std::chrono::steady_clock::now(); tnow - lastLightDiag_ > std::chrono::seconds(10)) {
         lastLightDiag_ = tnow;
         auto const ls  = uploader_.lightStats();
@@ -681,8 +655,8 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
 
     // 4. draw
     static Texture const none{std::monostate{}};
-    // DH_Terrain: slot 0 (s_MatTexture) = the vanilla lightmap (LevelRenderer::mBrightnessTex), refreshed by the engine
-    // every frame for day/night and gamma. Copy of the TexturePtr (shared_ptr members), valid for this frame.
+    // DH_Terrain: slot 0 (s_MatTexture) = the vanilla lightmap (dynamic BrightnessTexture) in the Dynamic* modes,
+    // refreshed by the engine every frame for day/night and gamma. Copy (shared_ptr members), valid for this frame.
     Texture const& drawTex = (dhShader && lightmapOk) ? lightTex : none;
     auto&          sc      = mctx.currentShaderColor;
     mce::Color     saved   = sc.color.get();
@@ -727,28 +701,15 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
             }
             cam.worldMatrixStack->getTop() = m;
             for (auto const& part : parts) {
-                if (dhShader && lightmapOk && useSpan && lightClient) {
-                    mce::ClientTexture const* texs[1] = {&*lightClient};
-                    part.mesh->renderMesh(
-                        mctx,
-                        transparent ? *transMaterial : *material,
-                        ::gsl::span<mce::ClientTexture const*>(texs, 1),
-                        0,
-                        part.verts,
-                        OffscreenCaptureDescription{},
-                        nullptr
-                    );
-                } else {
-                    part.mesh->renderMesh(
-                        mctx,
-                        transparent ? *transMaterial : *material,
-                        drawTex,
-                        0,
-                        part.verts,
-                        OffscreenCaptureDescription{},
-                        nullptr
-                    );
-                }
+                part.mesh->renderMesh(
+                    mctx,
+                    transparent ? *transMaterial : *material,
+                    drawTex,
+                    0,
+                    part.verts,
+                    OffscreenCaptureDescription{},
+                    nullptr
+                );
                 ++drawCalls;
             }
             if (!transparent) ++drawnSections;
