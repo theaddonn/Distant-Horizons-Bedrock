@@ -413,7 +413,27 @@ std::filesystem::path gModMaterialsDir; // <modDir>/materials
 std::filesystem::path gPatchedIndex;    // <modDir>/materials/materials.index.json (generated)
 std::atomic<bool>     gPatchedIndexReady{false};
 std::mutex            gPatchMutex;
-thread_local bool     tlInFileHook = false; // our own std::ifstream/ofstream must not be redirected
+/// Per-thread flag in a dynamic TLS slot. NOT `thread_local`: this DLL is loaded after the process started, and a
+/// thread created before that has no static-TLS block for it (Wine); the 2026-10-19 crash was the material-cache hook
+/// reading `thread_local bool` on such a thread (gs:[0x58][tls_index] == NULL). TlsGetValue works on every thread.
+/// GetLastError is preserved so the file hooks keep the Win32 error of the call they wrap.
+struct TlsFlag {
+    DWORD idx = TlsAlloc();
+    bool  get() const {
+        if (idx == TLS_OUT_OF_INDEXES) return false;
+        const DWORD e = GetLastError();
+        const bool  v = TlsGetValue(idx) != nullptr;
+        SetLastError(e);
+        return v;
+    }
+    void set(bool v) const {
+        if (idx == TLS_OUT_OF_INDEXES) return;
+        const DWORD e = GetLastError();
+        TlsSetValue(idx, v ? reinterpret_cast<void*>(1) : nullptr);
+        SetLastError(e);
+    }
+};
+TlsFlag gInFileHook; // our own std::ifstream/ofstream must not be redirected
 
 std::string narrow(wchar_t const* w) {
     if (!w) return {};
@@ -436,12 +456,12 @@ std::string lowerSlashes(std::string s) {
 bool preparePatchedIndex(std::string const& originalPath) {
     std::lock_guard lock(gPatchMutex);
     if (gPatchedIndexReady.load()) return true;
-    tlInFileHook = true;
+    gInFileHook.set(true);
     std::string json;
     {
         std::ifstream in(std::filesystem::path(originalPath), std::ios::binary);
         if (!in) {
-            tlInFileHook = false;
+            gInFileHook.set(false);
             DH_LOG_W("materials: cannot read the game's index at %s", originalPath.c_str());
             return false;
         }
@@ -456,7 +476,7 @@ bool preparePatchedIndex(std::string const& originalPath) {
         std::ofstream out(gPatchedIndex, std::ios::binary | std::ios::trunc);
         out << json;
     }
-    tlInFileHook = false;
+    gInFileHook.set(false);
     gPatchedIndexReady.store(true);
     DH_LOG_I(
         "materials: patched index written to %s (%zu -> %zu bytes, DH_Terrain %s)",
@@ -483,8 +503,8 @@ std::wstring redirectFor(std::string const& path) {
 }
 
 struct FileHookGuard {
-    FileHookGuard() { tlInFileHook = true; }
-    ~FileHookGuard() { tlInFileHook = false; }
+    FileHookGuard() { gInFileHook.set(true); }
+    ~FileHookGuard() { gInFileHook.set(false); }
 };
 
 /// Logs the return-address chain of the current thread as module+RVA, so the offline disassembly can start at the
@@ -544,7 +564,7 @@ LL_STATIC_HOOK(
     DWORD                 flags,
     HANDLE                templ
 ) {
-    if (gActive.load() && name && !tlInFileHook) {
+    if (gActive.load() && name && !gInFileHook.get()) {
         std::string n = narrow(name);
         if (lowerSlashes(n).find("material") != std::string::npos) {
             FileHookGuard g;
@@ -553,7 +573,13 @@ LL_STATIC_HOOK(
             std::wstring r = redirectFor(n);
             if (!r.empty()) {
                 DH_LOG_I("materials: CreateFileW redirect %s -> %s", n.c_str(), narrow(r.c_str()).c_str());
-                return origin(r.c_str(), access, share, sa, disposition, flags, templ);
+                HANDLE h = origin(r.c_str(), access, share, sa, disposition, flags, templ);
+                {
+                    const DWORD e = GetLastError(); // breadcrumb (2026-10-19 freeze right after this line)
+                    DH_LOG_I("materials: CreateFileW redirect -> handle %s", h == INVALID_HANDLE_VALUE ? "INVALID" : "ok");
+                    SetLastError(e);
+                }
+                return h;
             }
         }
     }
@@ -571,7 +597,7 @@ LL_STATIC_HOOK(
     DWORD                             disposition,
     LPCREATEFILE2_EXTENDED_PARAMETERS params
 ) {
-    if (gActive.load() && name && !tlInFileHook) {
+    if (gActive.load() && name && !gInFileHook.get()) {
         std::string n = narrow(name);
         if (lowerSlashes(n).find("material") != std::string::npos) {
             FileHookGuard g;
@@ -595,7 +621,7 @@ LL_STATIC_HOOK(
     GET_FILEEX_INFO_LEVELS level,
     LPVOID                 info
 ) {
-    if (gActive.load() && name && !tlInFileHook) {
+    if (gActive.load() && name && !gInFileHook.get()) {
         std::string n = narrow(name);
         if (lowerSlashes(n).find("material") != std::string::npos) {
             FileHookGuard g;
@@ -614,7 +640,7 @@ LL_STATIC_HOOK(
     DWORD,
     LPCWSTR name
 ) {
-    if (gActive.load() && name && !tlInFileHook) {
+    if (gActive.load() && name && !gInFileHook.get()) {
         std::string n = narrow(name);
         if (lowerSlashes(n).find("material") != std::string::npos) {
             FileHookGuard g;
@@ -700,13 +726,13 @@ uintptr_t resolveSig(SigDef const& d, bool requireUnique) {
 
 mce::RenderMaterialInfo* gDhInfo       = nullptr; // the mce info of "DH_Terrain" (cloned from the vanilla fallback)
 mce::RenderMaterialInfo* gDhTransInfo  = nullptr; // "DH_TerrainTransparent" (same compiled material, blended state)
-thread_local bool        tlDhResolving = false;
+TlsFlag                  gDhResolving; // dynamic TLS, see TlsFlag
 bool                     gKeyRewrite   = false;
 
 struct ResolvingGuard {
     bool prev;
-    ResolvingGuard() : prev(tlDhResolving) { tlDhResolving = true; }
-    ~ResolvingGuard() { tlDhResolving = prev; }
+    ResolvingGuard() : prev(gDhResolving.get()) { gDhResolving.set(true); }
+    ~ResolvingGuard() { gDhResolving.set(prev); }
 };
 
 uint64_t fnv1a64(std::string_view s) {
@@ -764,7 +790,7 @@ LL_STATIC_HOOK(
     void**         out,
     std::uint64_t* key
 ) {
-    if (tlDhResolving && key) {
+    if (gDhResolving.get() && key) {
         std::uint64_t k[2] = {fnv1a64("DH_Terrain"), key[1]};
         return origin(cache, out, k);
     }
@@ -780,12 +806,18 @@ LL_STATIC_HOOK(
     void*        sret,
     std::string* descName
 ) {
-    if (tlDhResolving && descName && descName->rfind("MeshFallback", 0) == 0) {
+    if (gDhResolving.get() && descName && descName->rfind("MeshFallback", 0) == 0) {
         static std::atomic<bool> logged{false};
         if (!logged.exchange(true)) DH_LOG_I("materials: dragon request %s -> DH_Terrain", descName->c_str());
         descName->assign("DH_Terrain");
     }
-    return origin(ctx, sret, descName);
+    // Breadcrumbs around the engine's async material request for our material (2026-10-19 freeze at pipeline on).
+    static std::atomic<int> crumbs{0};
+    const bool              ours = descName && *descName == "DH_Terrain" && crumbs.fetch_add(1) < 8;
+    if (ours) DH_LOG_I("materials: enqueueAsync(DH_Terrain) enter");
+    void* r = origin(ctx, sret, descName);
+    if (ours) DH_LOG_I("materials: enqueueAsync(DH_Terrain) leave");
+    return r;
 }
 
 struct CompiledMaterialDefinitionOpaque;
@@ -802,7 +834,11 @@ LL_STATIC_HOOK(
     void const*        passphrase,
     bool               forceReload
 ) {
+    static std::atomic<int> crumbs{0};
+    const bool              ours = gActive.load() && name && *name == "DH_Terrain" && crumbs.fetch_add(1) < 8;
+    if (ours) DH_LOG_I("materials: getMaterial(DH_Terrain, force=%d) enter", (int)forceReload);
     void* ret = origin(self, sret, name, passphrase, forceReload);
+    if (ours) DH_LOG_I("materials: getMaterial(DH_Terrain) leave");
     if (gActive.load() && name) {
         bool ok = *reinterpret_cast<void**>(sret) != nullptr;
         if (traceLoader("CompiledMaterialManager::getMaterial", *name))
