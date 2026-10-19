@@ -218,7 +218,8 @@ void onKeys(ll::event::AfterUIRenderEvent& e) {
             auto& drv = bedrock::ClientWorldDriver::instance();
             drv.setIngestion(!drv.ingestion());
         }
-        if (dh::input::pressed(VK_F8) && ctrl) r.cycleDrawHook();
+        if (dh::input::pressed(VK_NUMPAD0) || (dh::input::pressed(VK_F8) && ctrl))
+            r.cycleDrawHook(); // Numpad 0 (Ctrl+F8 too)
         if (dh::input::pressed(VK_F4)) {
             if (shift) r.cycleFarMode();
             else if (ctrl) r.toggleNearCutoff();
