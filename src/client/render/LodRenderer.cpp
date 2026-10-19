@@ -307,6 +307,14 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
     }
 
     auto stats = uploader_.stats();
+    {
+        // the cloud section is not terrain: keep it out of the section/byte statistics
+        const std::size_t cb = clouds_.liveBytes();
+        if (cb) {
+            stats.liveSections -= std::min<std::size_t>(stats.liveSections, 1);
+            stats.liveBytes    -= std::min(stats.liveBytes, cb);
+        }
+    }
     dh::hud::set("render.sections", static_cast<std::int64_t>(stats.liveSections));
     dh::hud::set("render.pending", static_cast<std::int64_t>(stats.pending));
     dh::hud::set("render.bytes", static_cast<std::int64_t>(stats.liveBytes));
@@ -461,7 +469,7 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
                 );
             }
         }
-        cloudsReady = clouds_.update(ci_);
+        cloudsReady = clouds_.update(ci_) && listStatus != bedrock::RenderListStatus::Unavailable;
         dh::hud::set(
             "render.clouds",
             ci_.enable ? (cloudsReady ? "on" : "building") : (cloudsWanted() ? "waiting" : "off")
@@ -582,7 +590,7 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
         drawLayer(false);
         if (cfg_.drawTransparent) drawLayer(true);
         if (cloudsReady && transMaterial != material) {
-            cloudCalls = clouds_.draw(mctx, *transMaterial, camPos, fogStart, fogEnd);
+            cloudCalls = clouds_.draw(mctx, *transMaterial, camPos, camRel, fogStart, fogEnd);
             if (cloudCalls) cloudsDrawnNs_ = nowNs();
         }
     };

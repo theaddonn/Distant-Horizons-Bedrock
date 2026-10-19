@@ -74,9 +74,13 @@ public:
         mce::MeshContext&       mctx,
         mce::MaterialPtr const& material,
         glm::dvec3 const&       camera,
+        bool                    cameraRelative,
         float                   fogStart,
         float                   fogEnd
     );
+
+    /// Bytes of the live cloud section (0 if none); LodRenderer excludes it from the section statistics.
+    std::size_t liveBytes() const;
 
     /// Removes the section and cancels interest in a running build.
     void release();
