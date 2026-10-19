@@ -50,10 +50,13 @@ namespace {
 
 constexpr char const* kIndexSuffix    = "renderer/materials/materials.index.json";
 constexpr char const* kMaterialSuffix = "renderer/materials/DH_Terrain.material.bin";
-// Two index entries share the one compiled material file: DH_TerrainTransparent is only a second mce render-state
-// holder (blending, no depth write); the dragon request rename maps both to DH_Terrain.
+// Three index entries share the one compiled material file: DH_TerrainTransparent (blending, no depth write) and
+// DH_TerrainLate (opaque output, depth write, but flagged Blending so the dragon frame graph bins it into the
+// Transparent pass after the stars / sun / moon, Run 13) are only extra mce render-state holders; the dragon request
+// rename maps all of them to DH_Terrain.
 constexpr char const* kEntry = "{\"name\":\"DH_Terrain\",\"path\":\"DH_Terrain\"},"
-                               "{\"name\":\"DH_TerrainTransparent\",\"path\":\"DH_Terrain\"}";
+                               "{\"name\":\"DH_TerrainTransparent\",\"path\":\"DH_Terrain\"},"
+                               "{\"name\":\"DH_TerrainLate\",\"path\":\"DH_Terrain\"}";
 
 std::atomic<bool> gInstalled{false};
 std::atomic<bool> gActive{false};
@@ -726,6 +729,7 @@ uintptr_t resolveSig(SigDef const& d, bool requireUnique) {
 
 mce::RenderMaterialInfo* gDhInfo       = nullptr; // the mce info of "DH_Terrain" (cloned from the vanilla fallback)
 mce::RenderMaterialInfo* gDhTransInfo  = nullptr; // "DH_TerrainTransparent" (same compiled material, blended state)
+mce::RenderMaterialInfo* gDhLateInfo   = nullptr; // "DH_TerrainLate" (opaque output, Blending flag: late pass bin)
 TlsFlag                  gDhResolving; // dynamic TLS, see TlsFlag
 bool                     gKeyRewrite   = false;
 
@@ -754,11 +758,24 @@ LL_STATIC_HOOK(
     uint8_t* ds,
     int      pass
 ) {
-    if (gActive.load() && (gDhInfo || gDhTransInfo) && ds) {
+    if (gActive.load() && (gDhInfo || gDhTransInfo || gDhLateInfo) && ds) {
         void* info = *reinterpret_cast<void**>(ds + 0x148);
-        if ((gDhInfo && info == gDhInfo) || (gDhTransInfo && info == gDhTransInfo)) {
+        if ((gDhInfo && info == gDhInfo) || (gDhTransInfo && info == gDhTransInfo)
+            || (gDhLateInfo && info == gDhLateInfo)) {
             ResolvingGuard g;
             void*          r = origin(sret, ctx, ds, pass);
+            // Run 13 evidence: which dragon pass index each DH clone is resolved for (Opaque vs Transparent bin).
+            {
+                const int                         kind = info == gDhInfo ? 0 : info == gDhTransInfo ? 1 : 2;
+                static std::atomic<std::uint32_t> seen[3]{};
+                const std::uint32_t               bit = pass >= 0 && pass < 32 ? (1u << pass) : 0u;
+                if (bit && !(seen[kind].fetch_or(bit) & bit))
+                    DH_LOG_I(
+                        "materials: DH binding first use: %s -> pass=%d",
+                        kind == 0 ? "DH_Terrain" : kind == 1 ? "DH_TerrainTransparent" : "DH_TerrainLate",
+                        pass
+                    );
+            }
             // Binding struct: dragon material impl @+0x80, `bool valid` @+0x88 (RE 2026-10-19). An invalid binding
             // means the draw is skipped silently - the difference between "drawn with DH_Terrain" and "nothing".
             static std::atomic<int> logged{0};
@@ -953,12 +970,20 @@ std::string hexOf(unsigned char const* p, size_t n) {
     return hex;
 }
 
-/// Forces the render state of a DH clone. Opaque: stateMask 0, depth test+write, no blend. Transparent: depth test on,
+enum class CloneKind { Opaque, Blended, Late };
+
+char const* cloneKindName(CloneKind k) {
+    return k == CloneKind::Opaque ? "opaque" : k == CloneKind::Blended ? "transparent" : "late";
+}
+
+/// Forces the render state of a DH clone. Late: like Opaque (depth write; One/Zero blending replaces the target) but
+/// flagged Blending, which routes the draw into the frame graph's Transparent pass, after the stars (Run 13). Opaque: stateMask 0, depth test+write, no blend. Transparent: depth test on,
 /// depth write off, Blending (stateMask bit 1), colour SourceAlpha / OneMinusSrcAlpha, alpha One / OneMinusSrcAlpha
 /// (enum values from RE, see below). Layouts: DepthStencilStateDescription {depthTest u8, stencilTest u8,
 /// depthFunc u8, front[4], back[4], depthWriteMask u8, ...}, BlendStateDescription {src,dst,asrc,adst,
 /// colorWriteMask, enableBlend, a2c}, RasterizerStateDescription {float depthBias, float slopeScaled, cull}.
-void forceDhState(mce::RenderMaterial* clone, bool transparent) {
+void forceDhState(mce::RenderMaterial* clone, CloneKind kind) {
+    const bool transparent = kind == CloneKind::Blended;
     auto* dss = reinterpret_cast<unsigned char*>(&clone->depthStencilStateDescription);
     auto* bsd = reinterpret_cast<unsigned char*>(&clone->blendStateDescription);
     auto* rsd = reinterpret_cast<unsigned char*>(&clone->rasterizerStateDescription);
@@ -1014,9 +1039,18 @@ void forceDhState(mce::RenderMaterial* clone, bool transparent) {
             break;
         }
     }
+    if (kind == CloneKind::Late) {
+        constexpr unsigned char kZero = 2, kOne = 3; // mce::BlendTarget, see the transparent branch
+        reinterpret_cast<std::uint16_t&>(clone->mStateMask) = 1u << 1; // Blending (bins as Transparent)
+        bsd[0]                                              = kOne;
+        bsd[1]                                              = kZero;
+        bsd[2]                                              = kOne;
+        bsd[3]                                              = kZero;
+        bsd[5]                                              = 1;
+    }
     DH_LOG_I(
         "materials: DH clone forced %s: stateMask=0x%04x depthStencil=%s blend=%s depthBias=0",
-        transparent ? "transparent" : "opaque",
+        cloneKindName(kind),
         static_cast<unsigned>(reinterpret_cast<std::uint16_t&>(clone->mStateMask)),
         hexOf(dss, sizeof(clone->depthStencilStateDescription)).c_str(),
         hexOf(bsd, sizeof(clone->blendStateDescription)).c_str()
@@ -1028,7 +1062,7 @@ mce::RenderMaterialInfo* cloneDhInto(
     std::shared_ptr<mce::RenderMaterialInfo>& holder,
     char const*                               name,
     mce::RenderMaterial*                      src,
-    bool                                      transparent
+    CloneKind                                 kind
 ) {
     holder = mce::RenderMaterialGroup::switchable().getMaterialInfo(HashedString{name});
     if (!holder) return nullptr;
@@ -1040,15 +1074,15 @@ mce::RenderMaterialInfo* cloneDhInto(
         static_cast<mce::RenderMaterial*>(mem)->$ctor(*src);
         holder->mPtr.reset(reinterpret_cast<mce::RenderMaterial*>(mem));
     }
-    forceDhState(holder->mPtr.get(), transparent);
+    forceDhState(holder->mPtr.get(), kind);
     return holder.get();
 }
 
 } // namespace
 
 bool ensureDhMceMaterial(mce::MaterialPtr const& fallback, char const* sourceName) {
-    static bool done = false, transDone = false;
-    if (done && transDone) return true;
+    static bool done = false, transDone = false, lateDone = false;
+    if (done && transDone && lateDone) return true;
     if (!gBinderInstalled.load() || !fallback.mRenderMaterialInfoPtr) return false;
     mce::RenderMaterial* src = fallback.mRenderMaterialInfoPtr->mPtr.get();
     if (!src) return false;
@@ -1077,9 +1111,9 @@ bool ensureDhMceMaterial(mce::MaterialPtr const& fallback, char const* sourceNam
             hex.c_str()
         );
     }
-    static std::shared_ptr<mce::RenderMaterialInfo> dhInfo, dhTransInfo;
+    static std::shared_ptr<mce::RenderMaterialInfo> dhInfo, dhTransInfo, dhLateInfo;
     if (!done) {
-        if (!cloneDhInto(dhInfo, "DH_Terrain", src, false)) return false;
+        if (!cloneDhInto(dhInfo, "DH_Terrain", src, CloneKind::Opaque)) return false;
         gDhInfo = dhInfo.get();
         done    = true;
         DH_LOG_I(
@@ -1090,13 +1124,24 @@ bool ensureDhMceMaterial(mce::MaterialPtr const& fallback, char const* sourceNam
         );
     }
     if (!transDone) {
-        if (auto* ti = cloneDhInto(dhTransInfo, "DH_TerrainTransparent", src, true)) {
+        if (auto* ti = cloneDhInto(dhTransInfo, "DH_TerrainTransparent", src, CloneKind::Blended)) {
             gDhTransInfo = ti;
             transDone    = true;
             DH_LOG_I(
                 "materials: DH_TerrainTransparent mce material cloned (info=%p material=%p)",
                 (void*)ti,
                 (void*)ti->mPtr.get()
+            );
+        }
+    }
+    if (!lateDone) {
+        if (auto* li = cloneDhInto(dhLateInfo, "DH_TerrainLate", src, CloneKind::Late)) {
+            gDhLateInfo = li;
+            lateDone    = true;
+            DH_LOG_I(
+                "materials: DH_TerrainLate mce material cloned (info=%p material=%p)",
+                (void*)li,
+                (void*)li->mPtr.get()
             );
         }
     }
