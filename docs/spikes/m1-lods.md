@@ -292,3 +292,26 @@ In game (checklist):
 7. LOD water (sea beyond the vanilla distance): blue translucent with the seabed darkened, not brightened (it used
    the same broken blend). At the vanilla/LOD overlap band (about 115-144 blocks), check whether LOD seabed shows
    untinted through vanilla water (a known side effect of late/overdraw); compare with `opaque`.
+
+## Run 13b: near-ring "LOD square", leftover stars, cloud tint
+
+Deploy the DLL and `DH_Terrain.material.bin` together: the VS now decodes the cloud tint, and an old material would
+discard the clouds. Expected log lines: as in Run 13; `clouds: pattern from ...environment.brarchive:clouds.png`.
+
+1. White square over vanilla terrain (screenshot 28): go to the same spot at the same height (fly around y 190-200).
+   Press Numpad 2 (DH clouds off). Expected: the square vanishes. It is a cloud cell of the y 192..196 layer just
+   below the camera, and vanilla clouds return in its place. Then press Numpad 4 through late / overdraw / opaque with
+   clouds on. Expected: the square does not change. If it survives Numpad 2 and changes with Numpad 4, report which
+   mode removes it: that is the late-pass depth problem, and `overdraw` or `opaque` becomes the default.
+2. Stand on the ground in the near ring (vanilla terrain within ~144 blocks) and look straight at nearby vanilla
+   terrain with clouds off. Expected: no LOD surface on top of vanilla blocks, only the dithered fade at the vanilla
+   edge.
+3. Leftover stars at night, sky order `late`: (a) Numpad 2 off. If the stars disappear, they were showing through
+   the translucent clouds (vanilla does the same). (b) Ctrl+F4 (near clip off). If stars vanish from the near ring,
+   they came through the dither holes. (c) F5 off and the same view. If vanilla also shows stars on that terrain, it
+   is vanilla behaviour. Report which of a/b/c removes them and where they were (near ring, LOD water, far LODs).
+4. Clouds at dusk/dawn (or `/time set` 12000 -> 13000 -> 23000): the cloud colour follows the sky smoothly every
+   frame, with no 10 s steps and no rebuild pops. The log shows no new `clouds: first section live` / rebuild
+   lines while only the time changes. Clouds keep the same shape as before, with no holes around the player (the tint
+   packing must not trigger the near clip).
+5. Performance: report `render.ms` and `render.cloudQuads` with clouds on/off (the real pattern is about 825k quads).
