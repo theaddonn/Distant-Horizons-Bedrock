@@ -903,7 +903,8 @@ bool ensureDhMceMaterial(mce::MaterialPtr const& fallback) {
     gDhInfo = dhInfo.get();
     done    = true;
     DH_LOG_I(
-        "materials: DH_Terrain mce material cloned from MeshFallbackPosUVNormalColor (info=%p material=%p)",
+        "materials: DH_Terrain mce material cloned (source info=%p, info=%p material=%p)",
+        (void*)fallback.mRenderMaterialInfoPtr.get(),
         (void*)dhInfo.get(),
         (void*)dhInfo->mPtr.get()
     );
