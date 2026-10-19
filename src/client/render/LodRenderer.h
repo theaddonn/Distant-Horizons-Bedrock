@@ -35,10 +35,11 @@ enum class LightmapMode : int {
     Legacy         = 4, ///< LevelRenderer::mBrightnessTex (NULL client texture under RenderDragon so far)
     Shader         = 5, ///< no lightmap texture: procedural lightmap in the FS (packed light + daylight factor) [default]
     UnlitTest      = 6, ///< u_model[3][3] = 2: the FS keeps the raw vertex colour (flag-path self test)
+    LightDebug     = 7, ///< u_model[3][3] = -3: the FS paints R = sky/15, G = block/15 (decoded packed light)
 };
-inline constexpr int         kLightmapModeCount   = 7;
+inline constexpr int         kLightmapModeCount   = 8;
 inline constexpr char const* kLightmapModeNames[] =
-    {"dynamic", "dynamic-swapped", "dynamic-span", "atlas-test", "legacy", "shader", "unlit-test"};
+    {"dynamic", "dynamic-swapped", "dynamic-span", "atlas-test", "legacy", "shader", "unlit-test", "light-debug"};
 
 /// Primitive / winding choices cycled by F4.
 struct PrimChoice {
