@@ -32,6 +32,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstring>
 #include <variant>
 #include <vector>
 
@@ -303,7 +305,12 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
 
     // 3a. the world pipeline's render list (core frustum cull + near-to-far order), or every uploaded section
     //     (test feed / pipeline off)
-    const bool                camRel = cfg_.origin == OriginMode::CameraRelative;
+    const bool camRel = cfg_.origin == OriginMode::CameraRelative;
+    // The vanilla far plane would cull every distant LOD: use the DH far clip (RenderUtil.getFarClipPlane...).
+    const float lodRad = static_cast<float>(
+        bedrock::ConfigBridge::instance().config().options().client.graphics.quality.lodChunkRenderDistanceRadius
+    );
+    const float               farBlocks = renderutil::farClipPlaneDistanceInBlocks(static_cast<std::int32_t>(lodRad));
     bedrock::RenderListResult list;
     bedrock::RenderListStatus listStatus = bedrock::RenderListStatus::NoSession;
     {
@@ -312,13 +319,8 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
         // The core's Frustum wants glm matrices in the "DhApiMat4f array" layout, i.e. the TRANSPOSE of the
         // column-vector maths matrix (Frustum.h). analyzeProjection tells whether Bedrock's matrices are row-vector
         // (then the glm memory already equals that transpose) or column-vector (then transpose them).
-        const bool  tr     = info.valid && info.transposed;
-        const float lodRad = static_cast<float>(
-            bedrock::ConfigBridge::instance().config().options().client.graphics.quality.lodChunkRenderDistanceRadius
-        );
-        // The vanilla far plane would cull every distant LOD: use the DH far clip (RenderUtil.getFarClipPlane...).
-        const float farBlocks     = renderutil::farClipPlaneDistanceInBlocks(static_cast<std::int32_t>(lodRad));
-        glm::mat4   projFar       = info.valid ? spikes::patchFar(proj, info, cam.mZNear, cam.mZFar, farBlocks) : proj;
+        const bool tr             = info.valid && info.transposed;
+        glm::mat4  projFar        = info.valid ? spikes::patchFar(proj, info, cam.mZNear, cam.mZFar, farBlocks) : proj;
         params.mcModelViewMatrix  = tr ? view : glm::transpose(view);
         params.dhProjectionMatrix = tr ? projFar : glm::transpose(projFar);
         // camera-relative mode: the view matrix carries no translation, the core translates by -camera itself;
@@ -363,7 +365,11 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
     // 3b. near cut-off: skip sections entirely inside the area vanilla renders. The radius is the vanilla render
     //     distance scaled by RenderUtil's overdraw prevention (auto table, fast-movement reduction); the
     //     FOV-corrected near PLANE (nearClipPlaneInBlocks) is a projection value and is not used here.
-    float cutoff2 = -1.0f;
+    //     DH_Terrain discards the fragments below the radius instead (Java style; the inner section's top faces then
+    //     hide the border overdraw walls), so no section is dropped; the radius travels in u_model's projective row.
+    const bool dhShader   = std::strcmp(matName, "DH_Terrain") == 0;
+    float      cutoff2    = -1.0f;
+    float      clipRadius = 0.0f;
     if (cfg_.nearCutoff && listMode) {
         float rd = cfg_.vanillaRenderDistanceBlocks;
         if (rd <= 0.0f) {
@@ -378,7 +384,8 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
         nci.avgCameraSpeedBlocksPerSec     = speedEma_;
         const float overdraw               = renderutil::overdrawPrevention(nci);
         float r = std::max(1.0f, static_cast<float>(nci.vanillaChunkRenderDistance) * 16.0f * overdraw) * cfg_.overdraw;
-        cutoff2 = r * r;
+        if (dhShader) clipRadius = r;
+        else cutoff2 = r * r;
         if (!loggedCutoff_) {
             DH_LOG_I(
                 "render: near cut-off radius %.1f blocks (mRenderDistance=%.2f, overdraw %.2f)",
@@ -388,6 +395,18 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
             );
             loggedCutoff_ = true;
         }
+    }
+
+    const float fogEnd   = farBlocks;
+    const float fogStart = cfg_.fogStartFraction * farBlocks;
+    if (dhShader) {
+        dh::hud::set("render.clip", static_cast<double>(clipRadius));
+        char fogTxt[48];
+        std::snprintf(fogTxt, sizeof fogTxt, "%.0f..%.0f", fogStart, fogEnd);
+        dh::hud::set("render.fog", std::string(fogTxt));
+    } else {
+        dh::hud::set("render.clip", 0.0);
+        dh::hud::set("render.fog", std::string("off"));
     }
 
     std::vector<Visible> vis;
@@ -449,6 +468,13 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
             auto   wref = cam.worldMatrixStack->push(false);
             Matrix m    = Matrix::IDENTITY();
             m.translate(v.t.x, v.t.y, v.t.z);
+            if (dhShader) {
+                // DH_Terrain reads its per-draw parameters from the projective row (glm m[col][row]; HLSL row 3).
+                auto& g = m._m.get();
+                g[0][3] = clipRadius;
+                g[1][3] = fogStart;
+                g[2][3] = fogEnd;
+            }
             cam.worldMatrixStack->getTop() = m;
             for (auto const& part : parts) {
                 part.mesh->renderMesh(mctx, *material, none, 0, part.verts, OffscreenCaptureDescription{}, nullptr);

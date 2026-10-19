@@ -1,7 +1,7 @@
 // Spike B3: DH_Terrain fragment shader (see dh_terrain.vert.hlsl for the signature).
 // FS uniform table (we define it): DhParams vec4 (fragment) @0, cbuf 16 B. No texture sampling.
-// Output: vertex colour * DhParams.rgb; additionally lerped toward green by the smuggled
-// frac(u_model[0][3]/64) (light.x): smuggled 0 -> unchanged, so chunk-origin-dependent green = smuggling works.
+// light.x = near clip radius (discard when the horizontal camera distance is below it; 0 = off), light.y/z = fog
+// start/end in blocks, fog.rgb = vanilla's current fog colour. Output: vertex colour * DhParams.rgb, far fog.
 cbuffer FragmentUniforms : register(b1) {
     float4 DhParams;
 };
@@ -17,8 +17,10 @@ struct PSIn {
 };
 
 float4 main(PSIn i) : SV_Target0 {
+    float d = length(i.worldPos.xz);
+    if (i.light.x > 0.0 && d < i.light.x) discard;
     float3 c = i.color.rgb * DhParams.rgb;
-    float s = i.light.x;
-    c = lerp(c, float3(0.0, 1.0, 0.0) * (c.r + c.g + c.b) * 0.3333, s);
+    float fogStart = i.light.y, fogEnd = i.light.z;
+    if (fogEnd > fogStart) c = lerp(c, i.fog.rgb, saturate((d - fogStart) / (fogEnd - fogStart)));
     return float4(c, 1.0);
 }
