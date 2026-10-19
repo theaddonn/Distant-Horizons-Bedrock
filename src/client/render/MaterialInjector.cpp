@@ -727,7 +727,24 @@ LL_STATIC_HOOK(
         void* info = *reinterpret_cast<void**>(ds + 0x148);
         if (info == gDhInfo) {
             ResolvingGuard g;
-            return origin(sret, ctx, ds, pass);
+            void*          r = origin(sret, ctx, ds, pass);
+            // Binding struct: dragon material impl @+0x80, `bool valid` @+0x88 (RE 2026-10-19). An invalid binding
+            // means the draw is skipped silently - the difference between "drawn with DH_Terrain" and "nothing".
+            static std::atomic<int> logged{0};
+            const bool              valid = sret && *(reinterpret_cast<uint8_t*>(sret) + 0x88) != 0;
+            const int               n     = logged.fetch_add(1);
+            if (n < 4 || (valid && n == 4) || n % 600 == 0) {
+                DH_LOG_I(
+                    "materials: DH binding pass=%d valid=%d impl=%p singleBlock=%d texture=%p alphaTest=%d",
+                    pass,
+                    (int)valid,
+                    sret ? *reinterpret_cast<void**>(reinterpret_cast<uint8_t*>(sret) + 0x80) : nullptr,
+                    (int)ds[0x11F],
+                    *reinterpret_cast<void**>(ds + 0xC8),
+                    (int)ds[0x120]
+                );
+            }
+            return r;
         }
     }
     return origin(sret, ctx, ds, pass);
