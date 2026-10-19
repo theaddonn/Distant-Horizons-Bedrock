@@ -262,6 +262,14 @@ mce::MaterialPtr const& dhMaterial(mce::MaterialPtr const* altSource) {
     return *mat;
 }
 
+mce::MaterialPtr const& dhTransparentMaterial() {
+    // Cloned together with DH_Terrain by dhMaterial()/ensureDhMceMaterial; only the lookup lives here.
+    static std::optional<mce::MaterialPtr> mat;
+    if (!mat || !materialValid(*mat))
+        mat.emplace(mce::RenderMaterialGroup::switchable(), HashedString{"DH_TerrainTransparent"});
+    return *mat;
+}
+
 void resetMeshes() {
     for (auto& [k, v] : gMeshes) (void)v.release(); // leak on purpose: the buffer service may already be gone
     gMeshes.clear();

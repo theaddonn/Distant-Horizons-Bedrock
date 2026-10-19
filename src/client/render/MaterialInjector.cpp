@@ -50,7 +50,10 @@ namespace {
 
 constexpr char const* kIndexSuffix    = "renderer/materials/materials.index.json";
 constexpr char const* kMaterialSuffix = "renderer/materials/DH_Terrain.material.bin";
-constexpr char const* kEntry          = "{\"name\":\"DH_Terrain\",\"path\":\"DH_Terrain\"}";
+// Two index entries share the one compiled material file: DH_TerrainTransparent is only a second mce render-state
+// holder (blending, no depth write); the dragon request rename maps both to DH_Terrain.
+constexpr char const* kEntry = "{\"name\":\"DH_Terrain\",\"path\":\"DH_Terrain\"},"
+                               "{\"name\":\"DH_TerrainTransparent\",\"path\":\"DH_Terrain\"}";
 
 std::atomic<bool> gInstalled{false};
 std::atomic<bool> gActive{false};
@@ -696,6 +699,7 @@ uintptr_t resolveSig(SigDef const& d, bool requireUnique) {
 }
 
 mce::RenderMaterialInfo* gDhInfo       = nullptr; // the mce info of "DH_Terrain" (cloned from the vanilla fallback)
+mce::RenderMaterialInfo* gDhTransInfo  = nullptr; // "DH_TerrainTransparent" (same compiled material, blended state)
 thread_local bool        tlDhResolving = false;
 bool                     gKeyRewrite   = false;
 
@@ -724,9 +728,9 @@ LL_STATIC_HOOK(
     uint8_t* ds,
     int      pass
 ) {
-    if (gActive.load() && gDhInfo && ds) {
+    if (gActive.load() && (gDhInfo || gDhTransInfo) && ds) {
         void* info = *reinterpret_cast<void**>(ds + 0x148);
-        if (info == gDhInfo) {
+        if ((gDhInfo && info == gDhInfo) || (gDhTransInfo && info == gDhTransInfo)) {
             ResolvingGuard g;
             void*          r = origin(sret, ctx, ds, pass);
             // Binding struct: dragon material impl @+0x80, `bool valid` @+0x88 (RE 2026-10-19). An invalid binding
@@ -901,9 +905,114 @@ void installMaterialInjector() {
     DH_LOG_I("materials: injector on, DH_Terrain.material.bin %zu bytes", gMaterialBytes.size());
 }
 
+namespace {
+
+std::string hexOf(unsigned char const* p, size_t n) {
+    std::string hex;
+    char        b[4];
+    for (size_t i = 0; i < n; ++i) {
+        snprintf(b, sizeof(b), "%02x", p[i]);
+        hex += b;
+    }
+    return hex;
+}
+
+/// Forces the render state of a DH clone. Opaque: stateMask 0, depth test+write, no blend. Transparent: depth test on,
+/// depth write off, Blending (stateMask bit 1), blend factors SourceAlpha / InverseSourceAlpha taken from a vanilla
+/// alpha-blended material when one is valid. Layouts: DepthStencilStateDescription {depthTest u8, stencilTest u8,
+/// depthFunc u8, front[4], back[4], depthWriteMask u8, ...}, BlendStateDescription {src,dst,asrc,adst,
+/// colorWriteMask, enableBlend, a2c}, RasterizerStateDescription {float depthBias, float slopeScaled, cull}.
+void forceDhState(mce::RenderMaterial* clone, bool transparent) {
+    auto* dss = reinterpret_cast<unsigned char*>(&clone->depthStencilStateDescription);
+    auto* bsd = reinterpret_cast<unsigned char*>(&clone->blendStateDescription);
+    auto* rsd = reinterpret_cast<unsigned char*>(&clone->rasterizerStateDescription);
+    // depthFunc: the enum is not in the SDK; take the byte from a material whose JSON says "LessEqual"
+    // (cracks_overlay_tile_entity, ui3D.material) when it is loaded, else keep the source's.
+    {
+        static std::optional<mce::MaterialPtr> cracks;
+        if (!cracks || !cracks->mRenderMaterialInfoPtr || !cracks->mRenderMaterialInfoPtr->mPtr.get())
+            cracks.emplace(mce::RenderMaterialGroup::common(), HashedString{"cracks_overlay_tile_entity"});
+        if (cracks->mRenderMaterialInfoPtr && cracks->mRenderMaterialInfoPtr->mPtr.get()) {
+            auto const* ref = reinterpret_cast<unsigned char const*>(
+                &cracks->mRenderMaterialInfoPtr->mPtr.get()->depthStencilStateDescription
+            );
+            DH_LOG_I("materials: cracks_overlay_tile_entity depthFunc byte=%u (JSON LessEqual)", ref[2]);
+            dss[2] = ref[2];
+        }
+    }
+    reinterpret_cast<std::uint16_t&>(clone->mStateMask) = 0;   // RenderState::None
+    dss[0]                                              = 1;   // depthTestEnabled
+    dss[1]                                              = 0;   // stencilTestEnabled
+    dss[11]                                             = 1;   // depthWriteMask = All (D3D numbering)
+    bsd[4]                                              = 0xF; // colorWriteMask RGBA
+    bsd[5]                                              = 0;   // enableBlend
+    bsd[6]                                              = 0;   // alpha-to-coverage
+    float zero                                          = 0.0f;
+    std::memcpy(rsd + 0, &zero, 4); // depthBias
+    std::memcpy(rsd + 4, &zero, 4); // slopeScaledDepthBias
+    if (transparent) {
+        dss[11]                                             = 0;       // depth write off
+        reinterpret_cast<std::uint16_t&>(clone->mStateMask) = 1u << 1; // Blending
+        bsd[5]                                              = 1;
+        bool copied                                         = false;
+        for (char const* name : {"entity_alphablend", "beacon_beam_transparent"}) {
+            mce::MaterialPtr ref(mce::RenderMaterialGroup::common(), HashedString{name});
+            if (!ref.mRenderMaterialInfoPtr || !ref.mRenderMaterialInfoPtr->mPtr.get()) continue;
+            auto const* rb =
+                reinterpret_cast<unsigned char const*>(&ref.mRenderMaterialInfoPtr->mPtr.get()->blendStateDescription);
+            DH_LOG_I(
+                "materials: blend reference %s: %s",
+                name,
+                hexOf(rb, sizeof(clone->blendStateDescription)).c_str()
+            );
+            if (rb[5] == 0) continue; // not actually blending
+            std::memcpy(bsd, rb, sizeof(clone->blendStateDescription));
+            copied = true;
+            break;
+        }
+        if (!copied)
+            DH_LOG_W(
+                "materials: no vanilla alpha-blend reference valid; keeping the clone source's blend factors (src=%u "
+                "dst=%u)",
+                bsd[0],
+                bsd[1]
+            );
+    }
+    DH_LOG_I(
+        "materials: DH clone forced %s: stateMask=0x%04x depthStencil=%s blend=%s depthBias=0",
+        transparent ? "transparent" : "opaque",
+        static_cast<unsigned>(reinterpret_cast<std::uint16_t&>(clone->mStateMask)),
+        hexOf(dss, sizeof(clone->depthStencilStateDescription)).c_str(),
+        hexOf(bsd, sizeof(clone->blendStateDescription)).c_str()
+    );
+}
+
+/// Clones `src` into the switchable() info `name` (idempotent per info) and forces the state.
+mce::RenderMaterialInfo* cloneDhInto(
+    std::shared_ptr<mce::RenderMaterialInfo>& holder,
+    char const*                               name,
+    mce::RenderMaterial*                      src,
+    bool                                      transparent
+) {
+    holder = mce::RenderMaterialGroup::switchable().getMaterialInfo(HashedString{name});
+    if (!holder) return nullptr;
+    if (!holder->mPtr.get()) {
+        constexpr size_t kSize = 0x378;
+        DH_LOG_I("materials: sizeof(mce::RenderMaterial)=%zu (engine 0x378)", sizeof(mce::RenderMaterial));
+        void* mem = ::operator new(kSize);
+        std::memset(mem, 0, kSize);
+        static_cast<mce::RenderMaterial*>(mem)->$ctor(*src);
+        holder->mPtr.reset(reinterpret_cast<mce::RenderMaterial*>(mem));
+    }
+    forceDhState(holder->mPtr.get(), transparent);
+    return holder.get();
+}
+
+} // namespace
+
 bool ensureDhMceMaterial(mce::MaterialPtr const& fallback, char const* sourceName) {
-    static bool done = false;
-    if (done) return true;
+    static bool done = false, transDone = false;
+    if (done && transDone) return true;
     if (!gBinderInstalled.load() || !fallback.mRenderMaterialInfoPtr) return false;
     mce::RenderMaterial* src = fallback.mRenderMaterialInfoPtr->mPtr.get();
     if (!src) return false;
@@ -932,68 +1041,29 @@ bool ensureDhMceMaterial(mce::MaterialPtr const& fallback, char const* sourceNam
             hex.c_str()
         );
     }
-    static std::shared_ptr<mce::RenderMaterialInfo> dhInfo;
-    dhInfo = mce::RenderMaterialGroup::switchable().getMaterialInfo(HashedString{"DH_Terrain"});
-    if (!dhInfo) return false;
-    if (!dhInfo->mPtr.get()) {
-        constexpr size_t kSize = 0x378;
-        DH_LOG_I("materials: sizeof(mce::RenderMaterial)=%zu (engine 0x378)", sizeof(mce::RenderMaterial));
-        void* mem = ::operator new(kSize);
-        std::memset(mem, 0, kSize);
-        static_cast<mce::RenderMaterial*>(mem)->$ctor(*src);
-        dhInfo->mPtr.reset(reinterpret_cast<mce::RenderMaterial*>(mem));
+    static std::shared_ptr<mce::RenderMaterialInfo> dhInfo, dhTransInfo;
+    if (!done) {
+        if (!cloneDhInto(dhInfo, "DH_Terrain", src, false)) return false;
+        gDhInfo = dhInfo.get();
+        done    = true;
+        DH_LOG_I(
+            "materials: DH_Terrain mce material cloned (source info=%p, info=%p material=%p)",
+            (void*)fallback.mRenderMaterialInfoPtr.get(),
+            (void*)dhInfo.get(),
+            (void*)dhInfo->mPtr.get()
+        );
     }
-    {
-        // Force an ordinary opaque render state on the clone whatever the source was. The selection overlay source
-        // carried stateMask 0x0172 (Blending | DisableAlphaWrite | DisableDepthWrite | StencilWrite |
-        // EnableStencilTest), depthWriteMask 0 and a depth bias of -100/-15: no depth writes + bias = far sections
-        // drew over near ones (2026-10-19). Layouts: DepthStencilStateDescription {depthTest u8, stencilTest u8,
-        // depthFunc u8, front[4], back[4], depthWriteMask u8, ...}, BlendStateDescription {src,dst,asrc,adst,
-        // colorWriteMask, enableBlend, a2c}, RasterizerStateDescription {float depthBias, float slopeScaled, cull}.
-        mce::RenderMaterial* clone = dhInfo->mPtr.get();
-        auto*                dss   = reinterpret_cast<unsigned char*>(&clone->depthStencilStateDescription);
-        auto*                bsd   = reinterpret_cast<unsigned char*>(&clone->blendStateDescription);
-        auto*                rsd   = reinterpret_cast<unsigned char*>(&clone->rasterizerStateDescription);
-        // depthFunc: the enum is not in the SDK; take the byte from a material whose JSON says "LessEqual"
-        // (cracks_overlay_tile_entity, ui3D.material) when it is loaded, else keep the source's.
-        {
-            static std::optional<mce::MaterialPtr> cracks;
-            if (!cracks || !cracks->mRenderMaterialInfoPtr || !cracks->mRenderMaterialInfoPtr->mPtr.get())
-                cracks.emplace(mce::RenderMaterialGroup::common(), HashedString{"cracks_overlay_tile_entity"});
-            if (cracks->mRenderMaterialInfoPtr && cracks->mRenderMaterialInfoPtr->mPtr.get()) {
-                auto const* ref = reinterpret_cast<unsigned char const*>(
-                    &cracks->mRenderMaterialInfoPtr->mPtr.get()->depthStencilStateDescription
-                );
-                DH_LOG_I("materials: cracks_overlay_tile_entity depthFunc byte=%u (JSON LessEqual)", ref[2]);
-                dss[2] = ref[2];
-            }
+    if (!transDone) {
+        if (auto* ti = cloneDhInto(dhTransInfo, "DH_TerrainTransparent", src, true)) {
+            gDhTransInfo = ti;
+            transDone    = true;
+            DH_LOG_I(
+                "materials: DH_TerrainTransparent mce material cloned (info=%p material=%p)",
+                (void*)ti,
+                (void*)ti->mPtr.get()
+            );
         }
-        reinterpret_cast<std::uint16_t&>(clone->mStateMask) = 0;   // RenderState::None
-        dss[0]                                              = 1;   // depthTestEnabled
-        dss[1]                                              = 0;   // stencilTestEnabled
-        dss[11]                                             = 1;   // depthWriteMask = All (D3D numbering)
-        bsd[4]                                              = 0xF; // colorWriteMask RGBA
-        bsd[5]                                              = 0;   // enableBlend
-        bsd[6]                                              = 0;   // alpha-to-coverage
-        float zero                                          = 0.0f;
-        std::memcpy(rsd + 0, &zero, 4); // depthBias
-        std::memcpy(rsd + 4, &zero, 4); // slopeScaledDepthBias
-        std::string hex;
-        char        b[4];
-        for (size_t i = 0; i < sizeof(clone->depthStencilStateDescription); ++i) {
-            snprintf(b, sizeof(b), "%02x", dss[i]);
-            hex += b;
-        }
-        DH_LOG_I("materials: DH clone forced opaque: stateMask=0 depthStencil=%s depthBias=0", hex.c_str());
     }
-    gDhInfo = dhInfo.get();
-    done    = true;
-    DH_LOG_I(
-        "materials: DH_Terrain mce material cloned (source info=%p, info=%p material=%p)",
-        (void*)fallback.mRenderMaterialInfoPtr.get(),
-        (void*)dhInfo.get(),
-        (void*)dhInfo->mPtr.get()
-    );
     return true;
 }
 
