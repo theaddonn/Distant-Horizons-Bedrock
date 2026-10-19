@@ -30,6 +30,13 @@ Pattern patternFromRgba(std::uint8_t const* rgba, int w, int h);
 /// Deterministic 256x256 blob pattern used when clouds.png cannot be read.
 Pattern proceduralPattern();
 
+/// Locates file `name` inside a Bedrock `.brarchive` (the vanilla packs ship textures as
+/// `__brarchive/textures/environment.brarchive`, which holds clouds.png). Layout (1.26.51, read from the file):
+/// u64 magic 0x267052A0B125277D | u32 count | u32 version (1) | count x 256-byte entries {u8 nameLen,
+/// name[247], u32 offset, u32 size} | data; offsets are relative to the end of the entry table. Sets [off, off+len)
+/// to the file bytes and returns true when found and in bounds.
+bool findInBrArchive(std::uint8_t const* data, std::size_t n, char const* name, std::size_t& off, std::size_t& len);
+
 struct BuildParams {
     int          cell    = 12;             ///< blocks per texel
     double       centerX = 0, centerZ = 0; ///< cloud-space centre of the covered square (blocks)
