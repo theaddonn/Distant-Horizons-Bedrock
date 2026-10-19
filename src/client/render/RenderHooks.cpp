@@ -424,7 +424,7 @@ void onKeys(ll::event::AfterUIRenderEvent& e) {
             gVFog     = static_cast<VFogMode>((static_cast<int>(gVFog) + 1) % 4);
             DH_LOG_I("vfog: mode -> %s (Numpad 1)", vfogName(gVFog));
         }
-        if (dh::input::pressed(VK_NUMPAD3)) r.toggleLightmapAxes();
+        if (dh::input::pressed(VK_NUMPAD3)) r.cycleLightmapMode();
         updateHud();
     } catch (...) {
         static int n = 0;
