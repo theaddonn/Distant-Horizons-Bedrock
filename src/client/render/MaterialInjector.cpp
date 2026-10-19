@@ -3,6 +3,7 @@
 #include "bedrock_common/FileLogger.h"
 
 #include "ll/api/memory/Hook.h"
+#include "ll/api/memory/Signature.h"
 #include "ll/api/memory/Symbol.h"
 #include "ll/api/mod/NativeMod.h"
 #include "mc/client/renderer/RenderMaterialGroup.h"
@@ -17,6 +18,8 @@
 #include "mc/deps/core/resource/ResourceLocation.h"
 #include "mc/deps/core/resource/ResourceLocationPair.h"
 #include "mc/deps/core/string/HashedString.h"
+#include "mc/deps/minecraft_renderer/renderer/MaterialPtr.h"
+#include "mc/deps/minecraft_renderer/renderer/RenderMaterial.h"
 #include "mc/resources/AppResourceLoader.h"
 #include "mc/resources/ResourcePackManager.h"
 
@@ -27,13 +30,16 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <memory>
 #include <mutex>
 #include <set>
+#include <span>
 #include <sstream>
 #include <string>
+#include <string_view>
 
 #pragma clang diagnostic ignored "-Wdeprecated-declarations" // std::getenv
 
@@ -47,6 +53,7 @@ constexpr char const* kEntry          = "{\"name\":\"DH_Terrain\",\"path\":\"DH_
 
 std::atomic<bool> gInstalled{false};
 std::atomic<bool> gActive{false};
+std::atomic<bool> gBinderInstalled{false};
 std::string       gMaterialBytes; // read once at install(), immutable afterwards
 std::atomic<int>  gTraceBudget{40};
 std::atomic<int>  gProbeBudget{4};
@@ -625,50 +632,176 @@ LL_STATIC_HOOK(
 // instance hook on a dummy class with reference/pointer parameters that are passed through untouched.
 //=====================================================================================================================
 
-constexpr char const* kGetMaterialSym =
-    "?getMaterial@CompiledMaterialManager@materials@dragon@@QEAA?AV?$shared_ptr@VCompiledMaterialDefinition@materials@"
-    "dragon@@@std@@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@5@USimplePassphrase@EncryptionVariants@"
-    "definition@23@_N@Z";
+//---------------------------------------------------------------------------------------------------------------------
+// Signature-resolved engine functions (Minecraft.Windows.exe 1.26.51; see docs/spikes/stage-b-offline.md). Raw-ABI
+// detours: sret pointers are explicit parameters and the functions return them in rax.
+//---------------------------------------------------------------------------------------------------------------------
 
-struct CompiledMaterialDefinitionOpaque;
-struct CompiledMaterialManagerOpaque {};
+struct SigDef {
+    char const* name;
+    char const* sig;
+};
+constexpr SigDef kSigResolve = {
+    "resolveDragonMaterial",
+    "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC B8 04 00 00 48 8D AC 24 80 00 00 00 44 0F 29 95 20 04 00 00"
+};
+constexpr SigDef kSigEnqueue = {
+    "enqueueAsync",
+    "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC 48 01 00 00 48 8D AC 24 80 00 00 00 48 C7 85 C0 00 00 00 FE FF FF FF "
+    "49 89 D5"
+};
+constexpr SigDef kSigCache = {
+    "cacheGetOrCreate",
+    "55 41 57 41 56 41 54 56 57 53 48 83 EC 40 48 8D 6C 24 40 48 C7 45 F8 FE FF FF FF 4D 89 C6 48 89 D6 48 89 CF 49 8B "
+    "00 41 0F B6 48 08"
+};
+constexpr SigDef kSigGetMaterial = {
+    "getMaterial",
+    "55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC 28 01 00 00 48 8D AC 24 80 00 00 00 48 C7 85 A0 00 00 00 FE FF FF FF "
+    "4C 89 CB 4C 89 C6 49 89 D6 49 89 CF"
+};
 
-std::atomic<bool> gForcedDhLoad{false};
+uintptr_t gAddrResolve = 0, gAddrEnqueue = 0, gAddrCache = 0, gAddrGetMaterial = 0;
 
-uintptr_t getMaterialAddress() {
-    return reinterpret_cast<uintptr_t>(ll::memory::SymbolView{kGetMaterialSym}.resolve(true));
+uintptr_t resolveSig(SigDef const& d, bool requireUnique) {
+    auto*     first = ll::memory::SignatureView{ll::memory::Signature::parse(d.sig)}.resolve(true);
+    uintptr_t addr  = reinterpret_cast<uintptr_t>(first);
+    auto      base  = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
+    if (!addr) {
+        DH_LOG_I("materials: sig %s -> none", d.name);
+        return 0;
+    }
+    if (requireUnique) {
+        auto* nt  = reinterpret_cast<IMAGE_NT_HEADERS64*>(base + reinterpret_cast<IMAGE_DOS_HEADER*>(base)->e_lfanew);
+        auto  end = base + nt->OptionalHeader.SizeOfImage;
+        if (addr + 1 < end) {
+            auto* second = ll::memory::SignatureView{ll::memory::Signature::parse(d.sig)}.resolve(
+                std::span<std::byte>{reinterpret_cast<std::byte*>(addr + 1), static_cast<size_t>(end - addr - 1)},
+                true
+            );
+            if (second) {
+                DH_LOG_W(
+                    "materials: sig %s -> ambiguous (0x%llx and 0x%llx), not used",
+                    d.name,
+                    (unsigned long long)(addr - base),
+                    (unsigned long long)(reinterpret_cast<uintptr_t>(second) - base)
+                );
+                return 0;
+            }
+        }
+    }
+    DH_LOG_I("materials: sig %s -> 0x%llx", d.name, (unsigned long long)(addr - base));
+    return addr;
 }
 
-LL_TYPE_INSTANCE_HOOK(
+mce::RenderMaterialInfo* gDhInfo       = nullptr; // the mce info of "DH_Terrain" (cloned from the vanilla fallback)
+thread_local bool        tlDhResolving = false;
+bool                     gKeyRewrite   = false;
+
+struct ResolvingGuard {
+    bool prev;
+    ResolvingGuard() : prev(tlDhResolving) { tlDhResolving = true; }
+    ~ResolvingGuard() { tlDhResolving = prev; }
+};
+
+uint64_t fnv1a64(std::string_view s) {
+    uint64_t h = 0xcbf29ce484222325ull;
+    for (unsigned char c : s) {
+        h ^= c;
+        h *= 0x100000001b3ull;
+    }
+    return h;
+}
+
+LL_STATIC_HOOK(
+    HookResolveDragon,
+    ll::memory::HookPriority::Normal,
+    gAddrResolve,
+    void*,
+    void*    sret,
+    void*    ctx,
+    uint8_t* ds,
+    int      pass
+) {
+    if (gActive.load() && gDhInfo && ds) {
+        void* info = *reinterpret_cast<void**>(ds + 0x148);
+        if (info == gDhInfo) {
+            ResolvingGuard g;
+            return origin(sret, ctx, ds, pass);
+        }
+    }
+    return origin(sret, ctx, ds, pass);
+}
+
+LL_STATIC_HOOK(
+    HookCacheGetOrCreate,
+    ll::memory::HookPriority::Normal,
+    gAddrCache,
+    void*,
+    void*          cache,
+    void**         out,
+    std::uint64_t* key
+) {
+    if (tlDhResolving && key) {
+        std::uint64_t k[2] = {fnv1a64("DH_Terrain"), key[1]};
+        return origin(cache, out, k);
+    }
+    return origin(cache, out, key);
+}
+
+LL_STATIC_HOOK(
+    HookEnqueueAsync,
+    ll::memory::HookPriority::Normal,
+    gAddrEnqueue,
+    void*,
+    void*        ctx,
+    void*        sret,
+    std::string* descName
+) {
+    if (tlDhResolving && descName && descName->rfind("MeshFallback", 0) == 0) {
+        static std::atomic<bool> logged{false};
+        if (!logged.exchange(true)) DH_LOG_I("materials: dragon request %s -> DH_Terrain", descName->c_str());
+        descName->assign("DH_Terrain");
+    }
+    return origin(ctx, sret, descName);
+}
+
+struct CompiledMaterialDefinitionOpaque;
+std::atomic<bool> gForcedDhLoad{false};
+
+LL_STATIC_HOOK(
     HookGetMaterial,
     ll::memory::HookPriority::Normal,
-    CompiledMaterialManagerOpaque,
-    getMaterialAddress(),
-    std::shared_ptr<CompiledMaterialDefinitionOpaque>,
-    std::string const& name,
+    gAddrGetMaterial,
+    void*,
+    void*              self,
+    void*              sret,
+    std::string const* name,
     void const*        passphrase,
     bool               forceReload
 ) {
-    std::shared_ptr<CompiledMaterialDefinitionOpaque> r = origin(name, passphrase, forceReload);
-    if (gActive.load()) {
-        if (traceLoader("CompiledMaterialManager::getMaterial", name))
+    void* ret = origin(self, sret, name, passphrase, forceReload);
+    if (gActive.load() && name) {
+        bool ok = *reinterpret_cast<void**>(sret) != nullptr;
+        if (traceLoader("CompiledMaterialManager::getMaterial", *name))
             DH_LOG_I(
                 "materials: trace   -> getMaterial(%s, force=%d) = %s",
-                name.c_str(),
+                name->c_str(),
                 (int)forceReload,
-                r ? "ok" : "null"
+                ok ? "ok" : "null"
             );
-        // One forced load of our material through the engine's own path (the file-open redirect serves the bytes):
-        // answers "does the parser accept DH_Terrain.material.bin" independently of who requests it.
-        if (!gForcedDhLoad.exchange(true) && name != "DH_Terrain") {
-            auto dh = origin(std::string("DH_Terrain"), passphrase, false);
+        // One forced load of our material through the engine's own path (the file-open redirect serves the bytes).
+        if (!gForcedDhLoad.exchange(true) && *name != "DH_Terrain") {
+            std::string                                       dhName = "DH_Terrain";
+            std::shared_ptr<CompiledMaterialDefinitionOpaque> dh;
+            origin(self, &dh, &dhName, passphrase, false);
             DH_LOG_I(
                 "materials: forced getMaterial(DH_Terrain) = %s",
                 dh ? "ok (parsed)" : "null (not found or rejected)"
             );
         }
     }
-    return r;
+    return ret;
 }
 
 } // namespace
@@ -727,15 +860,66 @@ void installMaterialInjector() {
     DH_TRACE_VHOOK(TraceSfsReadFileData);
     DH_TRACE_VHOOK(TraceSfsOpenFile);
     DH_TRACE_VHOOK(TraceSfsReadFileDataExt);
-    if (getMaterialAddress()) DH_TRACE_HOOK(HookGetMaterial);
-    else DH_LOG_W("materials: CompiledMaterialManager::getMaterial symbol did not resolve; getMaterial hook skipped");
+    gAddrResolve     = resolveSig(kSigResolve, false);
+    gAddrEnqueue     = resolveSig(kSigEnqueue, false);
+    gAddrCache       = resolveSig(kSigCache, true);
+    gAddrGetMaterial = resolveSig(kSigGetMaterial, false);
+    if (gAddrGetMaterial) DH_TRACE_HOOK(HookGetMaterial);
+    else DH_LOG_W("materials: getMaterial signature did not resolve; getMaterial hook skipped");
+    if (gAddrResolve && gAddrEnqueue) {
+        gKeyRewrite = gAddrCache != 0;
+        if (gKeyRewrite) DH_TRACE_HOOK(HookCacheGetOrCreate);
+        else
+            DH_LOG_W(
+                "materials: cacheGetOrCreate unresolved; the DH binding shares the vanilla cache entry for that "
+                "variant set"
+            );
+        DH_TRACE_HOOK(HookEnqueueAsync);
+        DH_TRACE_HOOK(HookResolveDragon);
+        gBinderInstalled.store(true);
+    } else {
+        DH_LOG_W("materials: resolveDragonMaterial/enqueueAsync unresolved; DH_Terrain binder not installed");
+    }
     DH_LOG_I("materials: injector on, DH_Terrain.material.bin %zu bytes", gMaterialBytes.size());
+}
+
+bool ensureDhMceMaterial(mce::MaterialPtr const& fallback) {
+    static bool done = false;
+    if (done) return true;
+    if (!gBinderInstalled.load() || !fallback.mRenderMaterialInfoPtr) return false;
+    mce::RenderMaterial* src = fallback.mRenderMaterialInfoPtr->mPtr.get();
+    if (!src) return false;
+    static std::shared_ptr<mce::RenderMaterialInfo> dhInfo;
+    dhInfo = mce::RenderMaterialGroup::switchable().getMaterialInfo(HashedString{"DH_Terrain"});
+    if (!dhInfo) return false;
+    if (!dhInfo->mPtr.get()) {
+        constexpr size_t kSize = 0x378;
+        DH_LOG_I("materials: sizeof(mce::RenderMaterial)=%zu (engine 0x378)", sizeof(mce::RenderMaterial));
+        void* mem = ::operator new(kSize);
+        std::memset(mem, 0, kSize);
+        static_cast<mce::RenderMaterial*>(mem)->$ctor(*src);
+        dhInfo->mPtr.reset(reinterpret_cast<mce::RenderMaterial*>(mem));
+    }
+    gDhInfo = dhInfo.get();
+    done    = true;
+    DH_LOG_I(
+        "materials: DH_Terrain mce material cloned from MeshFallbackPosUVNormalColor (info=%p material=%p)",
+        (void*)dhInfo.get(),
+        (void*)dhInfo->mPtr.get()
+    );
+    return true;
 }
 
 void uninstallMaterialInjector() {
     if (!gInstalled.exchange(false)) return;
     if (gActive.exchange(false)) {
-        if (getMaterialAddress()) HookGetMaterial::unhook();
+        gBinderInstalled.store(false);
+        if (gAddrResolve && gAddrEnqueue) {
+            HookResolveDragon::unhook();
+            HookEnqueueAsync::unhook();
+            if (gKeyRewrite) HookCacheGetOrCreate::unhook();
+        }
+        if (gAddrGetMaterial) HookGetMaterial::unhook();
         HookGetFileAttributesW::unhook();
         HookGetFileAttributesExW::unhook();
         HookCreateFile2::unhook();
