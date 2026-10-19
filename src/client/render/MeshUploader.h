@@ -88,6 +88,13 @@ public:
 
     std::unordered_map<std::uint64_t, Section> const& sections() const { return sections_; }
     Stats                                             stats() const;
+    /// Packed-light statistics of the last converted section (diagnostics): min/max of StageAVertex::v and the
+    /// fraction of vertices with v == 0.
+    struct LightStats {
+        float vMin = 0, vMax = 0, zeroFrac = 0;
+        bool  valid = false;
+    };
+    LightStats lightStats() const;
 
     /// Packed colour order discovered from the Tessellator (valid after the first successful pump()).
     bool formatReady() const { return formatReady_; }
@@ -135,6 +142,8 @@ private:
     std::unique_ptr<Format>                    format_;
 
     std::atomic<std::size_t> liveSections_{0}, liveBytes_{0}, liveVertices_{0}, uploadsTotal_{0}, staleRemoves_{0};
+    std::atomic<float> lsMin_{0}, lsMax_{0}, lsZero_{0};
+    std::atomic<bool>  lsValid_{false};
 };
 
 } // namespace dh::render

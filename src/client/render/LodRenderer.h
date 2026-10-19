@@ -34,9 +34,11 @@ enum class LightmapMode : int {
     AtlasTest      = 3, ///< binds LevelRenderer::mAtlasTexture instead: coloured noise = the binding path works
     Legacy         = 4, ///< LevelRenderer::mBrightnessTex (NULL client texture under RenderDragon so far)
     Shader         = 5, ///< no lightmap texture: procedural lightmap in the FS (packed light + daylight factor) [default]
+    UnlitTest      = 6, ///< u_model[3][3] = 2: the FS keeps the raw vertex colour (flag-path self test)
 };
-inline constexpr int         kLightmapModeCount   = 6;
-inline constexpr char const* kLightmapModeNames[] = {"dynamic", "dynamic-swapped", "dynamic-span", "atlas-test", "legacy", "shader"};
+inline constexpr int         kLightmapModeCount   = 7;
+inline constexpr char const* kLightmapModeNames[] =
+    {"dynamic", "dynamic-swapped", "dynamic-span", "atlas-test", "legacy", "shader", "unlit-test"};
 
 /// Primitive / winding choices cycled by F4.
 struct PrimChoice {
@@ -186,8 +188,9 @@ private:
     bool                                  loggedTransMaterial_    = false;
     bool                                  warnedNoLightmap_       = false;
     bool                                  loggedLightmapSize_     = false;
-    bool                                  cpuLighting_      = true; ///< ConvertParams::cpuLighting currently applied
+    bool                                  cpuLighting_      = false; ///< ConvertParams::cpuLighting currently applied (DH_Terrain default: off)
     bool                                  lightSwapApplied_ = false;
+    std::chrono::steady_clock::time_point lastLightDiag_{};
 };
 
 } // namespace dh::render
