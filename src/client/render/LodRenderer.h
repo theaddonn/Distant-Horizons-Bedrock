@@ -16,6 +16,7 @@
 
 class BaseActorRenderContext;
 class IClientInstance;
+class ScreenContext;
 struct ViewRenderObject;
 
 namespace dh::render {
@@ -40,14 +41,27 @@ inline constexpr PrimChoice kPrimChoices[] = {
 };
 inline constexpr int kPrimChoiceCount = static_cast<int>(sizeof(kPrimChoices) / sizeof(kPrimChoices[0]));
 
+/// Where the LOD draw is hooked (Ctrl+F8 cycles).
+enum class DrawHook : int { CameraAfter = 0, LevelRenderBefore = 1, LevelRenderAfter = 2, PostLevelRender = 3 };
+inline constexpr int kDrawHookCount = 4;
+
+/// The per-frame view data the draw needs, copied from ViewRenderObject::mViewData.
+struct ViewSnapshot {
+    bool       isShadowPass = false;
+    glm::dvec3 cameraPos{0.0};
+    float      renderDistance = 0.0f;
+    bool       valid          = false;
+};
+
 struct LodRendererConfig {
+    DrawHook drawHook = DrawHook::CameraAfter;
     /// selectionOpaqueMaterial drops the green channel (magenta terrain, 2026-10-19); the fogged fallback is the
     /// Stage-A default, F6 cycles back for comparison.
     MaterialChoice material   = MaterialChoice::Dh; // -> MeshFallback (fogged) -> selection, whichever resolves
     OriginMode     origin     = OriginMode::CameraRelative;
-    int            primChoice = 0; ///< index into kPrimChoices
+    int            primChoice = 0;                      ///< index into kPrimChoices
     FarMode        farMode    = FarMode::LocalProjPush; // R3 (2026-10-19): zfar-override makes the clouds vanish
-    float          farBlocks  = 20000.0f; ///< far plane used by LocalProjPush / ZFarOverride
+    float          farBlocks  = 20000.0f;               ///< far plane used by LocalProjPush / ZFarOverride
 
     std::size_t maxUploadsPerFrame = 8;
     bool        frustumCull        = true;
@@ -55,7 +69,7 @@ struct LodRendererConfig {
     bool        coreFrustum        = true; ///< cull in the core RenderList (Ctrl+F5 toggles; off: only Frustum5)
     /// Draw every uploaded section instead of the world pipeline's render list (set while the Shift+F5 test feed
     /// is active, whose sections are not part of any quad tree).
-    bool        drawAllUploaded    = false;
+    bool drawAllUploaded = false;
 
     /// Near cut-off: skip a section whose horizontal footprint lies entirely within
     /// vanillaRenderDistanceBlocks * overdraw of the camera. vanillaRenderDistanceBlocks <= 0: take it from
@@ -85,6 +99,15 @@ public:
     /// Called from the LevelRendererCamera::$render hook after the vanilla world has been drawn.
     void renderFrame(BaseActorRenderContext& rc, ViewRenderObject const& vro, IClientInstance& ci);
 
+    /// Drawing core (any hook point).
+    void drawFrame(ScreenContext& ctx, ViewSnapshot const& view, IClientInstance& ci);
+    /// Stores the latest view snapshot (render thread; called from the camera hook every frame).
+    void                noteView(ViewRenderObject const& vro);
+    ViewSnapshot const& lastView() const { return lastView_; }
+    static ViewSnapshot snapshotOf(ViewRenderObject const& vro);
+    void                cycleDrawHook();
+    char const*         drawHookName() const;
+
     /// Last camera position seen by renderFrame (block coordinates); false before the first frame.
     bool lastCameraPos(glm::dvec3& out) const;
     /// Records the camera position from a frame the renderer did not draw (renderer off), so the test feed can be
@@ -104,20 +127,21 @@ public:
 
 private:
     LodRendererConfig cfg_;
+    ViewSnapshot      lastView_;
     MeshUploader      uploader_;
 
-    std::atomic<bool>   haveCam_{false};
-    std::atomic<double> camX_{0}, camY_{0}, camZ_{0};
-    double              emaMs_           = 0;
-    bool                loggedFirstDraw_ = false;
+    std::atomic<bool>                     haveCam_{false};
+    std::atomic<double>                   camX_{0}, camY_{0}, camZ_{0};
+    double                                emaMs_           = 0;
+    bool                                  loggedFirstDraw_ = false;
     glm::dvec3                            lastCamPos_{0};
     std::chrono::steady_clock::time_point lastCamTime_{};
-    bool                                  haveLastCam_ = false;
-    double                                speedEma_    = 0.0;
-    bool                loggedCutoff_    = false;
-    bool                warnedDh_        = false;
-    bool                warnedMaterialFallback_ = false;
-    bool                loggedDhMaterial_       = false;
+    bool                                  haveLastCam_            = false;
+    double                                speedEma_               = 0.0;
+    bool                                  loggedCutoff_           = false;
+    bool                                  warnedDh_               = false;
+    bool                                  warnedMaterialFallback_ = false;
+    bool                                  loggedDhMaterial_       = false;
 };
 
 } // namespace dh::render

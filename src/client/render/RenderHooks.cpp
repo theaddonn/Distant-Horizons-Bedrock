@@ -13,8 +13,11 @@
 #include "ll/api/event/render/UIRenderEvent.h"
 #include "ll/api/memory/Hook.h"
 #include "mc/client/game/IClientInstance.h"
+#include "mc/client/gui/screens/InGamePlayScreen.h"
+#include "mc/client/gui/screens/ScreenContext.h"
 #include "mc/client/gui/screens/ScreenView.h"
 #include "mc/client/renderer/BaseActorRenderContext.h"
+#include "mc/client/renderer/game/LevelRenderer.h"
 #include "mc/client/renderer/game/LevelRendererCamera.h"
 #include "mc/client/renderer/game/LevelRendererPlayer.h"
 #include "mc/deps/minecraft_renderer/objects/ViewRenderObject.h"
@@ -50,10 +53,26 @@ void updateHud() {
     dh::hud::set("render.origin", r.config().origin == OriginMode::CameraRelative ? "cam-relative" : "absolute");
     dh::hud::set("render.prim", kPrimChoices[r.config().primChoice].name);
     dh::hud::set("render.far", r.farModeName());
+    dh::hud::set("render.hook", r.drawHookName());
     dh::hud::set("render.feed", testfeed::active() ? "on" : "off");
 }
 
-// Draw the LODs right after the vanilla world (same hook point as spike R1).
+void guardedDraw(ScreenContext& sc, IClientInstance& ci, char const* where) {
+    try {
+        gRenderer->drawFrame(sc, gRenderer->lastView(), ci);
+    } catch (std::exception const& e) {
+        static int n = 0;
+        if (n++ < 5) DH_LOG_E("render: %s draw threw: %s", where, e.what());
+    } catch (...) {
+        static int n = 0;
+        if (n++ < 5) DH_LOG_E("render: %s draw threw an unknown exception", where);
+    }
+}
+
+// The IClientInstance for the LevelRenderer-based hooks (they do not receive one).
+IClientInstance* gClient = nullptr;
+
+// Draw the LODs right after the vanilla world (same hook point as spike R1); also caches the view every frame.
 LL_TYPE_INSTANCE_HOOK(
     LodRenderHook,
     ll::memory::HookPriority::Normal,
@@ -66,10 +85,13 @@ LL_TYPE_INSTANCE_HOOK(
 ) {
     origin(rc, vro, ci);
     if (!gRenderer) return;
+    gClient = &ci;
+    gRenderer->noteView(vro);
     if (!gEnabled) {
         gRenderer->observeCamera(vro); // so Shift+F5 can place the test feed before the first drawn frame
         return;
     }
+    if (gRenderer->config().drawHook != DrawHook::CameraAfter) return;
     try {
         gRenderer->renderFrame(rc, vro, ci);
     } catch (std::exception const& e) {
@@ -79,6 +101,38 @@ LL_TYPE_INSTANCE_HOOK(
         static int n = 0;
         if (n++ < 5) DH_LOG_E("render: renderFrame threw an unknown exception");
     }
+}
+
+LL_TYPE_INSTANCE_HOOK(
+    LodLevelRenderHook,
+    ll::memory::HookPriority::Normal,
+    LevelRenderer,
+    &LevelRenderer::renderLevel,
+    void,
+    ::ScreenContext&           sc,
+    ::FrameRenderObject const& fro
+) {
+    DrawHook m = gRenderer ? gRenderer->config().drawHook : DrawHook::CameraAfter;
+    bool     active =
+        gRenderer && gEnabled && gClient && gRenderer->lastView().valid && !gRenderer->lastView().isShadowPass;
+    if (active && m == DrawHook::LevelRenderBefore) guardedDraw(sc, *gClient, "level-before");
+    origin(sc, fro);
+    if (active && m == DrawHook::LevelRenderAfter) guardedDraw(sc, *gClient, "level-after");
+}
+
+LL_TYPE_INSTANCE_HOOK(
+    LodPostLevelHook,
+    ll::memory::HookPriority::Normal,
+    InGamePlayScreen,
+    &InGamePlayScreen::$_postLevelRender,
+    void,
+    ::ScreenContext& sc,
+    ::LevelRenderer& lr
+) {
+    origin(sc, lr);
+    if (!gRenderer || !gEnabled || !gClient || gRenderer->config().drawHook != DrawHook::PostLevelRender) return;
+    if (!gRenderer->lastView().valid || gRenderer->lastView().isShadowPass) return;
+    guardedDraw(sc, *gClient, "post-level");
 }
 
 // far-plane mode "zfar-override": enlarge mZFar and rebuild the projection top after the camera is set up.
@@ -164,6 +218,7 @@ void onKeys(ll::event::AfterUIRenderEvent& e) {
             auto& drv = bedrock::ClientWorldDriver::instance();
             drv.setIngestion(!drv.ingestion());
         }
+        if (dh::input::pressed(VK_F8) && ctrl) r.cycleDrawHook();
         if (dh::input::pressed(VK_F4)) {
             if (shift) r.cycleFarMode();
             else if (ctrl) r.toggleNearCutoff();
@@ -195,6 +250,8 @@ void install() {
     gInstalled = true;
     gRenderer  = std::make_unique<LodRenderer>();
     LodRenderHook::hook();
+    LodLevelRenderHook::hook();
+    LodPostLevelHook::hook();
     LodSetupCameraHook::hook();
     auto& bus     = ll::event::EventBus::getInstance();
     gKeyListener  = bus.emplaceListener<ll::event::AfterUIRenderEvent>(onKeys);
@@ -210,7 +267,7 @@ void install() {
         "render: Stage-A renderer installed (off; F5 pipeline on/off, Shift+F5 test feed, Ctrl+F5 core frustum, "
         "Shift+F7 ingestion, F4 prim, Shift+F4 far plane, Ctrl+F4 "
         "near cut-off, "
-        "F6 material, Shift+F6 origin, Ctrl+F6 transparent)"
+        "F6 material, Shift+F6 origin, Ctrl+F6 transparent, Ctrl+F8 draw hook)"
     );
 }
 
@@ -224,6 +281,9 @@ void uninstall() {
     gKeyListener.reset();
     gExitListener.reset();
     LodSetupCameraHook::unhook();
+    LodPostLevelHook::unhook();
+    LodLevelRenderHook::unhook();
+    gClient = nullptr;
     LodRenderHook::unhook();
     testfeed::reset();
     gRenderer.reset(); // meshes are leaked on purpose (MeshUploader dtor): not on the render thread

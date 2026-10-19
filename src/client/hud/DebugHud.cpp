@@ -106,7 +106,7 @@ void onRender(ll::event::AfterUIRenderEvent& e) {
     if (dt > 0.0 && dt < 1000.0) gFrameMs = gFrameMs == 0.0 ? dt : gFrameMs * 0.95 + dt * 0.05;
 
     if (dh::input::pressed(0x76) && !dh::input::shiftDown()) gVisible = !gVisible; // F7 (Shift+F7 = chunk ingress)
-    if (dh::input::pressed(0x77)) DH_LOG_I("hud-dump: %s", dumpJson().c_str());    // F8
+    if (dh::input::pressed(0x77) && !dh::input::ctrlDown()) DH_LOG_I("hud-dump: %s", dumpJson().c_str()); // F8
 
     if (!gVisible) return;
 
