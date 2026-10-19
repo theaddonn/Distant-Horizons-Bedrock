@@ -439,7 +439,12 @@ void ClientLevelModule::stopRenderer() {
         return;
     }
     // G2: the retrieval queue / request module must already be stopped (the caller's duty), then the tree closes.
-    t->close();
+    {
+        // A collectRenderList() build in flight must finish before the sections are disposed; tree() now returns
+        // null, so no new build can pick this tree up. Lock order renderMutex_ -> treeTickMutex_ (mutex_ not held).
+        std::lock_guard renderLock(renderMutex_);
+        t->close();
+    }
     std::lock_guard lock(mutex_);
     retire(std::move(t));
 }
