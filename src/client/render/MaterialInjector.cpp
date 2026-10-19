@@ -936,7 +936,20 @@ void forceDhState(mce::RenderMaterial* clone, bool transparent) {
             auto const* ref = reinterpret_cast<unsigned char const*>(
                 &cracks->mRenderMaterialInfoPtr->mPtr.get()->depthStencilStateDescription
             );
-            DH_LOG_I("materials: cracks_overlay_tile_entity depthFunc byte=%u (JSON LessEqual)", ref[2]);
+            auto const* refB = reinterpret_cast<unsigned char const*>(
+                &cracks->mRenderMaterialInfoPtr->mPtr.get()->blendStateDescription
+            );
+            DH_LOG_I(
+                "materials: cracks_overlay_tile_entity depthFunc byte=%u (JSON LessEqual); blend bytes src=%u dst=%u "
+                "asrc=%u adst=%u mask=%u enable=%u (JSON blendSrc=DestColor blendDst=Zero)",
+                ref[2],
+                refB[0],
+                refB[1],
+                refB[2],
+                refB[3],
+                refB[4],
+                refB[5]
+            );
             dss[2] = ref[2];
         }
     }
