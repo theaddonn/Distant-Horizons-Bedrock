@@ -954,8 +954,8 @@ std::string hexOf(unsigned char const* p, size_t n) {
 }
 
 /// Forces the render state of a DH clone. Opaque: stateMask 0, depth test+write, no blend. Transparent: depth test on,
-/// depth write off, Blending (stateMask bit 1), blend factors SourceAlpha / InverseSourceAlpha taken from a vanilla
-/// alpha-blended material when one is valid. Layouts: DepthStencilStateDescription {depthTest u8, stencilTest u8,
+/// depth write off, Blending (stateMask bit 1), colour SourceAlpha / OneMinusSrcAlpha, alpha One / OneMinusSrcAlpha
+/// (enum values from RE, see below). Layouts: DepthStencilStateDescription {depthTest u8, stencilTest u8,
 /// depthFunc u8, front[4], back[4], depthWriteMask u8, ...}, BlendStateDescription {src,dst,asrc,adst,
 /// colorWriteMask, enableBlend, a2c}, RasterizerStateDescription {float depthBias, float slopeScaled, cull}.
 void forceDhState(mce::RenderMaterial* clone, bool transparent) {
@@ -987,32 +987,32 @@ void forceDhState(mce::RenderMaterial* clone, bool transparent) {
     std::memcpy(rsd + 0, &zero, 4); // depthBias
     std::memcpy(rsd + 4, &zero, 4); // slopeScaledDepthBias
     if (transparent) {
+        // mce::BlendTarget values from the engine's name -> enum table (static RE, built in the function at RVA
+        // 0x05369840): DestColor 0, SourceColor 1, Zero 2, One 3, OneMinusDestColor 4, OneMinusSrcColor 5,
+        // SourceAlpha 6, DestAlpha 7, OneMinusSrcAlpha 8. The clone source (selectionOpaqueMaterial) carries
+        // DestColor/SourceColor = a 2x modulate (2 * src * dst) that turned the DH clouds cyan and opaque against the
+        // sky (Run 13). The vanilla alpha-blend references were never loaded at clone time, so the factors are set
+        // explicitly; a reference, when loaded, is only logged as a cross-check.
+        constexpr unsigned char kOne = 3, kSourceAlpha = 6, kOneMinusSrcAlpha = 8;
         dss[11]                                             = 0;       // depth write off
         reinterpret_cast<std::uint16_t&>(clone->mStateMask) = 1u << 1; // Blending
+        bsd[0]                                              = kSourceAlpha;
+        bsd[1]                                              = kOneMinusSrcAlpha;
+        bsd[2]                                              = kOne;
+        bsd[3]                                              = kOneMinusSrcAlpha;
         bsd[5]                                              = 1;
-        bool copied                                         = false;
         for (char const* name : {"entity_alphablend", "beacon_beam_transparent"}) {
             mce::MaterialPtr ref(mce::RenderMaterialGroup::common(), HashedString{name});
             if (!ref.mRenderMaterialInfoPtr || !ref.mRenderMaterialInfoPtr->mPtr.get()) continue;
             auto const* rb =
                 reinterpret_cast<unsigned char const*>(&ref.mRenderMaterialInfoPtr->mPtr.get()->blendStateDescription);
             DH_LOG_I(
-                "materials: blend reference %s: %s",
+                "materials: blend reference %s: %s (alpha blending expects src=06 dst=08)",
                 name,
                 hexOf(rb, sizeof(clone->blendStateDescription)).c_str()
             );
-            if (rb[5] == 0) continue; // not actually blending
-            std::memcpy(bsd, rb, sizeof(clone->blendStateDescription));
-            copied = true;
             break;
         }
-        if (!copied)
-            DH_LOG_W(
-                "materials: no vanilla alpha-blend reference valid; keeping the clone source's blend factors (src=%u "
-                "dst=%u)",
-                bsd[0],
-                bsd[1]
-            );
     }
     DH_LOG_I(
         "materials: DH clone forced %s: stateMask=0x%04x depthStencil=%s blend=%s depthBias=0",
