@@ -46,14 +46,20 @@ public:
     }
 };
 
-/// Runs `fn` on the server thread and waits up to `ttl` for its result (nullptr on timeout).
+/// Runs `fn` on the server thread and waits up to `ttl` for its result (R{} on timeout / abort). `abort` is checked
+/// again on the server thread before `fn` runs (so a task that outlives the generator/dimension never touches them)
+/// and polled while waiting, so shutdown never burns the full TTL.
 template <class Fn>
-auto onServerThread(Fn fn, std::chrono::milliseconds ttl) -> decltype(fn()) {
+auto onServerThread(Fn fn, std::chrono::milliseconds ttl, std::shared_ptr<std::atomic<bool>> abort) -> decltype(fn()) {
     using R   = decltype(fn());
     auto prom = std::make_shared<std::promise<R>>();
     auto fut  = prom->get_future();
-    ll::thread::ServerThreadExecutor::getDefault().execute([prom, fn = std::move(fn)]() mutable {
+    ll::thread::ServerThreadExecutor::getDefault().execute([prom, abort, fn = std::move(fn)]() mutable {
         try {
+            if (abort->load()) {
+                prom->set_value(R{});
+                return;
+            }
             prom->set_value(fn());
         } catch (...) {
             try {
@@ -61,7 +67,10 @@ auto onServerThread(Fn fn, std::chrono::milliseconds ttl) -> decltype(fn()) {
             } catch (...) {}
         }
     });
-    if (fut.wait_for(ttl) != std::future_status::ready) return R{};
+    const auto deadline = std::chrono::steady_clock::now() + ttl;
+    while (fut.wait_for(50ms) != std::future_status::ready) {
+        if (abort->load() || std::chrono::steady_clock::now() > deadline) return R{};
+    }
     return fut.get();
 }
 
@@ -104,10 +113,16 @@ BdsWorldGenerator::BdsWorldGenerator(
     threads_          = serverThreadOnly_ ? 1 : (scratchThreads == 0 ? defaultScratchThreads() : scratchThreads);
     lastStatMs_.store(nowMs());
     DH_LOG_I(
-        "world gen: %d scratch worker thread(s)%s",
+        "world gen: configured %d scratch worker thread(s)%s (started on first use)",
         threads_,
         serverThreadOnly_ ? " (legacy: whole task on the server thread)" : ""
     );
+}
+
+void BdsWorldGenerator::startWorkersLocked() {
+    if (workersStarted_ || stopWorkers_) return;
+    workersStarted_ = true;
+    DH_LOG_I("world gen: starting %d scratch worker thread(s)", threads_);
     for (int i = 0; i < threads_; ++i) workers_.emplace_back([this] { workerLoop(); });
 }
 
@@ -126,12 +141,16 @@ void BdsWorldGenerator::workerLoop() {
             job = std::move(work_.front());
             work_.pop_front();
         }
-        job(); // the closure's TaskGuard releases the in-flight slot
+        try {
+            job(); // the closure's TaskGuard releases the in-flight slot
+        } catch (...) {
+            DH_LOG_E("world gen: exception escaped a generation job");
+        }
     }
 }
 
 void BdsWorldGenerator::close() {
-    closing_.store(true);
+    closing_->store(true);
     cancelAll();
 }
 
@@ -152,21 +171,29 @@ struct BdsWorldGenerator::TaskGuard {
     BdsWorldGenerator*     self;
     std::shared_ptr<Batch> batch;
     bool                   ran = false;
+    // Constructed in place only: a copied/moved temporary would run the destructor (double release + false failure).
+    TaskGuard(BdsWorldGenerator* s, std::shared_ptr<Batch> b) : self(s), batch(std::move(b)) {}
+    TaskGuard(const TaskGuard&)            = delete;
+    TaskGuard& operator=(const TaskGuard&) = delete;
     ~TaskGuard() {
         if (!ran) self->finishChunk(batch, false);
         std::lock_guard lock(self->mutex_);
-        if (--self->inFlightTasks_ == 0) self->idleCv_.notify_all();
+        const int       left = --self->inFlightTasks_;
+        if (left < 0) DH_LOG_E("world gen: in-flight counter went negative (%d): double release", left);
+        if (left <= 0) self->idleCv_.notify_all();
     }
 };
 
-BdsWorldGenerator::~BdsWorldGenerator() {
+BdsWorldGenerator::~BdsWorldGenerator() { stopWorkersAndWait(); }
+
+void BdsWorldGenerator::stopWorkersAndWait() {
     close();
-    std::unique_lock lock(mutex_);
-    // Tasks capture `this`: wait for them (they skip the work once cancelled). Bounded so a stuck server
-    // thread hop cannot hang shutdown forever.
-    idleCv_.wait_for(lock, 30s, [&] { return inFlightTasks_.load() == 0; });
-    lock.unlock();
-    // Queued jobs fail fast (closing_); a worker stuck in a server-thread hop is bounded by the hop TTL.
+    {
+        std::unique_lock lock(mutex_);
+        // Tasks capture `this`: wait for them (they fail fast once closing_). Server-thread hops poll closing_, so
+        // this is safe even when called on the server thread. Bounded as a last resort.
+        idleCv_.wait_for(lock, 30s, [&] { return inFlightTasks_.load() == 0; });
+    }
     stopWorkers();
 }
 
@@ -197,7 +224,7 @@ void BdsWorldGenerator::queue(
     ChunkCallback onChunk,
     DoneCallback  done
 ) {
-    if (widthChunks <= 0 || closing_.load()) {
+    if (widthChunks <= 0 || closing_->load()) {
         if (done) done(false);
         return;
     }
@@ -218,10 +245,11 @@ void BdsWorldGenerator::queue(
         for (std::int32_t dx = 0; dx < widthChunks; ++dx) {
             const std::int32_t cx = minChunkX + dx, cz = minChunkZ + dz;
             ++inFlightTasks_;
-            auto guard = std::make_shared<TaskGuard>(TaskGuard{this, batch});
+            auto guard = std::make_shared<TaskGuard>(this, batch);
             // If rejected, the closure (and with it the guard) is destroyed and completes the chunk as failed.
             // FIFO across batches: a section's 16 chunks are picked up together before the next section's.
             std::lock_guard lock(workMutex_);
+            startWorkersLocked();
             work_.emplace_back([this, batch, cx, cz, guard] {
                 guard->ran = true;
                 runChunk(batch, cx, cz);
@@ -231,21 +259,25 @@ void BdsWorldGenerator::queue(
     workCv_.notify_all();
 }
 
-void BdsWorldGenerator::noteChunkDone(long long ms) {
-    statChunks_.fetch_add(1);
+void BdsWorldGenerator::noteChunkDone(long long ms, bool okChunk) {
+    (okChunk ? statChunks_ : statFailed_).fetch_add(1);
     statMs_.fetch_add(ms);
     const long long now  = nowMs();
     long long       last = lastStatMs_.load();
     if (now - last < 10000 || !lastStatMs_.compare_exchange_strong(last, now)) return;
     const long long n   = statChunks_.exchange(0);
+    const long long nf  = statFailed_.exchange(0);
     const long long sum = statMs_.exchange(0);
-    if (n > 0)
+    const long long tot = n + nf;
+    if (tot > 0)
         DH_LOG_I(
-            "world gen: %lld chunks in the last 10 s (avg %lld ms, in flight %d, threads %d)",
+            "world gen: %lld chunks in the last 10 s (avg %lld ms, in flight %d, threads %d; ok %lld, failed %lld)",
             n,
-            sum / n,
+            sum / tot,
             inFlightTasks_.load(),
-            threads_
+            threads_,
+            n,
+            nf
         );
 }
 
@@ -258,7 +290,7 @@ void BdsWorldGenerator::finishChunk(const std::shared_ptr<Batch>& batch, bool ok
 }
 
 void BdsWorldGenerator::runChunk(const std::shared_ptr<Batch>& batch, std::int32_t cx, std::int32_t cz) {
-    if (batch->cancelled.load() || closing_.load()) {
+    if (batch->cancelled.load() || closing_->load()) {
         finishChunk(batch, false);
         return;
     }
@@ -286,10 +318,11 @@ void BdsWorldGenerator::runChunk(const std::shared_ptr<Batch>& batch, std::int32
             std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - taskT0).count();
         if (chunk && !batch->cancelled.load() && batch->onChunk) {
             ++generated_;
-            noteChunkDone(taskMs);
+            noteChunkDone(taskMs, true);
             batch->onChunk(std::move(chunk));
         } else if (!chunk && !ok) {
             ++failed_;
+            noteChunkDone(taskMs, false);
         }
     } catch (...) {
         ok = false;
@@ -365,19 +398,20 @@ std::shared_ptr<dh::IChunk> BdsWorldGenerator::generateScratch(std::int32_t cx, 
     if (serverThreadOnly_) {
         // Legacy path: everything on the server thread (serialised).
         wrapped = onServerThread(
-            [&construct, &generate]() -> std::shared_ptr<ScratchChunk> {
+            [construct, generate]() -> std::shared_ptr<ScratchChunk> {
                 std::shared_ptr<LevelChunk> leftover;
                 auto                        w = generate(construct(), leftover);
                 return w; // leftover destroyed here, on the server thread
             },
-            kInternalServerTtl
+            kInternalServerTtl,
+            closing_
         );
     } else {
         // Parallel path. Construction (ctor reads Dimension/Level state) and destruction stay on the server
         // thread; loadChunk and the snapshot run on this worker: WorldGenerator's per-thread state
         // (mThreadLocalHeightmapProvider is InstancedThreadLocalValue, generatorHelpersPool InstancedThreadLocal)
         // is created lazily per calling thread, which is how vanilla runs it on its generation workers.
-        auto lc = onServerThread(construct, kInternalServerTtl);
+        auto lc = onServerThread(construct, kInternalServerTtl, closing_);
         if (lc) {
             std::shared_ptr<LevelChunk> leftover;
             wrapped = generate(std::move(lc), leftover);
@@ -387,6 +421,19 @@ std::shared_ptr<dh::IChunk> BdsWorldGenerator::generateScratch(std::int32_t cx, 
                 });
         }
     }
+    if (!wrapped) {
+        if (logIt)
+            DH_LOG_W(
+                "world gen task %d (%d,%d): FAILED after %lld ms (null; heightSupported=%d)",
+                seq,
+                cx,
+                cz,
+                ms(),
+                diag->heightOk ? 1 : 0
+            );
+        return nullptr;
+    }
+
     // Validate: a chunk with no solid block is a failed generation, not terrain.
     long long nonAir = 0;
     for (int z = 0; z < 16; ++z)
@@ -430,14 +477,15 @@ std::shared_ptr<dh::IChunk> BdsWorldGenerator::snapshotLoaded(
         if (!loadIfMissing) return nullptr;
         return cs.getOrLoadChunk(cp, ChunkSource::LoadMode::None, /*readOnly=*/false);
     };
-    std::shared_ptr<LevelChunk> lc = onServerThread(fn, 2000ms);
+    std::shared_ptr<LevelChunk> lc = onServerThread(fn, 2000ms, closing_);
     if (!lc) return nullptr;
 
     // Both paths require a fully Loaded chunk (a chunk still Generating/Generated is incomplete). Only the
     // load path waits for it; PreExistingOnly just skips such chunks.
     const auto deadline = std::chrono::steady_clock::now() + (loadIfMissing ? kInternalServerTtl : 0ms);
     while (lc->mLoadState->load() < ChunkState::Loaded) {
-        if (!loadIfMissing || closing_.load() || batch->cancelled.load() || std::chrono::steady_clock::now() > deadline)
+        if (!loadIfMissing || closing_->load() || batch->cancelled.load()
+            || std::chrono::steady_clock::now() > deadline)
             return nullptr;
         std::this_thread::sleep_for(50ms);
     }
@@ -451,7 +499,8 @@ std::shared_ptr<dh::IChunk> BdsWorldGenerator::snapshotLoaded(
             (void)w->freeze();
             return w;
         },
-        5000ms
+        5000ms,
+        closing_
     );
     if (!wrapped) return nullptr;
     lightBlockOnly(*wrapped);

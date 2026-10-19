@@ -78,6 +78,10 @@ public:
     void cancelAll() override;
     /// Stops accepting work and cancels everything; call BEFORE the thread pools are shut down and joined.
     void close();
+    /// close() + wait for in-flight tasks (including their onChunk/done callbacks) + join the workers. Call before
+    /// anything the callbacks capture (the dh::WorldGenerator) is destroyed. After it, queue() fails fast with
+    /// done(false).
+    void stopWorkersAndWait();
 
     std::uint64_t generatedChunks() const { return generated_.load(); }
     std::uint64_t failedChunks() const { return failed_.load(); }
@@ -88,7 +92,8 @@ private:
     void                        runChunk(const std::shared_ptr<Batch>& batch, std::int32_t cx, std::int32_t cz);
     void                        workerLoop();
     void                        stopWorkers();
-    void                        noteChunkDone(long long ms);
+    void                        noteChunkDone(long long ms, bool okChunk);
+    void                        startWorkersLocked();
     static long long            nowMs();
     void                        finishChunk(const std::shared_ptr<Batch>& batch, bool ok);
     std::shared_ptr<dh::IChunk> generateScratch(std::int32_t cx, std::int32_t cz);
@@ -99,13 +104,13 @@ private:
     BlockSerializer& serializer_;
     dh::IExecutor&   genPool_;
 
-    mutable std::mutex                mutex_;
-    std::condition_variable           idleCv_;
-    std::vector<std::weak_ptr<Batch>> batches_;
-    std::atomic<int>                  inFlightTasks_{0};
-    std::atomic<std::uint64_t>        generated_{0}, failed_{0};
-    std::atomic<bool>                 closing_{false};
-    std::atomic<bool>                 warnedFeatures_{false};
+    mutable std::mutex                 mutex_;
+    std::condition_variable            idleCv_;
+    std::vector<std::weak_ptr<Batch>>  batches_;
+    std::atomic<int>                   inFlightTasks_{0};
+    std::atomic<std::uint64_t>         generated_{0}, failed_{0};
+    std::shared_ptr<std::atomic<bool>> closing_ = std::make_shared<std::atomic<bool>>(false);
+    std::atomic<bool>                  warnedFeatures_{false};
 
     // Own FIFO worker threads (the shared DH picker pool is sized for CPU-only work and cannot be oversubscribed
     // by tasks that wait on the server thread).
@@ -114,9 +119,9 @@ private:
     std::mutex                        workMutex_;
     std::condition_variable           workCv_;
     std::deque<std::function<void()>> work_;
-    bool                              stopWorkers_ = false;
+    bool                              stopWorkers_ = false, workersStarted_ = false;
     std::vector<std::thread>          workers_;
-    std::atomic<long long>            statChunks_{0}, statMs_{0}, lastStatMs_{0};
+    std::atomic<long long>            statChunks_{0}, statFailed_{0}, statMs_{0}, lastStatMs_{0};
 };
 
 } // namespace dh::bedrock

@@ -393,7 +393,7 @@ void ClientWorldDriver::Impl::stopSession(const char* why) {
         for (dh::AbstractLevel* level : s.world->allLoadedLevels())
             if (level && level->isServerLevel() && level->isClientLevel())
                 if (auto* gen = static_cast<dh::DhClientServerLevel*>(level)->serverside().chunkGenerator())
-                    gen->cancelAll();
+                    static_cast<BdsWorldGenerator*>(gen)->stopWorkersAndWait(); // only generator the factory makes
     });
     // 4. nothing renders from the world any more; close everything in the documented order
     std::unique_lock lk(life);

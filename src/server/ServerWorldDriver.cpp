@@ -386,7 +386,8 @@ void ServerWorldDriver::Impl::destroyDim(Dim& d) {
     }
     if (d.module) d.module->close();
     if (d.worldGen) d.worldGen->close();
-    if (d.chunkGen) d.chunkGen->close(); // before the pools are joined: dropped pool tasks complete via TaskGuard
+    // Callbacks of in-flight chunks capture dh::WorldGenerator (destroyed before chunkGen): drain the workers first.
+    if (d.chunkGen) d.chunkGen->stopWorkersAndWait();
 }
 
 //=========//
