@@ -271,7 +271,7 @@ first, (odd,even) after its x neighbours, (even,odd) after the rows z±1, (odd,o
   parallel by the batch's tasks); the last task decorates the batch + 1 ring (36 cells) in parity order, each cell over
   its own 3x3, with the vanilla seed, then the freeze/snow pass (`WeatherHelpers::shouldFreeze/shouldSnow`,
   `LevelChunk::getTopRainBlockPos`, `BlockSource::setBlockAndRetainCompatibleBlockActor(.., 2)`), and delivers all
-  chunks. Every delivered chunk has all 8 neighbours decorated, so LOD content no longer depends on batch borders.
+  chunks. Every delivered chunk has all 8 neighbours decorated (when their base terrain could be built; a server-thread hop timeout leaves a ring cell out, logged), so LOD content no longer depends on batch borders.
   First 10 batches log `world gen features batch (x,z) 4x4: ... decorated D of 36 cells ... placedBlocks=N`.
 - Compare mode (env `DH_BEDROCK_GEN_COMPARE=1`, singleplayer): every ingested real chunk is regenerated through the
   Features path and `dh::compareChunks` is logged (`gen compare (x,z): ...`, `gen compare TOTAL ...` every 10).
@@ -283,4 +283,4 @@ chunks), we never do; order inside a parity class and between neighbourhoods fol
 chunk, which may differ from a vanilla chunk at the same stage (unverified); ice under a vanilla chunk's snow may
 also have been changed by weather later (random ticks), which no generator reproduces. Rule-seed details
 (`rule+0xf0`), the Level `getSeed` slot and the pass list are engine internals reached through the real calls, so
-they need no reproduction. Cost: ~1.8x base terrain per batch.
+they need no reproduction (seed width: `Level::getSeed()` returns `uint` in the SDK and `Random(uint, bool)` is the ctor used). Cost: 64/36 = 1.8x base terrain per batch, plus 36 serial cell decorations and a pre-decoration snapshot of the 16 delivered chunks (placedBlocks stat).

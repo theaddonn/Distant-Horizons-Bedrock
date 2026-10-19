@@ -439,6 +439,9 @@ void BdsWorldGenerator::queue(
             // If rejected, the closure (and with it the guard) is destroyed and completes the chunk as failed.
             // FIFO across batches: a section's 16 chunks are picked up together before the next section's.
             std::lock_guard lock(workMutex_);
+            // Workers already stopped (queue() racing stopWorkersAndWait): nothing would ever run the task. The lock
+            // is released before `guard` dies, whose destructor completes the chunk as failed.
+            if (stopWorkers_) continue;
             startWorkersLocked();
             work_.emplace_back([this, batch, cx, cz, guard] {
                 guard->ran = true;
@@ -737,7 +740,13 @@ BdsWorldGenerator::baseCell(const std::shared_ptr<Batch>& batch, std::int32_t x,
         kInternalServerTtl,
         closing_
     );
-    if (!lc) return nullptr;
+    if (!lc) {
+        // hop timed out / aborted: let the next task that needs this cell try again
+        cell->done = false;
+        static std::atomic<int> warned{0};
+        if (warned.fetch_add(1) < 10) DH_LOG_W("world gen: base chunk %d,%d not constructed (server-thread hop)", x, z);
+        return nullptr;
+    }
     if (!BedrockChunk::heightSupported(*lc)) {
         cell->lc = std::move(lc); // keep it so ~Batch destroys it on the server thread (never handed out)
         return nullptr;
@@ -822,7 +831,10 @@ bool BdsWorldGenerator::decorateCell(const std::shared_ptr<Batch>& batch, std::i
 }
 
 void BdsWorldGenerator::decorateAndDeliver(const std::shared_ptr<Batch>& batch) {
-    if (batch->cancelled.load() || closing_->load()) return;
+    if (batch->cancelled.load() || closing_->load()) {
+        batch->ok.store(false); // nothing delivered: never report done(true)
+        return;
+    }
     static std::atomic<int> batchSeq{0};
     const bool              logIt = batchSeq.fetch_add(1) < 10;
     const auto              f0    = std::chrono::steady_clock::now();
@@ -845,7 +857,10 @@ void BdsWorldGenerator::decorateAndDeliver(const std::shared_ptr<Batch>& batch) 
         for (std::int32_t z = z0 - 1; z <= z0 + w; ++z)
             for (std::int32_t x = x0 - 1; x <= x0 + w; ++x) {
                 if (dh::decorationParityClass(x, z) != parity) continue;
-                if (batch->cancelled.load() || closing_->load()) return;
+                if (batch->cancelled.load() || closing_->load()) {
+                    batch->ok.store(false);
+                    return;
+                }
                 try {
                     if (decorateCell(batch, x, z)) ++decorated;
                     else ++missing;
