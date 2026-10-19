@@ -77,11 +77,45 @@ TEST_CASE("stagea: quad list conversion") {
     CHECK(out[2].z == 4.0f);
     // sky 15 at full brightness -> factor 1 -> colour unchanged; r in the low byte.
     CHECK(out[0].rgba == 0xFF3264C8u);
-    // u = direction index (handQuad writes normal 1 = up), v = 0
+    // u = direction index (handQuad writes normal 1 = up), v = packed light (sky 15, block 0)
     for (auto& vx : out) {
         CHECK(vx.u == 1.0f);
-        CHECK(vx.v == 0.0f);
+        CHECK(vx.v == doctest::Approx(240.0f / 255.0f));
     }
+}
+
+TEST_CASE("stagea: shader lighting packs light into v and leaves the colour unlit") {
+    std::vector<std::byte> b;
+    for (int i = 0; i < 4; ++i) putVertex(b, i, 0, 0, 3u | (9u << 4), 200, 100, 50, 255); // sky 3, block 9
+    std::vector<StageAVertex> out;
+    convertDhBuffer(b, 6, 0.0f, out, Primitive::QuadList);
+    REQUIRE(out.size() == 4);
+    for (auto& vx : out) {
+        CHECK(vx.rgba == 0xFF3264C8u); // not multiplied by lightFactor
+        const int packed = static_cast<int>(std::lround(vx.v * 255.0f));
+        CHECK((packed >> 4) == 3); // sky in the high nibble
+        CHECK((packed & 15) == 9); // block in the low nibble
+    }
+    ConvertParams p;
+    p.lightmapSwapAxes = true;
+    out.clear();
+    convertDhBuffer(b, 6, 0.0f, out, Primitive::QuadList, p);
+    const int sw = static_cast<int>(std::lround(out[0].v * 255.0f));
+    CHECK((sw >> 4) == 9);
+    CHECK((sw & 15) == 3);
+}
+
+TEST_CASE("stagea: cpuLighting keeps the old behaviour (colour scaled, v = 0)") {
+    std::vector<std::byte> b;
+    for (int i = 0; i < 4; ++i) putVertex(b, i, 0, 0, 0u, 200, 100, 50, 255); // sky 0, block 0
+    ConvertParams p;
+    p.cpuLighting = true;
+    std::vector<StageAVertex> out;
+    convertDhBuffer(b, 6, 0.0f, out, Primitive::QuadList, p);
+    REQUIRE(out.size() == 4);
+    CHECK(out[0].rgba != 0xFF3264C8u);
+    CHECK((out[0].rgba & 0xFFu) < 200u);
+    CHECK(out[0].v == 0.0f);
 }
 
 TEST_CASE("stagea: direction index travels in u") {
@@ -162,7 +196,9 @@ TEST_CASE("stagea: light scales rgb but not alpha") {
     std::vector<std::byte> b;
     for (int i = 0; i < 4; ++i) putVertex(b, i, 0, 0, 0u /*sky 0, block 0*/, 255, 255, 255, 128);
     std::vector<StageAVertex> out;
-    convertDhBuffer(b, 6, 0.0f, out, Primitive::QuadList);
+    ConvertParams             cp;
+    cp.cpuLighting = true;
+    convertDhBuffer(b, 6, 0.0f, out, Primitive::QuadList, cp);
     REQUIRE(out.size() == 4);
     const std::uint32_t a  = out[0].rgba >> 24;
     const std::uint32_t r  = out[0].rgba & 0xFF;

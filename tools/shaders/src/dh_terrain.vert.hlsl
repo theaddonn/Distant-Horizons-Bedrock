@@ -9,7 +9,7 @@
 // Smuggled per-draw parameters (row 3 of u_model[0]): [3][0] = clipStart + fadeEnd * 4096 (clipStart = near clip
 // radius in blocks, 0 = off; fadeEnd = vanilla render distance in blocks, the dither-fade band is [clipStart, fadeEnd]),
 // [3][1] = fog start, [3][2] = fog end. Passed to the FS as light = (clipStart, fogStart, fogEnd, fadeEnd).
-// The DH face direction index (0 down,1 up,2 north,3 south,4 west,5 east) arrives in texCoords.x.
+// texCoords = (face direction index 0 down,1 up,2 north,3 south,4 west,5 east ; packed light (sky*16+block)/255), passed flat.
 cbuffer VertexUniforms : register(b0) {
     column_major float4x4 u_proj;
     column_major float4x4 u_view;
@@ -34,7 +34,7 @@ struct VSOut {
     float4 color : COLOR0;
     float4 fog : COLOR2;
     float4 light : COLOR1;
-    centroid float2 texCoords : TEXCOORD0;
+    nointerpolation float2 texCoords : TEXCOORD0; // x = face index, y = packed light (flat: per-quad)
     float3 worldPos : TEXCOORD3;
 };
 
