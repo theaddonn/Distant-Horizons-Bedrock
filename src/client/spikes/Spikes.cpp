@@ -15,6 +15,7 @@
 #include "mc/client/gui/screens/ScreenContext.h"
 #include "mc/client/renderer/BaseActorRenderContext.h"
 #include "mc/client/renderer/RenderMaterialGroup.h"
+#include "mc/deps/core/renderer/RenderMaterialInfo.h"
 #include "mc/client/renderer/game/LevelRenderer.h"
 #include "mc/client/renderer/game/LevelRendererCamera.h"
 #include "mc/client/renderer/game/LevelRendererPlayer.h"
@@ -174,6 +175,17 @@ void dumpInventory(ScreenContext& ctx, ViewRenderObject const& vro, LevelRendere
     auto const& mats  = group.mMaterials.get();
     bool        hasRC = false, hasFB = false;
     std::string line;
+    // Is the name known to the group at all, and if so is the material object loaded (mPtr)? Distinguishes
+    // "not in any load list" from "listed but not loaded" for the names Stage A/B need.
+    for (char const* probe : {"MeshFallbackPosUVNormalColor", "DH_Terrain", "RenderChunk", "SelectionOpaque"}) {
+        try {
+            auto info = group.getMaterialInfo(HashedString{probe});
+            DH_LOG_I("R0 getMaterialInfo(%s): info=%d loaded=%d", probe, info ? 1 : 0, (info && info->mPtr.get()) ? 1 : 0);
+        } catch (...) {
+            DH_LOG_W("R0 getMaterialInfo(%s) threw", probe);
+        }
+    }
+    DH_LOG_I("R0 switchable() group: %zu materials", mce::RenderMaterialGroup::switchable().mMaterials.get().size());
     int         part = 0;
     for (auto const& kv : mats) {
         auto const& name = kv.first.getString();

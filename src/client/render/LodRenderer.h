@@ -116,6 +116,7 @@ private:
     double                                speedEma_    = 0.0;
     bool                loggedCutoff_    = false;
     bool                warnedDh_        = false;
+    bool                warnedMaterialFallback_ = false;
 };
 
 } // namespace dh::render
