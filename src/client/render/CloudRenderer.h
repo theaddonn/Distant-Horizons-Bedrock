@@ -7,8 +7,9 @@
 // camera, and handed to the MeshUploader as a reserved section (detail level 0, which no real section uses) so it
 // goes through the normal mce::Mesh upload / settings re-conversion path. The drift is NOT baked into the mesh: it is
 // the world-matrix translate (world = cloud space + offset, offset.x = -speed * t), so a rebuild is only needed when
-// the camera leaves the covered square (margin kMarginBlocks), the far distance / height / tint changes, or the
-// section disappeared (requestClear on world exit).
+// the camera leaves the covered square (margin kMarginBlocks), the far distance / height changes, or the section
+// disappeared (requestClear on world exit). The mesh is white (face shading only); the sky tint is a per-draw
+// parameter (u_model[0][3][0], decoded by the DH_Terrain VS), so day/night changes are continuous.
 //
 // Threading: update()/draw() render thread only. Mesh building runs on a std::async worker (waited in the dtor).
 
@@ -48,7 +49,7 @@ public:
         float      farBlocks = 0.0f; ///< LOD far distance (blocks): coverage radius and fog end
         float      cloudY    = 192.0f;
         float      minY      = -64.0f; ///< MeshSettings::yOffsetBlocks the uploader applies to y
-        glm::vec3  tint{1.0f};         ///< 0..1 per channel, baked into the vertex colour (quantised)
+        glm::vec3  tint{1.0f};         ///< 0..1 per channel, applied per draw (8 bits each), no rebuild
     };
 
     struct Stats {
@@ -95,10 +96,8 @@ private:
         long          anchorX = 0, anchorZ = 0;
         int           half    = 0;
         int           yBottom = 0;
-        std::uint32_t color   = 0;
         bool          operator==(Key const& o) const {
-            return anchorX == o.anchorX && anchorZ == o.anchorZ && half == o.half && yBottom == o.yBottom
-                && color == o.color;
+            return anchorX == o.anchorX && anchorZ == o.anchorZ && half == o.half && yBottom == o.yBottom;
         }
     };
     struct Built {
@@ -119,6 +118,7 @@ private:
     bool                                  patternTried_ = false;
     std::chrono::steady_clock::time_point t0_;
     std::chrono::steady_clock::time_point lastBuild_{};
+    glm::vec3                             tint_{1.0f}; ///< latest Inputs::tint, applied per draw
     std::chrono::steady_clock::time_point pendingSince_{};
     std::chrono::steady_clock::time_point retryAfter_{};
 

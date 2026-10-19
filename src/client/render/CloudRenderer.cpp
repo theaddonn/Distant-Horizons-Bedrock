@@ -51,7 +51,7 @@ std::string exeDirectory() {
     return out;
 }
 
-std::uint32_t quant(float v) { return static_cast<std::uint32_t>(std::lround(std::clamp(v, 0.0f, 1.0f) * 15.0f)); }
+std::uint32_t to8(float v) { return static_cast<std::uint32_t>(std::lround(std::clamp(v, 0.0f, 1.0f) * 255.0f)); }
 
 } // namespace
 
@@ -179,7 +179,7 @@ bool CloudRenderer::update(Inputs const& in) {
     Key          want;
     want.half         = static_cast<int>(std::ceil((radius + kMarginBlocks) / 256.0)) * 256;
     want.yBottom      = static_cast<int>(std::lround(in.cloudY - in.minY));
-    want.color        = quant(in.tint.r) | (quant(in.tint.g) << 4) | (quant(in.tint.b) << 8);
+    tint_             = in.tint; // per draw, continuous (no rebuild)
     const double snap = static_cast<double>(kCellBlocks) * 16.0;
     want.anchorX      = static_cast<long>(std::llround(camX / snap)) * static_cast<long>(snap);
     want.anchorZ      = static_cast<long>(std::llround(camZ / snap)) * static_cast<long>(snap);
@@ -192,7 +192,6 @@ bool CloudRenderer::update(Inputs const& in) {
             std::fabs(camZ - static_cast<double>(k.anchorZ))
         );
         if (k.half != want.half || k.yBottom != want.yBottom || far_ > kMarginBlocks - 48) need = true;
-        else if (k.color != want.color && now - lastBuild_ > std::chrono::seconds(10)) need = true;
     }
     if (need && !jobRunning_ && !havePending_ && now >= retryAfter_) {
         lastBuild_ = now;
@@ -206,12 +205,10 @@ bool CloudRenderer::update(Inputs const& in) {
         bp.yBottom        = static_cast<float>(want.yBottom);
         bp.thickness      = kThickness;
         bp.fancy          = true;
-        const float tintR = static_cast<float>(want.color & 15u) / 15.0f,
-                    tintG = static_cast<float>((want.color >> 4) & 15u) / 15.0f,
-                    tintB = static_cast<float>((want.color >> 8) & 15u) / 15.0f;
-        bp.r              = static_cast<std::uint8_t>(std::lround(tintR * 255.0f));
-        bp.g              = static_cast<std::uint8_t>(std::lround(tintG * 255.0f));
-        bp.b              = static_cast<std::uint8_t>(std::lround(tintB * 255.0f));
+        // white mesh (face shading only): the sky tint is applied per draw by the VS (draw(), u_model[0][3][0])
+        bp.r              = 255;
+        bp.g              = 255;
+        bp.b              = 255;
         bp.a              = static_cast<std::uint8_t>(std::lround(kAlpha * 255.0f));
         // the mesh is generated in cloud space around the anchor; int16 local coordinates need half + cell < 32768
         auto          pat  = pattern_;
@@ -275,7 +272,8 @@ std::size_t CloudRenderer::draw(
     );
     // DH_Terrain per-draw parameters in the projective row: no near clip / fade, DH far fog
     auto& g                        = m._m.get();
-    g[0][3]                        = 0.0f;
+    // [0][3]: with the unlit marker the VS reads the tint here (r + g * 256 + b * 65536) instead of clip/fade
+    g[0][3] = static_cast<float>(to8(tint_.r) | (to8(tint_.g) << 8) | (to8(tint_.b) << 16));
     g[1][3]                        = fogStart;
     g[2][3]                        = fogEnd;
     g[3][3]                        = 2.0f; // unlit marker (> 1.5): the FS keeps the tinted vertex colour
