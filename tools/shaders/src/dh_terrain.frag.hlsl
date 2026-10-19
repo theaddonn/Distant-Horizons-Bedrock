@@ -29,7 +29,9 @@ float bayer4x4(float2 p) {
 }
 
 float4 main(PSIn i) : SV_Target0 {
-    float d = length(i.worldPos.xz);
+    // Java frag.frag:135 `viewDist = length(vertexWorldPos)`: 3D distance to the camera, not horizontal - from high
+    // up the ground below is far away and must render (vanilla culls its sub-chunks by 3D distance too).
+    float d = length(i.worldPos);
     float clipStart = i.light.x, fadeEnd = i.light.w;
     if (clipStart > 0.0) {
         if (d < clipStart) discard;
