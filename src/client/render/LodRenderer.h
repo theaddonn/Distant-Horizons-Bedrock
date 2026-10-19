@@ -5,6 +5,7 @@
 // per-section world-matrix translate). Render thread only, except sink() which any thread may use.
 // All the unknowns R0-R3 are toggles in Config (see docs/spikes/stage-a-render.md).
 
+#include "client/render/CloudRenderer.h"
 #include "client/render/MeshUploader.h"
 
 #include <glm/glm.hpp>
@@ -50,7 +51,8 @@ struct ViewSnapshot {
     bool       isShadowPass = false;
     glm::dvec3 cameraPos{0.0};
     float      renderDistance = 0.0f;
-    bool       valid          = false;
+    glm::vec3  skyColor{0.5f, 0.7f, 1.0f}; ///< ViewRenderData::mSkyColor (cloud tint)
+    bool       valid = false;
 };
 
 struct LodRendererConfig {
@@ -124,6 +126,20 @@ public:
     void toggleNearCutoff();
     void toggleTransparent();
     void toggleLightmapAxes();
+    /// Numpad 2: DH clouds on/off (the vanilla clouds come back while off).
+    void toggleClouds();
+
+    // ---- clouds (CloudRenderer) ----
+    /// Effective switch: option client.graphics.clouds.renderDhClouds && the Numpad 2 toggle.
+    bool cloudsWanted() const;
+    /// Camera hook: the dimension's cloud height (LevelRendererCamera::mCloudHeight).
+    void noteCloudHeight(float y) { cloudHeight_ = y; }
+    /// Hooks: a non-shadow view had ViewRenderData::mDrawClouds set by the game (before we cleared it). DH clouds are
+    /// only drawn while vanilla would draw its own (cloud setting on, overworld, ...).
+    void noteVanillaClouds();
+    /// True when the DH cloud layer was drawn within the last quarter second (the hand-off for hiding vanilla's).
+    bool                 cloudsRecentlyDrawn() const;
+    CloudRenderer const& clouds() const { return clouds_; }
 
     char const* materialName() const;
     char const* farModeName() const;
@@ -132,6 +148,13 @@ private:
     LodRendererConfig cfg_;
     ViewSnapshot      lastView_;
     MeshUploader      uploader_;
+    CloudRenderer     clouds_{uploader_};
+
+    bool                      cloudsToggle_ = true;
+    std::atomic<float>        cloudHeight_{192.0f};
+    std::atomic<std::int64_t> vanillaCloudsSeenNs_{0}; ///< steady_clock ns of the last mDrawClouds==true
+    std::atomic<std::int64_t> cloudsDrawnNs_{0};
+    bool                      loggedCloudTint_ = false;
 
     std::atomic<bool>                     haveCam_{false};
     std::atomic<double>                   camX_{0}, camY_{0}, camZ_{0};

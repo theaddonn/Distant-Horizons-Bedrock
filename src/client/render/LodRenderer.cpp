@@ -199,12 +199,34 @@ void LodRenderer::toggleTransparent() {
     DH_LOG_I("render: transparent pass -> %s", cfg_.drawTransparent ? "on" : "off");
 }
 
+bool LodRenderer::cloudsWanted() const {
+    return cloudsToggle_ && bedrock::ConfigBridge::instance().config().options().client.graphics.clouds.renderDhClouds;
+}
+
+void LodRenderer::toggleClouds() {
+    cloudsToggle_ = !cloudsToggle_;
+    DH_LOG_I("render: DH clouds -> %s (Numpad 2)", cloudsToggle_ ? "on" : "off");
+}
+
+namespace {
+std::int64_t nowNs() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+} // namespace
+
+void LodRenderer::noteVanillaClouds() { vanillaCloudsSeenNs_ = nowNs(); }
+
+bool LodRenderer::cloudsRecentlyDrawn() const { return nowNs() - cloudsDrawnNs_.load() < 250'000'000; }
+
 ViewSnapshot LodRenderer::snapshotOf(ViewRenderObject const& vro) {
     ViewSnapshot v;
     auto const&  p   = vro.mViewData->mCameraPos.get();
     v.isShadowPass   = vro.mViewData->mIsShadowPass;
     v.cameraPos      = {p.x, p.y, p.z};
     v.renderDistance = vro.mViewData->mRenderDistance;
+    auto const& sky  = vro.mViewData->mSkyColor.get();
+    v.skyColor       = {sky.r, sky.g, sky.b};
     v.valid          = true;
     return v;
 }
@@ -334,6 +356,14 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
     }
 
     auto stats = uploader_.stats();
+    {
+        // the cloud section is not terrain: keep it out of the section/byte statistics
+        const std::size_t cb = clouds_.liveBytes();
+        if (cb) {
+            stats.liveSections -= std::min<std::size_t>(stats.liveSections, 1);
+            stats.liveBytes    -= std::min(stats.liveBytes, cb);
+        }
+    }
     dh::hud::set("render.sections", static_cast<std::int64_t>(stats.liveSections));
     dh::hud::set("render.pending", static_cast<std::int64_t>(stats.pending));
     dh::hud::set("render.bytes", static_cast<std::int64_t>(stats.liveBytes));
@@ -451,6 +481,50 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
 
     const float fogEnd   = farBlocks;
     const float fogStart = cfg_.fogStartFraction * farBlocks;
+
+    // 3c. clouds: the section is (re)built off-thread; drawn after the LOD layers below. Only while the vanilla game
+    //     would draw clouds itself (cloud setting, dimension) and the blended DH material resolved.
+    bool cloudsReady = false;
+    {
+        const bool vanillaWanted = nowNs() - vanillaCloudsSeenNs_.load() < 1'000'000'000;
+        const bool blendOk =
+            std::strcmp(matName, "DH_Terrain") == 0 && spikes::materialValid(spikes::dhTransparentMaterial());
+        CloudRenderer::Inputs ci_;
+        ci_.enable    = cloudsWanted() && vanillaWanted && blendOk;
+        ci_.camera    = camPos;
+        ci_.farBlocks = farBlocks;
+        ci_.cloudY    = cloudHeight_;
+        ci_.minY      = cfg_.minYBlocks;
+        {
+            auto const& sc3 = vs.skyColor;
+            const float lum = 0.3f * sc3.r + 0.59f * sc3.g + 0.11f * sc3.b;
+            const float br  = std::clamp(lum / 0.5f, 0.15f, 1.0f);
+            const float mx  = std::max(std::max(sc3.r, sc3.g), std::max(sc3.b, 1e-3f));
+            ci_.tint        = br * (glm::vec3(0.8f) + 0.2f * glm::vec3(sc3.r, sc3.g, sc3.b) / mx);
+            if (!loggedCloudTint_ && ci_.enable) {
+                loggedCloudTint_ = true;
+                DH_LOG_I(
+                    "clouds: first update: cloudY=%.0f minY=%.0f far=%.0f sky=(%.2f,%.2f,%.2f) -> "
+                    "tint=(%.2f,%.2f,%.2f)",
+                    ci_.cloudY,
+                    ci_.minY,
+                    ci_.farBlocks,
+                    sc3.r,
+                    sc3.g,
+                    sc3.b,
+                    ci_.tint.r,
+                    ci_.tint.g,
+                    ci_.tint.b
+                );
+            }
+        }
+        cloudsReady = clouds_.update(ci_) && listStatus != bedrock::RenderListStatus::Unavailable;
+        dh::hud::set(
+            "render.clouds",
+            ci_.enable ? (cloudsReady ? "on" : "building") : (cloudsWanted() ? "waiting" : "off")
+        );
+        dh::hud::set("render.cloudQuads", static_cast<std::int64_t>(clouds_.stats().quads));
+    }
     if (dhShader) {
         dh::hud::set("render.clip", static_cast<double>(clipRadius));
         char fogTxt[48];
@@ -466,6 +540,7 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
     std::size_t culledFrustum = 0, culledNear = 0;
     auto        consider = [&](std::uint64_t pos, MeshUploader::Section const& sec) {
         if (sec.opaque.empty() && sec.transparent.empty()) return;
+        if (CloudRenderer::isCloudSection(pos)) return; // drawn by CloudRenderer
         glm::vec3 t = camRel ? glm::vec3(
                                    static_cast<float>(sec.minX - camPos.x),
                                    static_cast<float>(-camPos.y),
@@ -564,12 +639,17 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
             if (!transparent) ++drawnSections;
         }
     };
-    auto drawAll = [&] {
+    std::size_t cloudCalls = 0;
+    auto        drawAll    = [&] {
         drawLayer(false);
         if (cfg_.drawTransparent) drawLayer(true);
+        if (cloudsReady && transMaterial != material) {
+            cloudCalls = clouds_.draw(mctx, *transMaterial, camPos, camRel, fogStart, fogEnd);
+            if (cloudCalls) cloudsDrawnNs_ = nowNs();
+        }
     };
 
-    if (!vis.empty()) {
+    if (!vis.empty() || cloudsReady) {
         if (cfg_.farMode == FarMode::LocalProjPush) {
             if (info.valid) {
                 auto pref = cam.projectionMatrixStack->push(false);
