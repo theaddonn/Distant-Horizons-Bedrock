@@ -101,18 +101,21 @@ def main():
     src = os.path.abspath(a.unpacked)
     name = os.path.basename(src)
     root = json.load(open(os.path.join(src, name + ".json")))
-    if a.pass_name not in root["passes"]:
-        sys.exit("pass %r not in %s" % (a.pass_name, root["passes"]))
+    edit_passes = [x for x in a.pass_name.split(",") if x]
+    for x in edit_passes:
+        if x not in root["passes"]:
+            sys.exit("pass %r not in %s" % (x, root["passes"]))
     new_name = a.rename or root["name"]
 
     os.makedirs(a.out, exist_ok=True)
     work = tempfile.mkdtemp(prefix="bm_", dir=os.path.abspath(a.out))
     try:
         dst = os.path.join(work, new_name)
-        keep = [p for p in (a.keep_passes.split(",") if a.keep_passes else [a.pass_name]) if p] \
+        keep = [p for p in (a.keep_passes.split(",") if a.keep_passes else edit_passes) if p] \
             if a.new_material else list(root["passes"])
-        if a.pass_name not in keep:
-            keep.append(a.pass_name)
+        for x in edit_passes:
+            if x not in keep:
+                keep.append(x)
         os.makedirs(dst)
         for p in keep:
             shutil.copytree(os.path.join(src, p), os.path.join(dst, p))
@@ -124,38 +127,39 @@ def main():
             root["propertyFieldMap"][pn] = {"num": 1, "type": 2, "hasData": True, "vectorData": v}
         json.dump(root, open(os.path.join(dst, new_name + ".json"), "w"), indent=2)
 
-        pj_path = os.path.join(dst, a.pass_name, a.pass_name + ".json")
-        pj = json.load(open(pj_path))
-        nvar = nblob = ndrop = 0
-        for vi, v in enumerate(pj["variantList"]):
-            if any(v["flags"].get(k) != x for k, x in want.items()):
-                continue
-            nvar += 1
-            keep_codes = []
-            for sc in v["shaderCodes"]:
-                st = sc["platformShaderStage"]
-                key = (st["platform"], st["stage"])
-                d = sc["shaderCode"]["bgfxShaderData"]
-                if key in code:
-                    fn = d["codeFile"]
-                    open(os.path.join(dst, a.pass_name, fn), "wb").write(code[key])
-                    nblob += 1
-                elif a.drop_platforms and not any(p == key[0] for p, _ in code):
-                    ndrop += 1
-                    os.remove(os.path.join(dst, a.pass_name, d["codeFile"]))
+        for pass_name in edit_passes:
+            pj_path = os.path.join(dst, pass_name, pass_name + ".json")
+            pj = json.load(open(pj_path))
+            nvar = nblob = ndrop = 0
+            for vi, v in enumerate(pj["variantList"]):
+                if any(v["flags"].get(k) != x for k, x in want.items()):
                     continue
-                if key[1] in uni:
-                    d["uniforms"] = copy.deepcopy(uni[key[1]])
-                if key[1] in cbuf:
-                    d["size"] = cbuf[key[1]]
-                if key[1] in attrs:
-                    d["attrs"] = list(attrs[key[1]])
-                keep_codes.append(sc)
-            v["shaderCodes"] = keep_codes
-        if not nvar:
-            sys.exit("no variant matches --flags %r" % a.flags)
-        json.dump(pj, open(pj_path, "w"), indent=2)
-        print("pass %s: %d variants edited, %d blobs replaced, %d blobs dropped" % (a.pass_name, nvar, nblob, ndrop))
+                nvar += 1
+                keep_codes = []
+                for sc in v["shaderCodes"]:
+                    st = sc["platformShaderStage"]
+                    key = (st["platform"], st["stage"])
+                    d = sc["shaderCode"]["bgfxShaderData"]
+                    if key in code:
+                        fn = d["codeFile"]
+                        open(os.path.join(dst, pass_name, fn), "wb").write(code[key])
+                        nblob += 1
+                    elif a.drop_platforms and not any(p == key[0] for p, _ in code):
+                        ndrop += 1
+                        os.remove(os.path.join(dst, pass_name, d["codeFile"]))
+                        continue
+                    if key[1] in uni:
+                        d["uniforms"] = copy.deepcopy(uni[key[1]])
+                    if key[1] in cbuf:
+                        d["size"] = cbuf[key[1]]
+                    if key[1] in attrs:
+                        d["attrs"] = list(attrs[key[1]])
+                    keep_codes.append(sc)
+                v["shaderCodes"] = keep_codes
+            if not nvar:
+                sys.exit("no variant matches --flags %r" % a.flags)
+            json.dump(pj, open(pj_path, "w"), indent=2)
+            print("pass %s: %d variants edited, %d blobs replaced, %d blobs dropped" % (pass_name, nvar, nblob, ndrop))
 
         outtmp = os.path.join(work, "_out")
         os.makedirs(outtmp)
