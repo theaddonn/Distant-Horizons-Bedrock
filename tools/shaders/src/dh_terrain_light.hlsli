@@ -3,7 +3,8 @@
 // uv0 (TEXCOORD0) = (face encoding (face + 1) / 8 in [0.125, 0.75], packed light (sky*16+block)/255); see
 // dh::encodeFaceU. uv0.x == 0 means the TEXCOORD0 stream did not reach the shader (missing vertex field reads 0):
 // then the light falls back to full sky (lit by day instead of black) and the debug paint turns magenta.
-//   m > 1.5        unlit (clouds; y = 2 marks it)
+//   m > 1.5        unlit (terrain unlit-test 2, clouds 3; y = 2 marks it). m > 2.5 = the cloud draw: the VS also
+//                  decodes u_model[0][3][0] as the packed tint instead of clip/fade (Run 13b)
 //   0.5 <= m       lightmap texture bound at t0: (x, y) = uv0 passed through (y = packed light)
 //   m < -2.5       debug paint: x = 3 (uv0 delivered) or 4 (uv0 missing), y = -(1 + packed light)
 //   otherwise      procedural lightmap: x = daylight = -m, y = -(1 + packed light)

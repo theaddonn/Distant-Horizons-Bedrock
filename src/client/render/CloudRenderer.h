@@ -117,7 +117,6 @@ private:
     std::shared_ptr<const cloud::Pattern> pattern_;
     bool                                  patternTried_ = false;
     std::chrono::steady_clock::time_point t0_;
-    std::chrono::steady_clock::time_point lastBuild_{};
     glm::vec3                             tint_{1.0f}; ///< latest Inputs::tint, applied per draw
     std::chrono::steady_clock::time_point pendingSince_{};
     std::chrono::steady_clock::time_point retryAfter_{};

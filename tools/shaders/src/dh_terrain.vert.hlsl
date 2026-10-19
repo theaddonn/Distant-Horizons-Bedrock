@@ -51,13 +51,15 @@ VSOut main(VSIn i) {
     o.clipPosition = clip;
     o.color = i.color;
     o.fog = FogColor;
-    // [3][0] packs clipStart + fadeEnd * 4096 (integer blocks, each <= 4095, exact in a float up to 2^24).
+    // [3][0] packs clipStart + fadeEnd * 4096 (integer blocks, each <= 4095, exact in a float up to 2^24), except for
+    // the cloud draw (marker [3][3] = 3), where it carries the packed tint.
     float fadeEnd = floor(M[3][0] / 4096.0 + 0.001);
     float clipStart = M[3][0] - fadeEnd * 4096.0;
-    if (M[3][3] > 1.5) {
-        // DH cloud layer (unlit marker): no near clip / fade; [3][0] carries the per-draw tint instead, packed as
+    if (M[3][3] > 2.5) {
+        // DH cloud layer (marker 3, > 2.5; still unlit for the light helper): no near clip / fade;
+        // [3][0] carries the per-draw tint instead, packed as
         // r + g * 256 + b * 65536 (8 bits each, exact in a float), so the mesh stays white and the tint follows the
-        // sky every frame without a rebuild (Run 13 follow-up).
+        // sky every frame without a rebuild (Run 13b).
         float pk = M[3][0] + 0.5;
         float tb = floor(pk / 65536.0);
         float tg = floor((pk - tb * 65536.0) / 256.0);

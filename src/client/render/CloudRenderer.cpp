@@ -194,7 +194,6 @@ bool CloudRenderer::update(Inputs const& in) {
         if (k.half != want.half || k.yBottom != want.yBottom || far_ > kMarginBlocks - 48) need = true;
     }
     if (need && !jobRunning_ && !havePending_ && now >= retryAfter_) {
-        lastBuild_ = now;
         cloud::BuildParams bp;
         bp.cell           = kCellBlocks;
         bp.centerX        = static_cast<double>(want.anchorX);
@@ -272,11 +271,13 @@ std::size_t CloudRenderer::draw(
     );
     // DH_Terrain per-draw parameters in the projective row: no near clip / fade, DH far fog
     auto& g                        = m._m.get();
-    // [0][3]: with the unlit marker the VS reads the tint here (r + g * 256 + b * 65536) instead of clip/fade
+    // [0][3]: with the cloud marker the VS reads the tint here (r + g * 256 + b * 65536) instead of clip/fade
     g[0][3] = static_cast<float>(to8(tint_.r) | (to8(tint_.g) << 8) | (to8(tint_.b) << 16));
     g[1][3]                        = fogStart;
     g[2][3]                        = fogEnd;
-    g[3][3]                        = 2.0f; // unlit marker (> 1.5): the FS keeps the tinted vertex colour
+    // cloud marker 3: unlit for the light helper (> 1.5) and, distinct from the terrain unlit-test flag 2, makes the
+    // VS decode [0][3] as the tint (> 2.5)
+    g[3][3]                        = 3.0f;
     cam.worldMatrixStack->getTop() = m;
 
     std::size_t calls = 0;
