@@ -28,6 +28,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <sstream>
@@ -573,6 +574,62 @@ LL_STATIC_HOOK(
     return origin(name);
 }
 
+//=====================================================================================================================
+// dragon::materials::CompiledMaterialManager::getMaterial(std::string name, SimplePassphrase, bool forceReload)
+//   -> std::shared_ptr<CompiledMaterialDefinition>
+// The engine's by-name entry point for compiled materials (what FrederoxDev/Amethyst hooks). Not in the SDK headers;
+// the mangled name comes from the RTTI of a lambda inside it in Minecraft.Windows.exe, resolved at runtime through
+// LeviLamina's client symbol data. Member-function ABI: `this` in rcx, the shared_ptr return slot in rdx, the
+// by-value std::string / SimplePassphrase as pointers to caller temporaries - so the detour is declared as an
+// instance hook on a dummy class with reference/pointer parameters that are passed through untouched.
+//=====================================================================================================================
+
+constexpr char const* kGetMaterialSym =
+    "?getMaterial@CompiledMaterialManager@materials@dragon@@QEAA?AV?$shared_ptr@VCompiledMaterialDefinition@materials@"
+    "dragon@@@std@@V?$basic_string@DU?$char_traits@D@std@@V?$allocator@D@2@@5@USimplePassphrase@EncryptionVariants@"
+    "definition@23@_N@Z";
+
+struct CompiledMaterialDefinitionOpaque;
+struct CompiledMaterialManagerOpaque {};
+
+std::atomic<bool> gForcedDhLoad{false};
+
+uintptr_t getMaterialAddress() {
+    return reinterpret_cast<uintptr_t>(ll::memory::SymbolView{kGetMaterialSym}.resolve(true));
+}
+
+LL_TYPE_INSTANCE_HOOK(
+    HookGetMaterial,
+    ll::memory::HookPriority::Normal,
+    CompiledMaterialManagerOpaque,
+    getMaterialAddress(),
+    std::shared_ptr<CompiledMaterialDefinitionOpaque>,
+    std::string const& name,
+    void const*        passphrase,
+    bool               forceReload
+) {
+    std::shared_ptr<CompiledMaterialDefinitionOpaque> r = origin(name, passphrase, forceReload);
+    if (gActive.load()) {
+        if (traceLoader("CompiledMaterialManager::getMaterial", name))
+            DH_LOG_I(
+                "materials: trace   -> getMaterial(%s, force=%d) = %s",
+                name.c_str(),
+                (int)forceReload,
+                r ? "ok" : "null"
+            );
+        // One forced load of our material through the engine's own path (the file-open redirect serves the bytes):
+        // answers "does the parser accept DH_Terrain.material.bin" independently of who requests it.
+        if (!gForcedDhLoad.exchange(true) && name != "DH_Terrain") {
+            auto dh = origin(std::string("DH_Terrain"), passphrase, false);
+            DH_LOG_I(
+                "materials: forced getMaterial(DH_Terrain) = %s",
+                dh ? "ok (parsed)" : "null (not found or rejected)"
+            );
+        }
+    }
+    return r;
+}
+
 } // namespace
 
 #define DH_TRACE_HOOK(H) DH_LOG_I("materials: trace hook " #H " -> %d", (int)H::hook())
@@ -629,12 +686,15 @@ void installMaterialInjector() {
     DH_TRACE_VHOOK(TraceSfsReadFileData);
     DH_TRACE_VHOOK(TraceSfsOpenFile);
     DH_TRACE_VHOOK(TraceSfsReadFileDataExt);
+    if (getMaterialAddress()) DH_TRACE_HOOK(HookGetMaterial);
+    else DH_LOG_W("materials: CompiledMaterialManager::getMaterial symbol did not resolve; getMaterial hook skipped");
     DH_LOG_I("materials: injector on, DH_Terrain.material.bin %zu bytes", gMaterialBytes.size());
 }
 
 void uninstallMaterialInjector() {
     if (!gInstalled.exchange(false)) return;
     if (gActive.exchange(false)) {
+        if (getMaterialAddress()) HookGetMaterial::unhook();
         HookGetFileAttributesW::unhook();
         HookGetFileAttributesExW::unhook();
         HookCreateFile2::unhook();
