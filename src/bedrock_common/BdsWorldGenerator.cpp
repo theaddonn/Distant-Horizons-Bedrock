@@ -11,6 +11,9 @@
 #include "mc/world/level/Level.h"
 #include "mc/world/level/biome/Biome.h"
 #include "mc/world/level/chunk/ChunkSource.h"
+#include "mc/world/level/chunk/LevelChunkMetaDataDictionary.h"
+#include "mc/world/level/storage/BlendingDataProvider.h"
+#include "mc/world/level/levelgen/v2/StructureInstance.h"
 #include "mc/world/level/chunk/ChunkState.h"
 #include "mc/world/level/chunk/LevelChunk.h"
 #include "mc/world/level/dimension/Dimension.h"
@@ -28,6 +31,8 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 namespace dh::bedrock {
 
@@ -58,24 +63,100 @@ public:
 
 /// A ChunkSource that serves ONLY the scratch chunks handed to it (the 3x3 decoration neighbourhood). Used as the
 /// backing store of the decoration BlockSource, so feature placement can never see or touch the live world.
+///
+/// 2026-10-19 crash: ChunkSource's only constructor, ChunkSource(std::unique_ptr<ChunkSource> parent), dereferences
+/// the parent without a null check (copies mChunkSide/mLevel/mDimension from it and stores it as mParent +
+/// mOwnedParent). So the dimension's live chunk source is passed as a NON-OWNING parent: the destructor releases
+/// mOwnedParent before ~ChunkSource runs, and every virtual the base would delegate to the parent is overridden
+/// below so decoration never reaches the live world from a worker thread.
 class ScratchRegionSource final : public ::ChunkSource {
 public:
-    ScratchRegionSource(::Dimension& dim, ::Level& level) : ::ChunkSource(nullptr) {
-        mChunkSide = 16; // hedge: the base ctor may copy it from the (null) parent
+    ScratchRegionSource(::Dimension& dim, ::Level& level)
+    : ::ChunkSource(std::unique_ptr<::ChunkSource>(&dim.getChunkSource())) {
+        mChunkSide = 16;
         mLevel     = &level;
         mDimension = &dim;
     }
+    ~ScratchRegionSource() override {
+        (void)mOwnedParent.release(); // plain std::unique_ptr here (TypedStorage alias); never delete the live source
+        mParent = nullptr;
+    }
+    ScratchRegionSource(ScratchRegionSource const&)            = delete;
+    ScratchRegionSource& operator=(ScratchRegionSource const&) = delete;
+
     void add(const std::shared_ptr<LevelChunk>& lc, std::int32_t cx, std::int32_t cz) {
         if (lc) chunks_[key(cx, cz)] = lc;
     }
+
+    // ---- chunk lookups: only the scratch neighbourhood exists ----
     std::shared_ptr<LevelChunk> getExistingChunk(::ChunkPos const& pos) override { return find(pos); }
     std::shared_ptr<LevelChunk> getOrLoadChunk(::ChunkPos const& pos, LoadMode, bool) override { return find(pos); }
     std::shared_ptr<LevelChunk> createNewChunk(::ChunkPos const&, LoadMode, bool) override { return nullptr; }
     std::shared_ptr<LevelChunk> getRandomChunk(::Random&) override { return nullptr; }
     bool                        isChunkKnown(::ChunkPos const& pos) override { return find(pos) != nullptr; }
+    bool                        isChunkSaved(::ChunkPos const&) override { return false; }
     bool                        isWithinWorldLimit(::ChunkPos const&) const override { return true; }
+    std::unordered_map<::ChunkPos, std::weak_ptr<::LevelChunk>> const* getChunkMap() const override {
+        return &emptyMap(); // non-null: callers rarely check
+    }
+    std::unordered_map<::ChunkPos, std::weak_ptr<::LevelChunk>> const& getStorage() const override {
+        return emptyMap();
+    }
+
+    // ---- everything else: inert (the base implementations delegate to mParent = the live chunk source) ----
+    void shutdown() override {}
+    bool isShutdownDone() override { return true; }
+    bool structurePostProcessChunk(::ChunkViewSource&) override { return false; }
+    bool decorationPostProcessChunk(::ChunkViewSource&) override { return false; }
+    void checkAndReplaceChunk(::ChunkViewSource&, ::LevelChunk&) override {}
+    bool verifyChunkNeedsNeighborAwareUpgrade(::LevelChunk&) override { return false; }
+    void neighborAwareChunkUpgrade(::LevelChunk&, ::ChunkViewSource&) override {}
+    void loadChunk(::LevelChunk&, bool) override {}
+    void postProcessMobsAt(::BlockSource&, int, int, ::Random&) override {}
+    void postProcessMobsAt(::BlockSource&, ::BoundingBox const&) const override {}
+    void deleteAllChunkData(
+        std::unordered_set<::ChunkPos>,
+        std::function<void()>,
+        std::shared_ptr<::ChunkDeletionMetadata>
+    ) override {}
+    void deleteStoredChunkData(
+        std::unordered_set<::ChunkPos>,
+        std::function<void()>,
+        std::shared_ptr<::ChunkDeletionMetadata>
+    ) override {}
+    bool saveLiveChunk(::LevelChunk&) override { return false; }
+    void writeEntityChunkTransfer(::LevelChunk&) override {}
+    void writeEntityChunkTransfersToUnloadedChunk(
+        ::ChunkKey const&,
+        std::vector<::ActorUnloadedChunkTransferEntry> const&
+    ) override {}
+    void deserializeActorStorageToLevelChunk(::LevelChunk&) override {}
+    void hintDiscardBatchBegin() override {}
+    void hintDiscardBatchEnd() override {}
+    // acquireDiscarded(unique_ptr<LevelChunk, LevelChunkFinalDeleter>) is NOT overridden: the SDK's deleter has no call
+    // operator, so a by-value definition cannot compile; the base delegates to the live source, which decoration never
+    // reaches (chunks are only discarded by the live chunk map).
+    void compact() override {}
+    void flushPendingDiscardedChunkWrites() override {}
+    void flushThreadBatch() override {}
+    void clearDeletedEntities() override {}
+    bool canCreateViews() const override { return false; }
+    std::unique_ptr<::BlendingDataProvider>           tryGetBlendingDataProvider() override { return nullptr; }
+    std::shared_ptr<::LevelChunkMetaDataDictionary>   loadLevelChunkMetaDataDictionary() override { return nullptr; }
+    void                                              setLevelChunk(std::shared_ptr<::LevelChunk>) override {}
+    bool                                              canLaunchTasks() const override { return false; }
+    bool                                              chunkPosNeedsBlending(::ChunkPos const&) override { return false; }
+    void                                              _clearBlendingCache() override {}
+    std::shared_ptr<::br::worldgen::StructureInstance>
+    _tryGetOrLoadStructureInstanceAt(::ChunkPos const&, ::br::worldgen::Structure const&) override {
+        return nullptr;
+    }
 
 private:
+    static std::unordered_map<::ChunkPos, std::weak_ptr<::LevelChunk>> const& emptyMap() {
+        static const std::unordered_map<::ChunkPos, std::weak_ptr<::LevelChunk>> empty;
+        return empty;
+    }
     static std::uint64_t key(std::int32_t x, std::int32_t z) {
         return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(x)) << 32) | static_cast<std::uint32_t>(z);
     }

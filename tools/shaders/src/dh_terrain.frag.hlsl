@@ -49,8 +49,9 @@ float4 main(PSIn i) : SV_Target0 {
     }
     float3 c = i.color.rgb * DhParams.rgb;
     // lightmap lookup (Java frag.frag: texture(uLightMap, lightMapUV) * vertexColor). Texel centres of a 16x16 map.
-    // DhParams.w < 0.5 disables lighting (fullbright vertex colour).
-    if (DhParams.w >= 0.5) {
+    // DhParams.w < 0.5 disables lighting (fullbright vertex colour); texCoords.y < 0 means no lightmap is bound for
+    // this draw (u_model[0][3][3] == 0, see the VS): the vertex colour already carries the CPU light factor.
+    if (DhParams.w >= 0.5 && i.texCoords.y >= 0.0) {
         float  packedLight = round(saturate(i.texCoords.y) * 255.0);
         float  hi = floor(packedLight / 16.0), lo = packedLight - hi * 16.0;
         float2 dim;
