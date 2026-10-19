@@ -260,6 +260,16 @@ void LodRenderer::renderFrame(BaseActorRenderContext& rc, ViewRenderObject const
         // camera-relative mode: the view matrix carries no translation, the core translates by -camera itself;
         // absolute mode: the view matrix already contains it.
         params.exactCameraPosition = camRel ? camPos : glm::dvec3(0.0);
+        // In-game (2026-10-19) the Java-layout path above culled every section while Frustum5 (same matrices,
+        // convention validated by the drawn quads) was right. Hand the core the column-vector world VP composed
+        // exactly like Frustum5::build: row-vector Bedrock matrices -> transpose(view * proj); plus the camera
+        // translation the draw path applies per section in camera-relative mode.
+        {
+            glm::mat4 vp = tr ? glm::transpose(view * projFar) : projFar * view;
+            if (camRel) vp = vp * glm::translate(glm::mat4(1.0f), glm::vec3(-camPos));
+            params.worldViewProjection    = vp;
+            params.hasWorldViewProjection = info.valid;
+        }
         listStatus = bedrock::ClientWorldDriver::instance().collectRenderList(params, cfg_.coreFrustum, list);
     }
     // test feed active: its sections belong to no tree, so draw everything the uploader holds

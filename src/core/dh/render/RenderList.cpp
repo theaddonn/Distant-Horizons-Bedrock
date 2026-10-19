@@ -25,7 +25,9 @@ void RenderList::build(const tree::LodQuadTree& tree, const RenderListParams& pa
     // update the frustum if necessary
     if (enableFrustumCulling && frustum == &cameraFrustum_) {
         const glm::mat4 worldViewProjection =
-            viewProjectionMatrix(params.mcModelViewMatrix, params.exactCameraPosition, params.dhProjectionMatrix);
+            params.hasWorldViewProjection
+                ? params.worldViewProjection
+                : viewProjectionMatrix(params.mcModelViewMatrix, params.exactCameraPosition, params.dhProjectionMatrix);
         cameraFrustum_.update(params.worldMinY, params.worldMaxY, worldViewProjection);
     }
 

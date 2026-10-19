@@ -116,6 +116,8 @@ void onKeys(ll::event::AfterUIRenderEvent& e) {
         bool  shift = dh::input::shiftDown();
         bool  ctrl  = dh::input::ctrlDown();
         auto& r     = *gRenderer;
+        // keep the "draw everything uploaded" switch tied to the feed's real state (reset() paths clear the feed)
+        r.config().drawAllUploaded = testfeed::active();
         if (dh::input::pressed(VK_F5)) {
             auto& drv = bedrock::ClientWorldDriver::instance();
             if (shift) {

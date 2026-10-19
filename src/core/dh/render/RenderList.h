@@ -53,6 +53,12 @@ struct RenderListParams {
     glm::mat4  dhProjectionMatrix{1.0f};
     /// IDhApiShadowCullingFrustum override; nullptr = NeverCullFrustum (Java default).
     const Frustum* shadowFrustum = nullptr;
+    /// Platform-computed world-space view-projection (JOML/column-vector layout, m[c][r]; world coords in, clip
+    /// out). When set it replaces viewProjectionMatrix(mcModelViewMatrix, exactCameraPosition, dhProjectionMatrix):
+    /// Bedrock's matrices are not Minecraft-Java's, so the platform composes the frustum matrix with the convention
+    /// its own draw path has validated instead of re-deriving it from Java's layout assumptions.
+    bool      hasWorldViewProjection = false;
+    glm::mat4 worldViewProjection{1.0f};
 };
 
 class RenderList {
