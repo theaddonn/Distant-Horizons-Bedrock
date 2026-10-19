@@ -87,6 +87,8 @@ struct FogOptions {
     bool enableDhFog = true;
     /// false
     bool enableVanillaFog = false;
+    /// Bedrock: push the vanilla distance fog out to the LOD far distance (Java disableVanillaFog). true
+    bool disableVanillaFog = true;
 };
 
 struct GraphicsOptions {

@@ -195,6 +195,12 @@ Table table() {
             false,
             "Should Minecraft's fog render."
         ),
+        DH_BOOL(
+            "client.graphics.fog.disableVanillaFog",
+            client.graphics.fog.disableVanillaFog,
+            true,
+            "Push Bedrock's vanilla distance fog out to the LOD far distance so DH applies the only fog."
+        ),
 
         DH_FLOAT(
             "client.graphics.culling.overdrawPrevention",
