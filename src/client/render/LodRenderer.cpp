@@ -111,6 +111,25 @@ void LodRenderer::observeCamera(ViewRenderObject const& vro) {
     haveCam_      = true;
 }
 
+char const* LodRenderer::drawHookName() const {
+    switch (cfg_.drawHook) {
+    case DrawHook::CameraAfter:
+        return "camera-after";
+    case DrawHook::LevelRenderBefore:
+        return "level-before";
+    case DrawHook::LevelRenderAfter:
+        return "level-after";
+    case DrawHook::PostLevelRender:
+        return "post-level";
+    }
+    return "?";
+}
+
+void LodRenderer::cycleDrawHook() {
+    cfg_.drawHook = static_cast<DrawHook>((static_cast<int>(cfg_.drawHook) + 1) % kDrawHookCount);
+    DH_LOG_I("render: draw hook -> %s", drawHookName());
+}
+
 char const* LodRenderer::materialName() const {
     switch (cfg_.material) {
     case MaterialChoice::Selection:
@@ -170,11 +189,26 @@ void LodRenderer::toggleTransparent() {
     DH_LOG_I("render: transparent pass -> %s", cfg_.drawTransparent ? "on" : "off");
 }
 
+ViewSnapshot LodRenderer::snapshotOf(ViewRenderObject const& vro) {
+    ViewSnapshot v;
+    auto const&  p   = vro.mViewData->mCameraPos.get();
+    v.isShadowPass   = vro.mViewData->mIsShadowPass;
+    v.cameraPos      = {p.x, p.y, p.z};
+    v.renderDistance = vro.mViewData->mRenderDistance;
+    v.valid          = true;
+    return v;
+}
+
+void LodRenderer::noteView(ViewRenderObject const& vro) { lastView_ = snapshotOf(vro); }
+
 void LodRenderer::renderFrame(BaseActorRenderContext& rc, ViewRenderObject const& vro, IClientInstance& ci) {
-    if (vro.mViewData->mIsShadowPass) return;
+    drawFrame(rc.mScreenContext, snapshotOf(vro), ci);
+}
+
+void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientInstance& ci) {
+    if (!vs.valid || vs.isShadowPass) return;
     auto t0 = std::chrono::steady_clock::now();
 
-    ScreenContext&    ctx  = rc.mScreenContext;
     mce::MeshContext& mctx = ctx;
     auto&             cam  = mctx.camera;
 
@@ -183,12 +217,11 @@ void LodRenderer::renderFrame(BaseActorRenderContext& rc, ViewRenderObject const
     // 1. budgeted uploads
     uploader_.pump(ctx, cfg_.maxUploadsPerFrame);
 
-    auto const& camPosF = vro.mViewData->mCameraPos.get();
-    glm::dvec3  camPos{camPosF.x, camPosF.y, camPosF.z};
-    camX_    = camPos.x;
-    camY_    = camPos.y;
-    camZ_    = camPos.z;
-    haveCam_ = true;
+    glm::dvec3 camPos = vs.cameraPos;
+    camX_             = camPos.x;
+    camY_             = camPos.y;
+    camZ_             = camPos.z;
+    haveCam_          = true;
 
     // 2. material
     mce::MaterialPtr const* material = nullptr;
@@ -334,7 +367,7 @@ void LodRenderer::renderFrame(BaseActorRenderContext& rc, ViewRenderObject const
     if (cfg_.nearCutoff && listMode) {
         float rd = cfg_.vanillaRenderDistanceBlocks;
         if (rd <= 0.0f) {
-            rd = vro.mViewData->mRenderDistance;
+            rd = vs.renderDistance;
             if (rd < 64.0f) rd *= 16.0f;
         }
         const auto&                cull = bedrock::ConfigBridge::instance().config().options().client.graphics.culling;
@@ -350,7 +383,7 @@ void LodRenderer::renderFrame(BaseActorRenderContext& rc, ViewRenderObject const
             DH_LOG_I(
                 "render: near cut-off radius %.1f blocks (mRenderDistance=%.2f, overdraw %.2f)",
                 r,
-                vro.mViewData->mRenderDistance,
+                vs.renderDistance,
                 overdraw
             );
             loggedCutoff_ = true;
