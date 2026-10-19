@@ -315,3 +315,30 @@ discard the clouds. Expected log lines: as in Run 13; `clouds: pattern from ...e
    lines while only the time changes. Clouds keep the same shape as before, with no holes around the player (the tint
    packing must not trigger the near clip).
 5. Performance: report `render.ms` and `render.cloudQuads` with clouds on/off (the real pattern is about 825k quads).
+## Run 13: LOD content (snow, ice, trees)
+
+Background and root causes: PORTING.md "Run 13 (LOD content)". LODs already in the store keep their old content
+(nothing is regenerated or wiped): look at a **new world** or terrain **never seen before** (fly far in one
+direction). Distant generation needs `common.worldGenerator.allowUnvalidatedGenerator=true`, Features mode.
+
+1. Log on the first world-gen work: `world gen: Features mode: base terrain of the batch + 2-chunk ring, vanilla
+   decoration ...`, then (first 10 batches) `world gen features batch (x,z) 4x4: ... decorated 36 of 36 cells (0
+   without base, 0 threw) ..., delivered 16, placedBlocks=N`. `threw > 0` or a crash: set env
+   `DH_BEDROCK_NO_FEATURES=1` and send the log. The 10 s line's `placedBlocks .. (/chunk)` should be clearly higher in
+   snowy biomes than before (one snow layer per column = ~256/chunk).
+2. Frozen ocean / frozen river far away: white (snow on ice), with blue water only where vanilla leaves it open (the
+   shore ring and unfrozen patches). Not lavender/blue-grey. Walking up to it: the real chunks look the same.
+3. Snowy taiga / snowy plains far away: white ground, spruce trees; no blue-grey grass. Grass blocks elsewhere: green
+   top, sides fading to dirt brown at the bottom (FADE_TO_DIRT, Java default).
+4. Trees: no straight cuts along 16-block lines or 64-block section lines. Fly into an area that was only ever LOD:
+   the real trees should pop in at the positions of the LOD trees (close match expected, not 100%: structures,
+   vanilla-only order effects).
+5. Measurement (optional, costs CPU): start the game with env `DH_BEDROCK_GEN_COMPARE=1`, fly into new terrain for
+   ~1 minute. Each ingested real chunk is regenerated and logged: `gen compare (x,z): columns 256: topY same A, top
+   block same B, tree columns real R gen G both X (IoU ..), snow top real .. gen .., ice top real .. gen ..,
+   differing blocks D`, and every 10 chunks `gen compare TOTAL over N chunks (S skipped): ...`. Expect topY/top block
+   same > ~230/256 and tree IoU > ~0.8 if the decoration reproduces vanilla; tree IoU near 0 means the seed is still
+   wrong. The first compare of a chunk can show trees only on the gen side (a neighbour's spill not yet in the real
+   chunk); the TOTAL line is the measure. Send the TOTAL lines.
+6. Performance: generation is slower than before (64 base chunks per 16-chunk batch instead of 36, decoration serial
+   per batch). Report the 10 s `world gen: N chunks in the last 10 s` line.

@@ -50,10 +50,9 @@ void BedrockChunk::ensureBlocks() const {
         }
     }
     // snow lying on frozen water defeats Java's water-under-ice rule (see FrozenSurface.h)
-    dh::stripSnowOverFrozenWater(
+    dh::freezeWaterUnderSnowCoveredIce(
         minY_,
         maxY_,
-        serializer_.table().air(),
         [&](int x, std::int32_t y, int z) { return blocks_[index(x, y, z)]; },
         [&](int x, std::int32_t y, int z, const dh::BlockInfo* b) { blocks_[index(x, y, z)] = b; }
     );

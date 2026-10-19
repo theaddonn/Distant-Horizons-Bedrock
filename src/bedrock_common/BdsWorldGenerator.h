@@ -15,13 +15,14 @@
 //        3x3 neighbourhood: WorldGenerator::postProcessStructures + decorationPostProcessChunk).
 //     4. Generating -> Generated; wrap in an owning BedrockChunk, snapshot() it on the worker thread (blocks,
 //        biomes, height maps), release the LevelChunk, block-light it (lightChunk, block only) and deliver.
-//   Features: as Surface, but for each requested chunk the 3x3 neighbourhood of base-terrain scratch LevelChunks
-//        is generated (cached per batch, each cell once) and the centre is decorated with the engine's own
-//        `WorldGenerator::decorateWorldGenPostProcess(biome, lc, BlockSource&, Random&)` over a BlockSource backed
-//        by a private ChunkSource that serves ONLY those scratch chunks (never the live world's chunk map). A real
-//        `ChunkViewSource` cannot be constructed from the SDK (no exported ctor), so
-//        `decorationPostProcessChunk(ChunkViewSource&)` is not used. Structures (villages ...) are out of scope.
-//        Decoration + snapshot of one batch are serialised (ring chunks are shared and mutated).
+//   Features (Run 13, docs/PORTING.md "Run 13 (LOD content)"): base terrain for the batch + a 2-chunk ring (cached
+//        per batch, generated in parallel by the batch's tasks); the last task to finish its base terrain decorates
+//        the batch + a 1-chunk ring like vanilla's OverworldGenerator::decorationPostProcessChunk (the engine's
+//        `decorateWorldGenPostProcess` with the vanilla chunk seed over the cell's 3x3, then the freeze/snow pass),
+//        in vanilla's DecorationParity order, and delivers every chunk of the batch. The BlockSource is backed by a
+//        private ChunkSource that serves ONLY the scratch chunks (never the live world's chunk map). A real
+//        `ChunkViewSource` cannot be constructed from the SDK, so `decorationPostProcessChunk` itself is not called.
+//        Structures (villages ...) are out of scope.
 //   PreExistingOnly: only chunks that are currently loaded (ChunkSource::getAvailableChunk), snapshotted on
 //        the server thread; missing chunks are skipped (no error).
 //   InternalServer: let the real ChunkSource generate and load the chunk (getOrLoadChunk on the server
@@ -36,6 +37,7 @@
 // batches finish with done(false). The destructor cancels and waits for in-flight tasks.
 
 #include "bedrock_common/BedrockChunk.h"
+#include "dh/build/ChunkCompare.h"
 #include "dh/platform/IChunkGenerator.h"
 #include "dh/platform/IExecutor.h"
 
@@ -88,6 +90,13 @@ public:
     /// done(false).
     void stopWorkersAndWait();
 
+    /// Compare mode (env DH_BEDROCK_GEN_COMPARE=1, docs/PORTING.md "Run 13"): `real` is a snapshot of a chunk the
+    /// game generated; the same position is generated again through the Features path and the difference
+    /// (dh::compareChunks) is logged per chunk plus a running total. At most 2 comparisons run at a time, the
+    /// rest are skipped (counted). No-op when the mode is off.
+    void               compareWithReal(std::shared_ptr<dh::IChunk> real);
+    static bool        compareModeEnabled();
+
     std::uint64_t generatedChunks() const { return generated_.load(); }
     std::uint64_t failedChunks() const { return failed_.load(); }
 
@@ -102,14 +111,15 @@ private:
     static long long            nowMs();
     void                        finishChunk(const std::shared_ptr<Batch>& batch, bool ok);
     std::shared_ptr<dh::IChunk> generateScratch(std::int32_t cx, std::int32_t cz);
-    /// Features mode: base terrain of the 3x3 scratch neighbourhood (cached per batch), decoration of the centre.
-    std::shared_ptr<dh::IChunk> generateFeatures(
-        const std::shared_ptr<Batch>& batch,
-        std::int32_t                  cx,
-        std::int32_t                  cz,
-        long long&                    featMs,
-        long long&                    placedOut
-    );
+    /// Features mode, one task: base terrain of the 5x5 around (cx, cz) (cached per batch). The batch's last task to
+    /// get here runs decorateAndDeliver. False when the chunk's own base terrain failed.
+    bool                        runFeatures(const std::shared_ptr<Batch>& batch, std::int32_t cx, std::int32_t cz);
+    std::shared_ptr<LevelChunk> baseCell(const std::shared_ptr<Batch>& batch, std::int32_t x, std::int32_t z);
+    /// Vanilla decoration of the batch + 1-chunk ring in DecorationParity order, then snapshot + onChunk per chunk.
+    void                        decorateAndDeliver(const std::shared_ptr<Batch>& batch);
+    /// OverworldGenerator::decorationPostProcessChunk minus the legacy/tick parts: decorateWorldGenPostProcess with
+    /// the vanilla chunk seed, then the freeze/snow pass. The 3x3 around (x, z) is the BlockSource's world.
+    bool                        decorateCell(const std::shared_ptr<Batch>& batch, std::int32_t x, std::int32_t z);
     std::shared_ptr<dh::IChunk>
     snapshotLoaded(const std::shared_ptr<Batch>& batch, std::int32_t cx, std::int32_t cz, bool loadIfMissing);
 
@@ -137,6 +147,13 @@ private:
     std::vector<std::thread>          workers_;
     std::atomic<long long>            statChunks_{0}, statFailed_{0}, statMs_{0}, lastStatMs_{0};
     std::atomic<long long>            statFeatChunks_{0}, statFeatMs_{0}, statPlaced_{0};
+
+    // compare mode (compareWithReal)
+    std::atomic<int>       compareInFlight_{0};
+    std::atomic<long long> compareSkipped_{0};
+    std::mutex             compareMutex_;
+    dh::ChunkDiff          compareTotal_;
+    long long              compareCount_ = 0;
 };
 
 } // namespace dh::bedrock
