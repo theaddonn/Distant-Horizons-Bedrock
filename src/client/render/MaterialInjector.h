@@ -19,6 +19,6 @@ void uninstallMaterialInjector();
 
 /// Render thread, once `fallback` (MeshFallbackPosUVNormalColor) is valid: clones its mce::RenderMaterial into the
 /// "DH_Terrain" info so the dragon binder can substitute our compiled material. False until possible / if no binder.
-bool ensureDhMceMaterial(mce::MaterialPtr const& fallback);
+bool ensureDhMceMaterial(mce::MaterialPtr const& fallback, char const* sourceName = "?");
 
 } // namespace dh::render
