@@ -205,8 +205,19 @@ void LodRenderer::renderFrame(BaseActorRenderContext& rc, ViewRenderObject const
         }
         break;
     case MaterialChoice::Dh:
+        // B3 DH_Terrain: vertex colour, no fog (the FS ignores the fog varying) - the first "LODs beyond the vanilla
+        // fog" picture. Falls back to the fogged vanilla material until the injector's splice has been loaded.
+        if (spikes::materialValid(spikes::dhMaterial())) {
+            material = &spikes::dhMaterial();
+            matName  = "DH_Terrain";
+            if (!loggedDhMaterial_) {
+                DH_LOG_I("render: material DH_Terrain resolved (switchable group); drawing LODs with it");
+                loggedDhMaterial_ = true;
+            }
+            break;
+        }
         if (!warnedDh_) {
-            DH_LOG_W("render: material 'dh' (Stage B DH_Terrain) is not implemented yet; using meshFallback");
+            DH_LOG_W("render: material 'dh' (DH_Terrain) not resolved yet; using meshFallback until it is");
             warnedDh_ = true;
         }
         [[fallthrough]];

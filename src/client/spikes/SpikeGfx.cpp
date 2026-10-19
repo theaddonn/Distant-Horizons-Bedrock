@@ -209,6 +209,14 @@ mce::MaterialPtr const& fallbackMaterial() {
     return *mat;
 }
 
+mce::MaterialPtr const& dhMaterial() {
+    static std::optional<mce::MaterialPtr> mat;
+    if (!mat || !materialValid(*mat)) {
+        mat.emplace(mce::RenderMaterialGroup::switchable(), HashedString{"DH_Terrain"});
+    }
+    return *mat;
+}
+
 void resetMeshes() {
     for (auto& [k, v] : gMeshes) (void)v.release(); // leak on purpose: the buffer service may already be gone
     gMeshes.clear();

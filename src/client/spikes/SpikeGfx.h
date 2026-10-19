@@ -49,6 +49,9 @@ bool materialValid(mce::MaterialPtr const& m);
 
 /// Fallback material `MeshFallbackPosUVNormalColor`; may be invalid.
 mce::MaterialPtr const& fallbackMaterial();
+/// Stage-B `DH_Terrain` (served by the MaterialInjector, looked up in switchable()); invalid until the injector's
+/// index splice has been loaded. Re-resolved whenever invalid, like fallbackMaterial().
+mce::MaterialPtr const& dhMaterial();
 
 /// Drops cached meshes (call when the buffer service changes or on level exit).
 void resetMeshes();
