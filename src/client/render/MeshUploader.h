@@ -142,8 +142,8 @@ private:
     std::unique_ptr<Format>                    format_;
 
     std::atomic<std::size_t> liveSections_{0}, liveBytes_{0}, liveVertices_{0}, uploadsTotal_{0}, staleRemoves_{0};
-    std::atomic<float> lsMin_{0}, lsMax_{0}, lsZero_{0};
-    std::atomic<bool>  lsValid_{false};
+    mutable std::atomic<float> lsMin_{0}, lsMax_{0}, lsZero_{0};
+    mutable std::atomic<bool>  lsValid_{false};
 };
 
 } // namespace dh::render

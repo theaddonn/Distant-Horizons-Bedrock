@@ -60,19 +60,23 @@ float4 main(PSIn i) : SV_Target0 {
             float2 uv = (float2(lo, hi) / 15.0 * (dim - 1.0) + 0.5) / dim; // texel centres for any lightmap size (16 -> (l+0.5)/16)
             c *= LightMap.SampleLevel(LightSamp, uv, 0).rgb;
         } else {
-            // Procedural lightmap (no vanilla texture available): Minecraft's brightness curve l / (4 - 3 l) per
-            // channel, sky light scaled by the daylight factor (ViewRenderData::mSkyBrightnessScalar), block light
-            // warm-tinted, floor at the vanilla night ambient. Packed light = sky * 16 + block.
+            // Procedural lightmap (no vanilla texture available): Java LightTexture.updateLightTexture, gamma 0, no
+            // night vision (docs/spikes/vanilla-lighting.md 2b). daylight = skyDarken (0.2 night .. 1 day).
+            // Packed light = sky * 16 + block.
             float  packedLight = round(saturate(-i.texCoords.y - 1.0) * 255.0);
             float  sky = floor(packedLight / 16.0), block = packedLight - sky * 16.0;
-            float  day = saturate(i.texCoords.x);
-            float  ls = sky / 15.0, lb = block / 15.0;
-            float  bs = ls / (4.0 - 3.0 * ls) * day;
-            float  bb = lb / (4.0 - 3.0 * lb);
-            float3 skyCol   = float3(bs, bs, bs);
-            float3 blockCol = float3(bb, bb * 0.93, bb * 0.84);
-            float3 l = max(skyCol, blockCol);
-            l = max(l, float3(0.035, 0.035, 0.05));
+            float  skyDarken = clamp(i.texCoords.x, 0.2, 1.0);
+            float  fs = sky / 15.0, fb = block / 15.0;
+            float  rampS = fs / (4.0 - 3.0 * fs), rampB = fb / (4.0 - 3.0 * fb);
+            float  skyFactor = skyDarken * 0.95 + 0.05;
+            float3 tint = lerp(float3(skyDarken, skyDarken, 1.0), float3(1.0, 1.0, 1.0), 0.35);
+            float  b = rampB * 1.5;
+            float  s = rampS * skyFactor;
+            float3 l = float3(b, b * ((b * 0.6 + 0.4) * 0.6 + 0.4), b * (b * b * 0.6 + 0.4));
+            l += tint * s;
+            l = lerp(l, float3(0.75, 0.75, 0.75), 0.04);
+            l = lerp(l, float3(0.75, 0.75, 0.75), 0.04);
+            l = saturate(l);
             c *= l;
         }
     }
