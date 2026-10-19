@@ -20,6 +20,8 @@
 #include "mc/resources/AppResourceLoader.h"
 #include "mc/resources/ResourcePackManager.h"
 
+#include <windows.h>
+
 #include <algorithm>
 #include <atomic>
 #include <cctype>
@@ -385,6 +387,192 @@ LL_TYPE_INSTANCE_HOOK(
     return r;
 }
 
+//=====================================================================================================================
+// Win32 file redirection. The trace run (2026-10-19) showed the compiled-material loader never goes through
+// ResourcePackManager / AppResourceLoader / Core::StandardFileSystem: only the legacy `.material` lists do. So the
+// index and the .material.bin files are opened with plain Win32 calls. CreateFileW/CreateFile2 (+ the attribute
+// probes a loader does before opening) are hooked: a request for `<game>\...\renderer\materials\materials.index.json`
+// is answered with a patched copy in the mod dir (original + our entries), and `DH_*.material.bin` with the mod's
+// file. Nothing in the game directory is written.
+//=====================================================================================================================
+
+std::filesystem::path gModMaterialsDir; // <modDir>/materials
+std::filesystem::path gPatchedIndex;    // <modDir>/materials/materials.index.json (generated)
+std::atomic<bool>     gPatchedIndexReady{false};
+std::mutex            gPatchMutex;
+thread_local bool     tlInFileHook = false; // our own std::ifstream/ofstream must not be redirected
+
+std::string narrow(wchar_t const* w) {
+    if (!w) return {};
+    int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+    if (n <= 1) return {};
+    std::string s(static_cast<size_t>(n - 1), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, w, -1, s.data(), n, nullptr, nullptr);
+    return s;
+}
+
+std::string lowerSlashes(std::string s) {
+    for (auto& c : s) {
+        if (c == '/') c = '\\';
+        else c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return s;
+}
+
+/// Builds <modDir>/materials/materials.index.json from the game's original (read directly, not via the hook).
+bool preparePatchedIndex(std::string const& originalPath) {
+    std::lock_guard lock(gPatchMutex);
+    if (gPatchedIndexReady.load()) return true;
+    tlInFileHook = true;
+    std::string json;
+    {
+        std::ifstream in(std::filesystem::path(originalPath), std::ios::binary);
+        if (!in) {
+            tlInFileHook = false;
+            DH_LOG_W("materials: cannot read the game's index at %s", originalPath.c_str());
+            return false;
+        }
+        std::stringstream ss;
+        ss << in.rdbuf();
+        json = ss.str();
+    }
+    size_t before = json.size();
+    bool   added  = splice(json, kEntry);
+    std::filesystem::create_directories(gModMaterialsDir);
+    {
+        std::ofstream out(gPatchedIndex, std::ios::binary | std::ios::trunc);
+        out << json;
+    }
+    tlInFileHook = false;
+    gPatchedIndexReady.store(true);
+    DH_LOG_I(
+        "materials: patched index written to %s (%zu -> %zu bytes, DH_Terrain %s)",
+        gPatchedIndex.string().c_str(),
+        before,
+        json.size(),
+        added ? "added" : "already present"
+    );
+    return true;
+}
+
+/// The mod-dir path the game should get instead of `path` (empty = no redirection).
+std::wstring redirectFor(std::string const& path) {
+    const std::string p = lowerSlashes(path);
+    if (p.find("renderer\\materials\\") == std::string::npos) return {};
+    if (endsWith(p, "\\materials.index.json")) {
+        if (!preparePatchedIndex(path)) return {};
+        return gPatchedIndex.wstring();
+    }
+    if (endsWith(p, "\\dh_terrain.material.bin")) {
+        return (gModMaterialsDir / "DH_Terrain.material.bin").wstring();
+    }
+    return {};
+}
+
+struct FileHookGuard {
+    FileHookGuard() { tlInFileHook = true; }
+    ~FileHookGuard() { tlInFileHook = false; }
+};
+
+uintptr_t k32(char const* name) {
+    HMODULE m = GetModuleHandleW(L"kernel32.dll");
+    return m ? reinterpret_cast<uintptr_t>(GetProcAddress(m, name)) : 0;
+}
+
+LL_STATIC_HOOK(
+    HookCreateFileW,
+    ll::memory::HookPriority::Normal,
+    k32("CreateFileW"),
+    HANDLE,
+    LPCWSTR               name,
+    DWORD                 access,
+    DWORD                 share,
+    LPSECURITY_ATTRIBUTES sa,
+    DWORD                 disposition,
+    DWORD                 flags,
+    HANDLE                templ
+) {
+    if (gActive.load() && name && !tlInFileHook) {
+        std::string n = narrow(name);
+        if (lowerSlashes(n).find("material") != std::string::npos) {
+            FileHookGuard g;
+            traceLoader("CreateFileW", n);
+            std::wstring r = redirectFor(n);
+            if (!r.empty()) {
+                DH_LOG_I("materials: CreateFileW redirect %s -> %s", n.c_str(), narrow(r.c_str()).c_str());
+                return origin(r.c_str(), access, share, sa, disposition, flags, templ);
+            }
+        }
+    }
+    return origin(name, access, share, sa, disposition, flags, templ);
+}
+
+LL_STATIC_HOOK(
+    HookCreateFile2,
+    ll::memory::HookPriority::Normal,
+    k32("CreateFile2"),
+    HANDLE,
+    LPCWSTR                           name,
+    DWORD                             access,
+    DWORD                             share,
+    DWORD                             disposition,
+    LPCREATEFILE2_EXTENDED_PARAMETERS params
+) {
+    if (gActive.load() && name && !tlInFileHook) {
+        std::string n = narrow(name);
+        if (lowerSlashes(n).find("material") != std::string::npos) {
+            FileHookGuard g;
+            traceLoader("CreateFile2", n);
+            std::wstring r = redirectFor(n);
+            if (!r.empty()) {
+                DH_LOG_I("materials: CreateFile2 redirect %s -> %s", n.c_str(), narrow(r.c_str()).c_str());
+                return origin(r.c_str(), access, share, disposition, params);
+            }
+        }
+    }
+    return origin(name, access, share, disposition, params);
+}
+
+LL_STATIC_HOOK(
+    HookGetFileAttributesExW,
+    ll::memory::HookPriority::Normal,
+    k32("GetFileAttributesExW"),
+    BOOL,
+    LPCWSTR                name,
+    GET_FILEEX_INFO_LEVELS level,
+    LPVOID                 info
+) {
+    if (gActive.load() && name && !tlInFileHook) {
+        std::string n = narrow(name);
+        if (lowerSlashes(n).find("material") != std::string::npos) {
+            FileHookGuard g;
+            traceLoader("GetFileAttributesExW", n);
+            std::wstring r = redirectFor(n);
+            if (!r.empty()) return origin(r.c_str(), level, info);
+        }
+    }
+    return origin(name, level, info);
+}
+
+LL_STATIC_HOOK(
+    HookGetFileAttributesW,
+    ll::memory::HookPriority::Normal,
+    k32("GetFileAttributesW"),
+    DWORD,
+    LPCWSTR name
+) {
+    if (gActive.load() && name && !tlInFileHook) {
+        std::string n = narrow(name);
+        if (lowerSlashes(n).find("material") != std::string::npos) {
+            FileHookGuard g;
+            traceLoader("GetFileAttributesW", n);
+            std::wstring r = redirectFor(n);
+            if (!r.empty()) return origin(r.c_str());
+        }
+    }
+    return origin(name);
+}
+
 } // namespace
 
 #define DH_TRACE_HOOK(H) DH_LOG_I("materials: trace hook " #H " -> %d", (int)H::hook())
@@ -418,6 +606,16 @@ void installMaterialInjector() {
         return;
     }
     gActive.store(true);
+    gModMaterialsDir = mod->getModDir() / "materials";
+    gPatchedIndex    = gModMaterialsDir / "materials.index.json";
+    gPatchedIndexReady.store(false);
+    DH_LOG_I(
+        "materials: file hooks CreateFileW=%d CreateFile2=%d GetFileAttributesExW=%d GetFileAttributesW=%d (0 = ok)",
+        HookCreateFileW::hook(),
+        HookCreateFile2::hook(),
+        HookGetFileAttributesExW::hook(),
+        HookGetFileAttributesW::hook()
+    );
     MaterialLoadHook::hook();
     MaterialLoadExtHook::hook();
     LoadListProbeHook::hook();
@@ -437,6 +635,10 @@ void installMaterialInjector() {
 void uninstallMaterialInjector() {
     if (!gInstalled.exchange(false)) return;
     if (gActive.exchange(false)) {
+        HookGetFileAttributesW::unhook();
+        HookGetFileAttributesExW::unhook();
+        HookCreateFile2::unhook();
+        HookCreateFileW::unhook();
         TraceSfsReadFileDataExt::unhook();
         TraceSfsOpenFile::unhook();
         TraceSfsReadFileData::unhook();
