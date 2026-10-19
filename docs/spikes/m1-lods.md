@@ -186,3 +186,7 @@ light from the chunk's own data (torches/lava/glowstone in generated LOD columns
 lightmap tint; no seam in brightness at the vanilla/LOD fade band. If everything is black or uniformly flat: the texture did not
 bind (log "mBrightnessTex unavailable", or the UseTextures=Off material variant skips the sampler); if sky/block look swapped
 (sunlit areas orange-tinted, torches blue-white): set `lightmapSwapAxes`.
+
+Run 9 follow-ups: Numpad 3 toggles `lightmapSwapAxes` live (HUD `render.lightmap` = `block,sky` / `sky,block` / `cpu`, `render.lighting` =
+`lightmap` / `cpu`). If `mBrightnessTex` is missing, DH_Terrain is replaced by the MeshFallback/selection material with CPU lighting
+(logged once). The FS reads the lightmap size with `GetDimensions` (texel centres for any size) and the real size is logged once.
