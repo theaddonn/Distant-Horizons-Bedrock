@@ -180,7 +180,15 @@ void dumpInventory(ScreenContext& ctx, ViewRenderObject const& vro, LevelRendere
     for (char const* probe : {"MeshFallbackPosUVNormalColor", "DH_Terrain", "RenderChunk", "SelectionOpaque"}) {
         try {
             auto info = group.getMaterialInfo(HashedString{probe});
-            DH_LOG_I("R0 getMaterialInfo(%s): info=%d loaded=%d", probe, info ? 1 : 0, (info && info->mPtr.get()) ? 1 : 0);
+            auto sw   = mce::RenderMaterialGroup::switchable().getMaterialInfo(HashedString{probe});
+            DH_LOG_I(
+                "R0 getMaterialInfo(%s): common info=%d loaded=%d | switchable info=%d loaded=%d",
+                probe,
+                info ? 1 : 0,
+                (info && info->mPtr.get()) ? 1 : 0,
+                sw ? 1 : 0,
+                (sw && sw->mPtr.get()) ? 1 : 0
+            );
         } catch (...) {
             DH_LOG_W("R0 getMaterialInfo(%s) threw", probe);
         }
