@@ -91,8 +91,8 @@ void CloudRenderer::loadPattern() {
         }
         tinypng::Image img;
         if (!tinypng::decode(png, len, img)) {
-            DH_LOG_W("clouds: %s is not a supported PNG; using the procedural pattern", path.c_str());
-            break;
+            DH_LOG_W("clouds: %s is not a supported PNG; trying the next source", path.c_str());
+            continue;
         }
         auto pat = cloud::patternFromRgba(img.rgba.data(), img.width, img.height);
         DH_LOG_I(
