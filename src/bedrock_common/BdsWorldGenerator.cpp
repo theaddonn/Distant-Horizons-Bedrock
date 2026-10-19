@@ -216,6 +216,17 @@ void BdsWorldGenerator::runChunk(const std::shared_ptr<Batch>& batch, std::int32
 }
 
 std::shared_ptr<dh::IChunk> BdsWorldGenerator::generateScratch(std::int32_t cx, std::int32_t cz) {
+    // Per-task outcome log for the first 10 tasks (proves the fix / shows hangs in game).
+    static std::atomic<int> taskSeq{0};
+    const int               seq   = taskSeq.fetch_add(1);
+    const bool              logIt = seq < 10;
+    const auto              t0    = std::chrono::steady_clock::now();
+    auto                    ms    = [&] {
+        return static_cast<long long>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count()
+        );
+    };
+
     ::WorldGenerator* gen = dimension_.mWorldGenerator;
     if (gen == nullptr) {
         DH_LOG_E("world gen: dimension has no WorldGenerator");
@@ -223,32 +234,83 @@ std::shared_ptr<dh::IChunk> BdsWorldGenerator::generateScratch(std::int32_t cx, 
     }
     const ::ChunkPos cp(cx, cz);
 
-    // 1. scratch chunk (see header). createNewChunk is the same call vanilla's getOrLoadChunk makes.
-    std::shared_ptr<LevelChunk> lc = gen->createNewChunk(cp, ChunkSource::LoadMode::None, /*readOnly=*/false);
-    if (!lc) {
-        static std::atomic<bool> warned{false};
-        if (!warned.exchange(true))
-            DH_LOG_W("world gen: ChunkSource::createNewChunk returned null, using the LevelChunk constructor");
-        lc = std::shared_ptr<LevelChunk>(new LevelChunk(
-            dimension_,
+    // WorldGenerator does not override ChunkSource::createNewChunk (only MainChunkSource, WorldLimitChunkSource,
+    // ChunkViewSource and NetworkChunkSource do); the base implementation forwards to mParent, which a generator
+    // does not have -> always null. Do not call it. Build the scratch LevelChunk directly instead.
+    //
+    // Everything that touches the generator and the chunk (construct, loadChunk, snapshot, destroy) runs on the
+    // server thread: WorldGenerator keeps thread-local state (mThreadLocalHeightmapProvider, generatorHelpersPool)
+    // that vanilla sets up for its own generation context, and the chunk ctor/dtor touch Dimension/Level.
+    ::Dimension*     dim = &dimension_;
+    BlockSerializer* ser = &serializer_;
+    struct Diag {
+        bool heightOk     = false;
+        int  stateBefore  = -1;
+        int  stateAfter   = -1;
+        bool toGenerating = false;
+        bool toGenerated  = false;
+    };
+    auto diag = std::make_shared<Diag>();
+
+    auto fn = [gen, dim, ser, cp, diag]() -> std::shared_ptr<ScratchChunk> {
+        std::shared_ptr<LevelChunk> lc(new LevelChunk(
+            *dim,
             cp,
             /*readOnly=*/false,
             SubChunkInitMode::All,
             /*initializeMetaData=*/false,
             LevelChunkBlockActorStorage::TrackingMode::None
         ));
+        diag->heightOk = BedrockChunk::heightSupported(*lc);
+        if (!diag->heightOk) return nullptr;
+        diag->stateBefore  = static_cast<int>(lc->mLoadState->load());
+        diag->toGenerating = lc->tryChangeState(ChunkState::Unloaded, ChunkState::Generating);
+        gen->loadChunk(*lc, /*forceImmediateReplacementDataLoad=*/false);
+        diag->toGenerated = lc->tryChangeState(ChunkState::Generating, ChunkState::Generated);
+        diag->stateAfter  = static_cast<int>(lc->mLoadState->load());
+        auto w            = std::make_shared<ScratchChunk>(std::move(lc), *ser);
+        w->freeze();
+        return w;
+    };
+    std::shared_ptr<ScratchChunk> wrapped = onServerThread(fn, kInternalServerTtl);
+    if (!wrapped) {
+        if (logIt)
+            DH_LOG_W(
+                "world gen task %d (%d,%d): FAILED after %lld ms (null; heightSupported=%d)",
+                seq,
+                cx,
+                cz,
+                ms(),
+                diag->heightOk ? 1 : 0
+            );
+        return nullptr;
     }
-    if (!BedrockChunk::heightSupported(*lc)) return nullptr;
 
-    // 2.-3. generate base terrain. TODO(verify in game): whether loadChunk expects the Generating state or
-    // sets it itself; tryChangeState is a no-op (returns false) when the transition does not apply.
-    (void)lc->tryChangeState(ChunkState::Unloaded, ChunkState::Generating);
-    gen->loadChunk(*lc, /*forceImmediateReplacementDataLoad=*/false);
-    (void)lc->tryChangeState(ChunkState::Generating, ChunkState::Generated);
-
-    // 4. snapshot, free the LevelChunk, light.
-    auto wrapped = std::make_shared<ScratchChunk>(std::move(lc), serializer_);
-    wrapped->freeze();
+    // Validate: a chunk with no solid block is a failed generation, not terrain.
+    long long nonAir = 0;
+    for (int z = 0; z < 16; ++z)
+        for (int x = 0; x < 16; ++x)
+            for (std::int32_t y = wrapped->minNonEmptyHeight(); y < wrapped->maxNonEmptyHeight(); ++y)
+                if (!wrapped->blockAt(x, y, z)->isAir) ++nonAir;
+    const std::int32_t   topY   = wrapped->solidHeightMapValue(8, 8);
+    const dh::BlockInfo* topBlk = wrapped->blockAt(8, topY - 1, 8);
+    if (logIt)
+        DH_LOG_I(
+            "world gen task %d (%d,%d): %lld ms, state %d->%d (toGenerating=%d toGenerated=%d), nonAir=%lld, "
+            "top(8,8)=%s at y=%d, heightSupported=1",
+            seq,
+            cx,
+            cz,
+            ms(),
+            diag->stateBefore,
+            diag->stateAfter,
+            diag->toGenerating ? 1 : 0,
+            diag->toGenerated ? 1 : 0,
+            nonAir,
+            topBlk ? topBlk->serial.c_str() : "?",
+            topY - 1
+        );
+    if (nonAir == 0) return nullptr;
     lightBlockOnly(*wrapped);
     return wrapped;
 }

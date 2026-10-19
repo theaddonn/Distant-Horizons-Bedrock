@@ -39,9 +39,19 @@ void ConfigBridge::init(const std::filesystem::path& configDir) {
         {
             auto& plan = store_.options().common.worldGenerator.generatorPlan;
             if (surfaceGenEnabled(plan)) {
-                log::warn("config: generatorPlan needs a rough surface generator (not available on Bedrock); "
-                          "using ChunksOnly");
+                log::warn(
+                    "config: generatorPlan needs a rough surface generator (not available on Bedrock); "
+                    "using ChunksOnly"
+                );
                 plan = GeneratorPlan::ChunksOnly;
+            }
+            if (!store_.options().common.worldGenerator.allowUnvalidatedGenerator && plan != GeneratorPlan::Disabled) {
+                log::warn(
+                    "config: distant generation forced to Disabled until scratch chunk generation is validated "
+                    "in game; set common.worldGenerator.allowUnvalidatedGenerator=true in config.json to enable "
+                    "generatorPlan again"
+                );
+                plan = GeneratorPlan::Disabled;
             }
         }
         store_.onChange([this](const Options&) { (void)save(); });
