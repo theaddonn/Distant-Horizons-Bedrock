@@ -74,11 +74,11 @@ std::size_t convertDhBuffer(
             v[i].rgba            = static_cast<std::uint32_t>(r) | (static_cast<std::uint32_t>(g) << 8)
                       | (static_cast<std::uint32_t>(b) << 16) | (static_cast<std::uint32_t>(a) << 24);
             // u carries the DH face direction (EDhDirection order: 0 down, 1 up, 2 north, 3 south, 4 west, 5 east),
-            // v = packed light (or 0 with CPU lighting). The DH_Terrain shader reads u as the face index.
+            // v = packed light. The DH_Terrain shader reads u as the face index.
             v[i].u = static_cast<float>(std::min<unsigned>(static_cast<std::uint8_t>(p[13]), 5u));
             // v: packed light for the shader lightmap lookup (hi nibble = sky, lo = block; swapped on request).
-            v[i].v =
-                params.cpuLighting ? 0.0f : (params.lightmapSwapAxes ? packLight(block, sky) : packLight(sky, block));
+            // Always written (2026-10-19: a CPU-lit conversion left v = 0 and the shader lightmap then saw no light).
+            v[i].v = params.lightmapSwapAxes ? packLight(block, sky) : packLight(sky, block);
         }
 
         auto emit = [&](bool reversed) {

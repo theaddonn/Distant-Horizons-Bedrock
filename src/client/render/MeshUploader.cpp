@@ -104,6 +104,28 @@ void MeshUploader::convertInto(MeshBuffers const& b, std::uint64_t pos, MeshSett
     for (auto const& buf : b.opaque) convertDhBuffer(buf, detail, s.yOffsetBlocks, out.opaque, s.prim, s.params);
     for (auto const& buf : b.transparent)
         convertDhBuffer(buf, detail, s.yOffsetBlocks, out.transparent, s.prim, s.params);
+    if (!out.opaque.empty()) {
+        float vmin = 1e9f, vmax = -1e9f;
+        std::size_t zeros = 0;
+        for (auto const& v : out.opaque) {
+            vmin = std::min(vmin, v.v);
+            vmax = std::max(vmax, v.v);
+            if (v.v == 0.0f) ++zeros;
+        }
+        lsMin_.store(vmin);
+        lsMax_.store(vmax);
+        lsZero_.store(static_cast<float>(zeros) / static_cast<float>(out.opaque.size()));
+        lsValid_.store(true);
+    }
+}
+
+MeshUploader::LightStats MeshUploader::lightStats() const {
+    LightStats l;
+    l.valid    = lsValid_.load();
+    l.vMin     = lsMin_.load();
+    l.vMax     = lsMax_.load();
+    l.zeroFrac = lsZero_.load();
+    return l;
 }
 
 void MeshUploader::upload(std::uint64_t sectionPos, MeshBuffers&& buffers, UploadCallback onDone) {

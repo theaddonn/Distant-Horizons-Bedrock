@@ -339,7 +339,7 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
     const LightmapMode lmode       = cfg_.lightmapMode;
     const bool         useSpan     = lmode == LightmapMode::DynamicSpan;
     const bool         swapAxes    = (lmode == LightmapMode::DynamicSwapped) != cfg_.lightmapSwapAxes;
-    if (std::strcmp(matName, "DH_Terrain") == 0 && lmode != LightmapMode::Shader) {
+    if (std::strcmp(matName, "DH_Terrain") == 0 && lmode != LightmapMode::Shader && lmode != LightmapMode::UnlitTest) {
         const bool wantDynamic = lmode == LightmapMode::Dynamic || lmode == LightmapMode::DynamicSwapped || useSpan;
         if (wantDynamic) {
             if (::MinecraftGraphics* gfx = ci.getMinecraftGraphics().get().get()) {
@@ -396,6 +396,27 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
     // only shown on the HUD.
     float daylight = 1.0f;
     if (::LocalPlayer* lp = ci.getLocalPlayer()) daylight = std::clamp(lp->getDimension().getSkyDarken(1.0f), 0.0f, 1.0f);
+    // u_model[0][3][3] for the VS: 1 = lightmap texture at t0, 2 = unlit, -daylight = procedural lightmap.
+    const float lightFlag = lightmapOk ? 1.0f : (lmode == LightmapMode::UnlitTest ? 2.0f : -daylight);
+    if (const auto tnow = std::chrono::steady_clock::now(); tnow - lastLightDiag_ > std::chrono::seconds(10)) {
+        lastLightDiag_ = tnow;
+        auto const ls  = uploader_.lightStats();
+        DH_LOG_I(
+            "render: lighting diag mode=%s lightmapOk=%d src=%s flag=%.2f skyDarken=%.2f scalar=%.2f cpuLighting=%d "
+            "convertedV[min=%.3f max=%.3f zero=%.0f%% valid=%d]",
+            kLightmapModeNames[static_cast<int>(lmode)],
+            (int)lightmapOk,
+            lightSrc,
+            static_cast<double>(lightFlag),
+            static_cast<double>(daylight),
+            static_cast<double>(vs.skyBrightness),
+            (int)cpuLighting_,
+            static_cast<double>(ls.vMin),
+            static_cast<double>(ls.vMax),
+            static_cast<double>(ls.zeroFrac * 100.0f),
+            (int)ls.valid
+        );
+    }
     // Lighting mode follows the material: DH_Terrain with a bound lightmap keeps the colours unlit and sends the light
     // in uv0.y; every other case (other materials, no lightmap) applies the CPU light factor. A change re-converts all
     // sections.
@@ -700,7 +721,7 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
                 g[1][3] = fogStart;
                 g[2][3] = fogEnd;
                 // [3][3]: 1 = lightmap texture at t0; -daylight (<= 0) = procedural lightmap in the FS (see the VS).
-                g[3][3] = lightmapOk ? 1.0f : -daylight;
+                g[3][3] = lightFlag;
             }
             cam.worldMatrixStack->getTop() = m;
             for (auto const& part : parts) {
