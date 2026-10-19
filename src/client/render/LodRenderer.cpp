@@ -15,6 +15,12 @@
 #include "mc/client/renderer/BaseActorRenderContext.h"
 #include "mc/client/renderer/game/LevelRenderer.h"
 #include "mc/client/renderer/game/LevelRendererPlayer.h"
+#include "mc/client/renderer/MinecraftGameplayGraphicsResources.h"
+#include "mc/client/renderer/MinecraftGraphics.h"
+#include "mc/common/SubClientId.h"
+#include "mc/deps/core/utility/NonOwnerPointer.h"
+#include "mc/deps/minecraft_renderer/renderer/DynamicTexture.h"
+#include "mc/deps/minecraft_renderer/resources/mcr/DynamicTextureResourceManager.h"
 #include "mc/deps/core/math/Color.h"
 #include "mc/deps/core/math/Matrix.h"
 #include "mc/deps/minecraft_renderer/objects/ViewRenderObject.h"
@@ -314,40 +320,72 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
         }
     }
 
-    // DH_Terrain needs the lightmap bound; without it the FS would sample an unbound t0. Draw with the fallback
-    // material (CPU lighting) instead and say so once.
-    bool lightmapOk = false;
+    // DH_Terrain samples the vanilla lightmap from slot 0 when one is bound. Sources, in order:
+    //  1. the live RenderDragon lightmap: dynamic texture BrightnessTexture<subClientId> in
+    //     MinecraftGameplayGraphicsResources::mDynamicTextures (read-only lookup, never creates the entry; see
+    //     docs/spikes/lightmap-texture.md),
+    //  2. the legacy LevelRenderer::mBrightnessTex (NULL client texture under RenderDragon, kept as a fallback).
+    // Without either the material is KEPT (2026-10-19: falling back to selectionOpaqueMaterial painted everything
+    // magenta) and the draw switches to CPU lighting: u_model[0][3][3] = 0 tells the VS to flag the varying so the FS
+    // skips the lightmap lookup.
+    bool        lightmapOk = false;
+    char const* lightSrc   = "none";
+    Texture     lightTex{std::monostate{}};
     if (std::strcmp(matName, "DH_Terrain") == 0) {
-        auto const* bt = lr ? lr->mBrightnessTex->mClientTexture.get() : nullptr;
-        lightmapOk     = bt != nullptr;
-        if (lightmapOk && !loggedLightmapSize_) {
-            auto const& d = bt->mTextureDescription.get();
-            DH_LOG_I("render: lightmap texture %ux%u (shader maps light 0..15 to texel centres)", d.mWidth, d.mHeight);
-            loggedLightmapSize_ = true;
+        if (::MinecraftGraphics* gfx = ci.getMinecraftGraphics().get().get()) {
+            auto const& res = gfx->mMinecraftGameplayGraphicsResources.get();
+            const auto  key = static_cast<::mce::DynamicTexture>(static_cast<unsigned char>(ci.getClientSubId()));
+            std::shared_ptr<::mce::ClientTexture> tex = res.mDynamicTextures->getResource(key);
+            // ResourceBlockTemplate::get() is not exported, so only the block's presence can be checked here.
+            if (tex && static_cast<bool>(*tex)) {
+                if (!loggedLightmapSize_) {
+                    DH_LOG_I(
+                        "render: lightmap source = dynamic texture BrightnessTexture%u; Numpad 3 swaps the lookup axes "
+                        "if light looks wrong",
+                        static_cast<unsigned>(key)
+                    );
+                    loggedLightmapSize_ = true;
+                }
+                lightTex   = *tex;
+                lightmapOk = true;
+                lightSrc   = "dynamic";
+            }
         }
         if (!lightmapOk) {
-            if (!warnedNoLightmap_) {
-                DH_LOG_W(
-                    "render: LevelRenderer::mBrightnessTex unavailable; drawing LODs with the CPU-lit fallback material"
-                );
-                warnedNoLightmap_ = true;
-            }
-            if (spikes::materialValid(spikes::fallbackMaterial())) {
-                material = &spikes::fallbackMaterial();
-                matName  = "MeshFallbackPosUVNormalColor(no-lightmap)";
-            } else if (lr && lr->mLevelRendererPlayer
-                       && spikes::materialValid(lr->mLevelRendererPlayer->selectionOpaqueMaterial.get())) {
-                material = &lr->mLevelRendererPlayer->selectionOpaqueMaterial.get();
-                matName  = "selectionOpaqueMaterial(no-lightmap)";
+            auto const* bt = lr ? lr->mBrightnessTex->mClientTexture.get() : nullptr;
+            if (bt) {
+                auto const& d = bt->mTextureDescription.get();
+                if (!loggedLightmapSize_) {
+                    DH_LOG_I("render: lightmap source = LevelRenderer::mBrightnessTex %ux%u", d.mWidth, d.mHeight);
+                    loggedLightmapSize_ = true;
+                }
+                lightTex   = *lr->mBrightnessTex;
+                lightmapOk = true;
+                lightSrc   = "mBrightnessTex";
             }
         }
+        if (!lightmapOk && !warnedNoLightmap_) {
+            DH_LOG_W(
+                "render: no lightmap texture (dynamic BrightnessTexture missing, LevelRenderer::mBrightnessTex has no "
+                "client texture); drawing DH_Terrain with CPU lighting"
+            );
+            warnedNoLightmap_ = true;
+        }
     }
-    // Lighting mode follows the material: DH_Terrain samples the vanilla lightmap (colours stay unlit, light travels in
-    // uv0.y); every other material cannot, so it keeps the CPU light factor. A change re-converts all sections.
+    // Lighting mode follows the material: DH_Terrain with a bound lightmap keeps the colours unlit and sends the light
+    // in uv0.y; every other case (other materials, no lightmap) applies the CPU light factor. A change re-converts all
+    // sections.
     {
-        const bool wantCpu = std::strcmp(matName, "DH_Terrain") != 0;
+        const bool wantCpu = !lightmapOk;
         dh::hud::set("render.lighting", wantCpu ? "cpu" : "lightmap");
-        dh::hud::set("render.lightmap", wantCpu ? "cpu" : (cfg_.lightmapSwapAxes ? "sky,block" : "block,sky"));
+        dh::hud::set(
+            "render.lightmap",
+            lightmapOk ? (cfg_.lightmapSwapAxes ? (std::strcmp(lightSrc, "dynamic") == 0 ? "dynamic sky,block"
+                                                                                            : "legacy sky,block")
+                                                : (std::strcmp(lightSrc, "dynamic") == 0 ? "dynamic block,sky"
+                                                                                            : "legacy block,sky"))
+                       : (std::strcmp(matName, "DH_Terrain") == 0 ? "none(cpu)" : "cpu")
+        );
         if (wantCpu != cpuLighting_ || lightSwapApplied_ != cfg_.lightmapSwapAxes) {
             cpuLighting_      = wantCpu;
             lightSwapApplied_ = cfg_.lightmapSwapAxes;
@@ -581,9 +619,7 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
     static Texture const none{std::monostate{}};
     // DH_Terrain: slot 0 (s_MatTexture) = the vanilla lightmap (LevelRenderer::mBrightnessTex), refreshed by the engine
     // every frame for day/night and gamma. Copy of the TexturePtr (shared_ptr members), valid for this frame.
-    Texture lightTex{std::monostate{}};
-    if (dhShader && lr) lightTex = *lr->mBrightnessTex; // dhShader implies lightmapOk (checked above)
-    Texture const& drawTex = dhShader ? lightTex : none;
+    Texture const& drawTex = (dhShader && lightmapOk) ? lightTex : none;
     auto&          sc      = mctx.currentShaderColor;
     mce::Color     saved   = sc.color.get();
     sc.color               = mce::Color{1.f, 1.f, 1.f, 1.f};
@@ -622,6 +658,7 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
                 g[0][3] = packedClip;
                 g[1][3] = fogStart;
                 g[2][3] = fogEnd;
+                g[3][3] = lightmapOk ? 1.0f : 0.0f; // 0: no lightmap bound, FS keeps the CPU-lit colour
             }
             cam.worldMatrixStack->getTop() = m;
             for (auto const& part : parts) {

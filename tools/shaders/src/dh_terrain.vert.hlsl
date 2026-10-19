@@ -52,7 +52,8 @@ VSOut main(VSIn i) {
     float fadeEnd = floor(M[3][0] / 4096.0 + 0.001);
     float clipStart = M[3][0] - fadeEnd * 4096.0;
     o.light = float4(clipStart, M[3][1], M[3][2], fadeEnd);
-    o.texCoords = i.texCoords;
+    // [3][3] < 0.5: no lightmap bound this draw; a negative light coordinate tells the FS to skip the lookup.
+    o.texCoords = float2(i.texCoords.x, M[3][3] < 0.5 ? -1.0 : i.texCoords.y);
     o.worldPos = world.xyz;
     return o;
 }
