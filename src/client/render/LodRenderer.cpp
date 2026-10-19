@@ -446,6 +446,29 @@ void LodRenderer::renderFrame(BaseActorRenderContext& rc, ViewRenderObject const
         }
         if (!loggedFirstDraw_) {
             loggedFirstDraw_ = true;
+            // placement probe (2026-10-19, "LODs look too high"): world-space bounds of the first visible sections
+            for (std::size_t i = 0; i < std::min<std::size_t>(vis.size(), 4); ++i) {
+                auto const& s = *vis[i].sec;
+                DH_LOG_I(
+                    "render: probe section minX=%d minZ=%d local bmin=(%.1f,%.1f,%.1f) bmax=(%.1f,%.1f,%.1f) -> world "
+                    "y "
+                    "%.1f..%.1f; camera=(%.1f,%.1f,%.1f) minYBlocks=%.0f",
+                    s.minX,
+                    s.minZ,
+                    s.bmin.x,
+                    s.bmin.y,
+                    s.bmin.z,
+                    s.bmax.x,
+                    s.bmax.y,
+                    s.bmax.z,
+                    s.bmin.y,
+                    s.bmax.y,
+                    camPos.x,
+                    camPos.y,
+                    camPos.z,
+                    cfg_.minYBlocks
+                );
+            }
             DH_LOG_I(
                 "render: first draw: %zu/%zu sections visible, %zu draw calls, material=%s origin=%s prim=%s far=%s "
                 "proj=%s",
