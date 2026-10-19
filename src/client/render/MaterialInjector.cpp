@@ -119,8 +119,13 @@ LL_TYPE_INSTANCE_HOOK(
     if (gActive.load() && gProbeBudget.fetch_sub(1) > 0) {
         bool resolved = false;
         try {
+            // compiled index entries are looked up in switchable() (R0, 2026-10-19); `this` may be either group
             auto info = getMaterialInfo(HashedString{"DH_Terrain"});
             resolved  = info && info->mPtr.get() != nullptr;
+            if (!resolved) {
+                auto sw  = mce::RenderMaterialGroup::switchable().getMaterialInfo(HashedString{"DH_Terrain"});
+                resolved = sw && sw->mPtr.get() != nullptr;
+            }
         } catch (...) {
             DH_LOG_E("materials: probe exception swallowed");
         }
