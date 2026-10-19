@@ -305,7 +305,12 @@ bool ClientWorldDriver::Impl::startSession() {
             // Only the SERVER handle reaches the server module (World.cpp), and it wraps the server Dimension.
             auto& ch = static_cast<ClientLevelHandle&>(h);
             if (!ch.dimension()) return nullptr;
-            return std::make_unique<BdsWorldGenerator>(*ch.dimension(), *raw->serializer, raw->pools->worldGen());
+            return std::make_unique<BdsWorldGenerator>(
+                *ch.dimension(),
+                *raw->serializer,
+                raw->pools->worldGen(),
+                raw->config->options().common.worldGenerator.scratchThreads
+            );
         };
     }
     d.sinkFactory    = [](dh::ILevelHandle&) -> dh::IVertexSink* { return &render::renderer().sink(); };

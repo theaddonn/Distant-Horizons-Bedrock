@@ -13,7 +13,9 @@
 
 #include "ll/api/thread/ServerThreadExecutor.h"
 
+#include <algorithm>
 #include <chrono>
+#include <functional>
 #include <future>
 #include <thread>
 
@@ -36,10 +38,11 @@ public:
     : ChunkHolder{std::move(chunk)},
       BedrockChunk(*lc, serializer) {}
 
-    /// snapshot() + free the LevelChunk: afterwards this wrapper never dereferences it.
-    void freeze() {
+    /// snapshot() and hand the LevelChunk back (afterwards this wrapper never dereferences it); the caller
+    /// destroys it on the thread that constructed it.
+    std::shared_ptr<LevelChunk> freeze() {
         snapshot();
-        lc.reset();
+        return std::move(lc);
     }
 };
 
@@ -81,14 +84,66 @@ struct BdsWorldGenerator::Batch {
     DoneCallback      done;
 };
 
-BdsWorldGenerator::BdsWorldGenerator(Dimension& dimension, BlockSerializer& serializer, dh::IExecutor& genPool)
+int BdsWorldGenerator::defaultScratchThreads() {
+    const int hw = static_cast<int>(std::thread::hardware_concurrency());
+    return std::max(2, hw - 2);
+}
+
+BdsWorldGenerator::BdsWorldGenerator(
+    Dimension&       dimension,
+    BlockSerializer& serializer,
+    dh::IExecutor&   genPool,
+    int              scratchThreads
+)
 : dimension_(dimension),
   serializer_(serializer),
-  genPool_(genPool) {}
+  genPool_(genPool) {
+    // 0 = auto; < 0 = legacy: one worker, everything on the server thread (fallback if off-thread loadChunk
+    // misbehaves).
+    serverThreadOnly_ = scratchThreads < 0;
+    threads_          = serverThreadOnly_ ? 1 : (scratchThreads == 0 ? defaultScratchThreads() : scratchThreads);
+    lastStatMs_.store(nowMs());
+    DH_LOG_I(
+        "world gen: %d scratch worker thread(s)%s",
+        threads_,
+        serverThreadOnly_ ? " (legacy: whole task on the server thread)" : ""
+    );
+    for (int i = 0; i < threads_; ++i) workers_.emplace_back([this] { workerLoop(); });
+}
+
+long long BdsWorldGenerator::nowMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+        .count();
+}
+
+void BdsWorldGenerator::workerLoop() {
+    for (;;) {
+        std::function<void()> job;
+        {
+            std::unique_lock lock(workMutex_);
+            workCv_.wait(lock, [&] { return stopWorkers_ || !work_.empty(); });
+            if (work_.empty()) return; // stopping and drained
+            job = std::move(work_.front());
+            work_.pop_front();
+        }
+        job(); // the closure's TaskGuard releases the in-flight slot
+    }
+}
 
 void BdsWorldGenerator::close() {
     closing_.store(true);
     cancelAll();
+}
+
+void BdsWorldGenerator::stopWorkers() {
+    {
+        std::lock_guard lock(workMutex_);
+        stopWorkers_ = true;
+    }
+    workCv_.notify_all();
+    for (auto& t : workers_)
+        if (t.joinable()) t.join();
+    workers_.clear();
 }
 
 /// Owned by the pool task's closure: whether the task runs or is dropped (ThreadPools::shutdown() drops queued
@@ -110,12 +165,15 @@ BdsWorldGenerator::~BdsWorldGenerator() {
     // Tasks capture `this`: wait for them (they skip the work once cancelled). Bounded so a stuck server
     // thread hop cannot hang shutdown forever.
     idleCv_.wait_for(lock, 30s, [&] { return inFlightTasks_.load() == 0; });
+    lock.unlock();
+    // Queued jobs fail fast (closing_); a worker stuck in a server-thread hop is bounded by the hop TTL.
+    stopWorkers();
 }
 
 bool BdsWorldGenerator::isBusy() const {
     // Java: the queue itself bounds in-flight tasks; also stay out of the way while the server thread is the
     // only way to progress (InternalServer waits there).
-    return inFlightTasks_.load() > 64;
+    return inFlightTasks_.load() > std::max(64, threads_ * 4);
 }
 
 void BdsWorldGenerator::cancelAll() {
@@ -162,12 +220,33 @@ void BdsWorldGenerator::queue(
             ++inFlightTasks_;
             auto guard = std::make_shared<TaskGuard>(TaskGuard{this, batch});
             // If rejected, the closure (and with it the guard) is destroyed and completes the chunk as failed.
-            (void)genPool_.execute([this, batch, cx, cz, guard] {
+            // FIFO across batches: a section's 16 chunks are picked up together before the next section's.
+            std::lock_guard lock(workMutex_);
+            work_.emplace_back([this, batch, cx, cz, guard] {
                 guard->ran = true;
                 runChunk(batch, cx, cz);
             });
         }
     }
+    workCv_.notify_all();
+}
+
+void BdsWorldGenerator::noteChunkDone(long long ms) {
+    statChunks_.fetch_add(1);
+    statMs_.fetch_add(ms);
+    const long long now  = nowMs();
+    long long       last = lastStatMs_.load();
+    if (now - last < 10000 || !lastStatMs_.compare_exchange_strong(last, now)) return;
+    const long long n   = statChunks_.exchange(0);
+    const long long sum = statMs_.exchange(0);
+    if (n > 0)
+        DH_LOG_I(
+            "world gen: %lld chunks in the last 10 s (avg %lld ms, in flight %d, threads %d)",
+            n,
+            sum / n,
+            inFlightTasks_.load(),
+            threads_
+        );
 }
 
 void BdsWorldGenerator::finishChunk(const std::shared_ptr<Batch>& batch, bool ok) {
@@ -183,7 +262,9 @@ void BdsWorldGenerator::runChunk(const std::shared_ptr<Batch>& batch, std::int32
         finishChunk(batch, false);
         return;
     }
-    bool ok = true;
+    bool       ok     = true;
+    const auto taskT0 = std::chrono::steady_clock::now();
+    long long  taskMs = 0;
     try {
         std::shared_ptr<dh::IChunk> chunk;
         switch (batch->mode) {
@@ -201,8 +282,11 @@ void BdsWorldGenerator::runChunk(const std::shared_ptr<Batch>& batch, std::int32
             ok    = chunk != nullptr;
             break;
         }
+        taskMs =
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - taskT0).count();
         if (chunk && !batch->cancelled.load() && batch->onChunk) {
             ++generated_;
+            noteChunkDone(taskMs);
             batch->onChunk(std::move(chunk));
         } else if (!chunk && !ok) {
             ++failed_;
@@ -238,9 +322,6 @@ std::shared_ptr<dh::IChunk> BdsWorldGenerator::generateScratch(std::int32_t cx, 
     // ChunkViewSource and NetworkChunkSource do); the base implementation forwards to mParent, which a generator
     // does not have -> always null. Do not call it. Build the scratch LevelChunk directly instead.
     //
-    // Everything that touches the generator and the chunk (construct, loadChunk, snapshot, destroy) runs on the
-    // server thread: WorldGenerator keeps thread-local state (mThreadLocalHeightmapProvider, generatorHelpersPool)
-    // that vanilla sets up for its own generation context, and the chunk ctor/dtor touch Dimension/Level.
     ::Dimension*     dim = &dimension_;
     BlockSerializer* ser = &serializer_;
     struct Diag {
@@ -252,8 +333,8 @@ std::shared_ptr<dh::IChunk> BdsWorldGenerator::generateScratch(std::int32_t cx, 
     };
     auto diag = std::make_shared<Diag>();
 
-    auto fn = [gen, dim, ser, cp, diag]() -> std::shared_ptr<ScratchChunk> {
-        std::shared_ptr<LevelChunk> lc(new LevelChunk(
+    auto construct = [dim, cp]() -> std::shared_ptr<LevelChunk> {
+        return std::shared_ptr<LevelChunk>(new LevelChunk(
             *dim,
             cp,
             /*readOnly=*/false,
@@ -261,31 +342,51 @@ std::shared_ptr<dh::IChunk> BdsWorldGenerator::generateScratch(std::int32_t cx, 
             /*initializeMetaData=*/false,
             LevelChunkBlockActorStorage::TrackingMode::None
         ));
+    };
+    // Generate + snapshot; returns the wrapper (LevelChunk already released into `leftover` for destruction).
+    auto generate = [gen, ser, cp, diag](std::shared_ptr<LevelChunk> lc, std::shared_ptr<LevelChunk>& leftover)
+        -> std::shared_ptr<ScratchChunk> {
         diag->heightOk = BedrockChunk::heightSupported(*lc);
-        if (!diag->heightOk) return nullptr;
+        if (!diag->heightOk) {
+            leftover = std::move(lc);
+            return nullptr;
+        }
         diag->stateBefore  = static_cast<int>(lc->mLoadState->load());
         diag->toGenerating = lc->tryChangeState(ChunkState::Unloaded, ChunkState::Generating);
         gen->loadChunk(*lc, /*forceImmediateReplacementDataLoad=*/false);
         diag->toGenerated = lc->tryChangeState(ChunkState::Generating, ChunkState::Generated);
         diag->stateAfter  = static_cast<int>(lc->mLoadState->load());
         auto w            = std::make_shared<ScratchChunk>(std::move(lc), *ser);
-        w->freeze();
+        leftover          = w->freeze();
         return w;
     };
-    std::shared_ptr<ScratchChunk> wrapped = onServerThread(fn, kInternalServerTtl);
-    if (!wrapped) {
-        if (logIt)
-            DH_LOG_W(
-                "world gen task %d (%d,%d): FAILED after %lld ms (null; heightSupported=%d)",
-                seq,
-                cx,
-                cz,
-                ms(),
-                diag->heightOk ? 1 : 0
-            );
-        return nullptr;
-    }
 
+    std::shared_ptr<ScratchChunk> wrapped;
+    if (serverThreadOnly_) {
+        // Legacy path: everything on the server thread (serialised).
+        wrapped = onServerThread(
+            [&construct, &generate]() -> std::shared_ptr<ScratchChunk> {
+                std::shared_ptr<LevelChunk> leftover;
+                auto                        w = generate(construct(), leftover);
+                return w; // leftover destroyed here, on the server thread
+            },
+            kInternalServerTtl
+        );
+    } else {
+        // Parallel path. Construction (ctor reads Dimension/Level state) and destruction stay on the server
+        // thread; loadChunk and the snapshot run on this worker: WorldGenerator's per-thread state
+        // (mThreadLocalHeightmapProvider is InstancedThreadLocalValue, generatorHelpersPool InstancedThreadLocal)
+        // is created lazily per calling thread, which is how vanilla runs it on its generation workers.
+        auto lc = onServerThread(construct, kInternalServerTtl);
+        if (lc) {
+            std::shared_ptr<LevelChunk> leftover;
+            wrapped = generate(std::move(lc), leftover);
+            if (leftover)
+                ll::thread::ServerThreadExecutor::getDefault().execute([leftover = std::move(leftover)]() mutable {
+                    leftover.reset();
+                });
+        }
+    }
     // Validate: a chunk with no solid block is a failed generation, not terrain.
     long long nonAir = 0;
     for (int z = 0; z < 16; ++z)
@@ -347,7 +448,7 @@ std::shared_ptr<dh::IChunk> BdsWorldGenerator::snapshotLoaded(
     auto             wrapped = onServerThread(
         [lc, ser]() -> std::shared_ptr<ScratchChunk> {
             auto w = std::make_shared<ScratchChunk>(lc, *ser);
-            w->freeze();
+            (void)w->freeze();
             return w;
         },
         5000ms

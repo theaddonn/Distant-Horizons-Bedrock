@@ -295,6 +295,15 @@ Table table() {
             "Bedrock port: allow distant generation (generatorPlan) although scratch chunk generation is not yet "
             "validated in game."
         ),
+        DH_INT(
+            "common.worldGenerator.scratchThreads",
+            common.worldGenerator.scratchThreads,
+            0,
+            -1,
+            64,
+            "Bedrock port: worker threads for distant chunk generation. 0 = auto (max(2, cores - 2)); -1 = legacy "
+            "single-threaded generation on the server thread."
+        ),
         DH_ENUM(
             "common.worldGenerator.chunkGeneratorMode",
             common.worldGenerator.chunkGeneratorMode,
