@@ -55,3 +55,22 @@ mangled symbol). `FileSystemImpl::openFile` is skipped (not exported).
 - SM40/50 are dropped from DH_Terrain (and the B2 SM50/40 FS come from wine's fxc, `SHDR` not `SHEX`); only relevant if the game runs D3D11.
 - `DhParams` is only settable if the material path exposes property fields for our draw; the default (1,1,1,1) is what B3 shows without that.
 - MaterialInjector is process-wide: if the game updates and the loader signature moves, the hooks fail to resolve (build break or no-op) - check the log for `injector on`.
+
+## Binding DH_Terrain through the mce -> dragon resolution
+
+The engine picks a compiled material on every draw in `resolveDragonMaterial(Binding* sret, DragonCtx*, DrawState* ds, int pass)`. It reads the mce material via `*(RenderMaterialInfo**)(ds+0x148)`, derives a dragon name (`MeshFallback*`, `SingleBlock*`) plus variant flags, hashes them to `key[2]` and calls `cacheGetOrCreate(cache, Entry** out, key)`; if the entry has no material it calls `enqueueAsync(ctx, Holder* sret, Descriptor*)` (descriptor starts with `std::string name`, deep-copied), which later runs `CompiledMaterialManager::getMaterial(name)` -> CRT fopen -> `CreateFileW` (our redirect serves `DH_Terrain.material.bin`). `materials.index.json` gates nothing.
+
+Our binding (`MaterialInjector.cpp`, installed behind `gActive`):
+1. `ensureDhMceMaterial()` (render thread, from `spikes::dhMaterial()` once `fallbackMaterial()` is valid) copy-constructs a `mce::RenderMaterial` (0x378 B) from MeshFallbackPosUVNormalColor into the `switchable()` info named `DH_Terrain`; its info pointer is stored as `gDhInfo`. That makes `materialValid(dhMaterial())` true.
+2. `resolveDragonMaterial` hook sets thread-local `tlDhResolving` when `ds+0x148 == gDhInfo`.
+3. `cacheGetOrCreate` hook replaces `key[0]` with FNV-1a64("DH_Terrain") so DH gets its own cache entry (without it the DH binding would share the vanilla entry for that variant set).
+4. `enqueueAsync` hook rewrites a `MeshFallback*` descriptor name to `DH_Terrain`.
+
+Signatures (1.26.51, IDA-style; log line `materials: sig <name> -> 0x<rva>`; re-find on a game update from the function prologues):
+- resolveDragonMaterial (RVA 0x08D3ABB0): `55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC B8 04 00 00 48 8D AC 24 80 00 00 00 44 0F 29 95 20 04 00 00`
+- cacheGetOrCreate (0x052F94A0, checked unique at install): `55 41 57 41 56 41 54 56 57 53 48 83 EC 40 48 8D 6C 24 40 48 C7 45 F8 FE FF FF FF 4D 89 C6 48 89 D6 48 89 CF 49 8B 00 41 0F B6 48 08`
+- enqueueAsync (0x0B786580): `55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC 48 01 00 00 48 8D AC 24 80 00 00 00 48 C7 85 C0 00 00 00 FE FF FF FF 49 89 D5`
+- CompiledMaterialManager::getMaterial (0x0BCD6900): `55 41 57 41 56 41 55 41 54 56 57 53 48 81 EC 28 01 00 00 48 8D AC 24 80 00 00 00 48 C7 85 A0 00 00 00 FE FF FF FF 4C 89 CB 4C 89 C6 49 89 D6 49 89 CF`
+- `mce::RenderMaterial` copy ctor: SDK export `$ctor(RenderMaterial const&)` (RVA 0x05A5C0F0).
+
+Evidence in the log after a run: `sig ...` lines, `DH_Terrain mce material cloned`, `dragon request MeshFallback* -> DH_Terrain`, `trace[CreateFileW] ...DH_Terrain.material.bin` + `redirect`, then `render: material DH_Terrain resolved`. Known risk: a parse failure gives an empty definition (undefined behaviour at bind).

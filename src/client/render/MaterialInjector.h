@@ -8,9 +8,17 @@
 //   * RenderMaterialGroup::loadList: probe, logs the list path and whether "DH_Terrain" resolves afterwards.
 // Toggle: env DH_MATERIAL_INJECT=0|1 (default: on iff the .material.bin exists). See docs/spikes/stage-b-offline.md.
 
+namespace mce {
+class MaterialPtr;
+}
+
 namespace dh::render {
 
 void installMaterialInjector();
 void uninstallMaterialInjector();
+
+/// Render thread, once `fallback` (MeshFallbackPosUVNormalColor) is valid: clones its mce::RenderMaterial into the
+/// "DH_Terrain" info so the dragon binder can substitute our compiled material. False until possible / if no binder.
+bool ensureDhMceMaterial(mce::MaterialPtr const& fallback);
 
 } // namespace dh::render
