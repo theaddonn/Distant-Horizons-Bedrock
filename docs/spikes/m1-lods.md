@@ -196,3 +196,46 @@ bind (log "mBrightnessTex unavailable", or the UseTextures=Off material variant 
 Run 9 follow-ups: Numpad 3 toggles `lightmapSwapAxes` live (HUD `render.lightmap` = `block,sky` / `sky,block` / `cpu`, `render.lighting` =
 `lightmap` / `cpu`). If `mBrightnessTex` is missing, DH_Terrain is replaced by the MeshFallback/selection material with CPU lighting
 (logged once). The FS reads the lightmap size with `GetDimensions` (texel centres for any size) and the real size is logged once.
+## Run 10: clouds
+
+Java DH (`CloudRenderHandler`): its own cloud texture, boxes drawn through the generic object renderer, vanilla clouds
+disabled by a mixin while DH renders. Bedrock port (`CloudRenderer`, `CloudMesh`, `third_party/TinyPng.h`):
+
+- **Vanilla clouds hidden** through `ViewRenderData::mDrawClouds`: the SDK has no cloud-draw function (only the
+  `mCloudMeshes`/`cloudMaterial` fields), so the hook clears the flag on every non-shadow view before the vanilla world
+  is drawn (`LevelRenderer::renderLevel` and `LevelRendererCamera::$render`, whichever sees the view first) and sets it
+  back right after, so vanilla clouds return the frame DH stops (F5 off, Numpad 2 off, option off). Hidden only once
+  the DH layer has actually been drawn (hand-off, no frame without clouds). Log lines `clouds: vanilla clouds hidden
+  (true -> false) via ViewRenderData::mDrawClouds (level|camera hook)` / `restored`.
+- **Which game facts the log prints once:** `LevelRendererCamera::mCloudHeight` (used as the DH layer height, fallback
+  192), `mDrawClouds`, `mCameraAboveClouds`, and `CloudRenderObject` (`fancy`, `meshSize`, `gridSize`, `yTranslation`,
+  colour). Read them to confirm the texel size / height assumptions below.
+- **Pattern:** `<game dir>/data/resource_packs/vanilla/textures/environment/clouds.png` (read-only, found from the exe
+  directory; 256x256 RGBA, white texels, alpha 255 = cloud / 1 = clear, 13356 of 65536 texels = 20%). Decoded by the
+  vendored `TinyPng.h` (own inflate, MIT); a procedural blob pattern is the fallback (logged).
+- **Geometry:** 12-block texels (Java), 4-block-thick boxes (top, bottom, walls; greedy-merged rectangles and wall
+  runs, DH shading 1.0/0.7/0.9/0.8 baked into the vertex colour), alpha 0.8, white scaled by the sky colour. Covers the
+  LOD far distance (square, + 384 block margin) around the camera, built on a worker thread in "cloud space" and
+  uploaded through `MeshUploader` as a reserved section (detail level 0, never produced by the tree; skipped by the
+  terrain draw). Rebuild only when the camera leaves the margin, the far distance / height / tint (10 s throttle) change,
+  or the section vanished. Drift is the world-matrix translate: -X at 0.6 blocks/s (Java vanilla), wall-clock time.
+- **Drawn** inside the LOD draw, after the transparent terrain layer, with `DH_TerrainTransparent`, near clip 0 and the
+  DH far fog (start 0.6 x far, end far), so distant clouds fade into the fog colour. Only while the game itself would
+  draw clouds (a non-shadow view had `mDrawClouds` set within the last second: respects the clouds video setting and
+  dimensions without them).
+- **Keys / config:** Numpad 2 toggles DH clouds (HUD `render.clouds`: on / building / waiting / off, `render.cloudQuads`);
+  `client.graphics.clouds.renderDhClouds` (true) and `hideVanillaClouds` (true).
+- **Known limits (shader is frozen):** tint is baked into the vertex colour (quantised, rebuild at most every 10 s), not
+  multiplied in the shader; no alpha-sorted blending between cloud boxes; cloud shadows / weather darkening ignored.
+
+In game (checklist):
+1. F5 on, wait for LODs: log shows `clouds: pattern from ...clouds.png (256x256, 13356/65536 ...)` (or the fallback
+   warning), the `mCloudHeight=..` line, `clouds: first update ...`, `clouds: first section live: N quads ...`,
+   `clouds: vanilla clouds hidden ...`. Vanilla clouds vanish, DH clouds appear at the same height (192 expected) and
+   reach to the horizon, fading into the fog.
+2. Compare cell size with the vanilla clouds (toggle Numpad 2 off/on: the DH layer should line up with the vanilla
+   pattern 1:1 if texel size 12 and the layer scrolls the same way; report mismatch size/speed/direction).
+3. Fly up through the layer and walk under it: boxes visible from both sides, no hole below the camera, no flicker when
+   the rebuild swaps in (walk ~300 blocks).
+4. Day/night: clouds darken at dusk (tint steps, a short pop per step is expected); rain: vanilla greys its clouds, ours do not.
+5. F5 off: vanilla clouds return immediately. Clouds setting off in video options / Nether / End: no DH clouds.

@@ -91,10 +91,18 @@ struct FogOptions {
     bool disableVanillaFog = true;
 };
 
+struct CloudOptions {
+    /// Draw DH's own cloud layer out to the LOD far distance (Java's generic-object cloud renderer). true
+    bool renderDhClouds = true;
+    /// Bedrock: hide the vanilla clouds while the LOD pipeline renders (restored when it is off). true
+    bool hideVanillaClouds = true;
+};
+
 struct GraphicsOptions {
     QualityOptions quality;
     CullingOptions culling;
     FogOptions     fog;
+    CloudOptions   clouds;
     /// Java Client.Advanced.Graphics. true
     bool enableSsao = true;
     /// true
