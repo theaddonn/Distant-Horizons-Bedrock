@@ -110,8 +110,15 @@ bool CloudRenderer::update(Inputs const& in) {
     auto const& secs = sink_.sections();
 
     if (jobRunning_ && job_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
-        pending_      = job_.get();
-        jobRunning_   = false;
+        jobRunning_ = false; // before get(): a throwing job must not leave an invalid future marked running
+        try {
+            pending_ = job_.get();
+        } catch (...) {
+            pending_       = Built{};
+            pending_.empty = true;
+            retryAfter_    = now + std::chrono::seconds(5);
+            DH_LOG_E("clouds: build job threw; retrying in 5 s");
+        }
         havePending_  = !pending_.empty;
         pendingSince_ = now;
     }
@@ -171,7 +178,7 @@ bool CloudRenderer::update(Inputs const& in) {
             std::fabs(camZ - static_cast<double>(k.anchorZ))
         );
         if (k.half != want.half || k.yBottom != want.yBottom || far_ > kMarginBlocks - 48) need = true;
-        else if (k.color != want.color && now - lastBuild_ > std::chrono::seconds(3)) need = true;
+        else if (k.color != want.color && now - lastBuild_ > std::chrono::seconds(10)) need = true;
     }
     if (need && !jobRunning_ && !havePending_ && now >= retryAfter_) {
         lastBuild_ = now;
@@ -197,22 +204,30 @@ bool CloudRenderer::update(Inputs const& in) {
         MeshUploader* sink = &sink_;
         job_               = std::async(std::launch::async, [pat, bp, want, sink]() {
             Built b;
-            b.key        = want;
-            const auto t = Clock::now();
-            auto       r = cloud::build(*pat, bp);
-            b.quads      = r.quads;
-            b.ms         = std::chrono::duration<double, std::milli>(Clock::now() - t).count();
-            b.state      = std::make_shared<std::atomic<int>>(0);
-            if (r.quads == 0) {
-                b.empty = true;
+            b.key = want;
+            try {
+                const auto t = Clock::now();
+                auto       r = cloud::build(*pat, bp);
+                b.quads      = r.quads;
+                b.ms         = std::chrono::duration<double, std::milli>(Clock::now() - t).count();
+                b.state      = std::make_shared<std::atomic<int>>(0);
+                if (r.quads == 0) {
+                    b.empty = true;
+                    return b;
+                }
+                MeshBuffers mb;
+                for (auto& v : r.buffers) mb.transparent.push_back(std::move(v));
+                b.pos =
+                    sec::encode(0, static_cast<std::int32_t>(want.anchorX), static_cast<std::int32_t>(want.anchorZ));
+                auto st = b.state;
+                b.id    = sink->uploadWithId(b.pos, std::move(mb), [st](bool ok) { st->store(ok ? 1 : 2); });
                 return b;
+            } catch (...) {
+                Built e;
+                e.key   = want;
+                e.empty = true;
+                return e;
             }
-            MeshBuffers mb;
-            for (auto& v : r.buffers) mb.transparent.push_back(std::move(v));
-            b.pos   = sec::encode(0, static_cast<std::int32_t>(want.anchorX), static_cast<std::int32_t>(want.anchorZ));
-            auto st = b.state;
-            b.id    = sink->uploadWithId(b.pos, std::move(mb), [st](bool ok) { st->store(ok ? 1 : 2); });
-            return b;
         });
         jobRunning_        = true;
     }
@@ -224,6 +239,7 @@ std::size_t CloudRenderer::draw(
     mce::MeshContext&       mctx,
     mce::MaterialPtr const& material,
     glm::dvec3 const&       camera,
+    bool                    cameraRelative,
     float                   fogStart,
     float                   fogEnd
 ) {
@@ -233,12 +249,16 @@ std::size_t CloudRenderer::draw(
     if (it == secs.end()) return 0;
     static Texture const none{std::monostate{}};
 
-    auto&       cam  = mctx.camera;
-    auto        wref = cam.worldMatrixStack->push(false);
-    Matrix      m    = Matrix::IDENTITY();
-    const float tx   = static_cast<float>(static_cast<double>(cur_.key.anchorX) + offsetX() - camera.x);
-    const float tz   = static_cast<float>(static_cast<double>(cur_.key.anchorZ) - camera.z);
-    m.translate(tx, static_cast<float>(-camera.y), tz);
+    auto&        cam  = mctx.camera;
+    auto         wref = cam.worldMatrixStack->push(false);
+    Matrix       m    = Matrix::IDENTITY();
+    const double cx = cameraRelative ? camera.x : 0.0, cy = cameraRelative ? camera.y : 0.0,
+                 cz = cameraRelative ? camera.z : 0.0; // absolute mode: the view matrix carries the camera
+    m.translate(
+        static_cast<float>(static_cast<double>(cur_.key.anchorX) + offsetX() - cx),
+        static_cast<float>(-cy),
+        static_cast<float>(static_cast<double>(cur_.key.anchorZ) - cz)
+    );
     // DH_Terrain per-draw parameters in the projective row: no near clip / fade, DH far fog
     auto& g                        = m._m.get();
     g[0][3]                        = 0.0f;
@@ -253,6 +273,16 @@ std::size_t CloudRenderer::draw(
             ++calls;
         }
     return calls;
+}
+
+} // namespace dh::render
+
+namespace dh::render {
+
+std::size_t CloudRenderer::liveBytes() const {
+    if (!haveCur_) return 0;
+    auto it = sink_.sections().find(cur_.pos);
+    return it == sink_.sections().end() ? 0 : it->second.bytes;
 }
 
 } // namespace dh::render

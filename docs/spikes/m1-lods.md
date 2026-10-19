@@ -190,7 +190,7 @@ disabled by a mixin while DH renders. Bedrock port (`CloudRenderer`, `CloudMesh`
   runs, DH shading 1.0/0.7/0.9/0.8 baked into the vertex colour), alpha 0.8, white scaled by the sky colour. Covers the
   LOD far distance (square, + 384 block margin) around the camera, built on a worker thread in "cloud space" and
   uploaded through `MeshUploader` as a reserved section (detail level 0, never produced by the tree; skipped by the
-  terrain draw). Rebuild only when the camera leaves the margin, the far distance / height / tint (3 s throttle) change,
+  terrain draw). Rebuild only when the camera leaves the margin, the far distance / height / tint (10 s throttle) change,
   or the section vanished. Drift is the world-matrix translate: -X at 0.6 blocks/s (Java vanilla), wall-clock time.
 - **Drawn** inside the LOD draw, after the transparent terrain layer, with `DH_TerrainTransparent`, near clip 0 and the
   DH far fog (start 0.6 x far, end far), so distant clouds fade into the fog colour. Only while the game itself would
@@ -198,7 +198,7 @@ disabled by a mixin while DH renders. Bedrock port (`CloudRenderer`, `CloudMesh`
   dimensions without them).
 - **Keys / config:** Numpad 2 toggles DH clouds (HUD `render.clouds`: on / building / waiting / off, `render.cloudQuads`);
   `client.graphics.clouds.renderDhClouds` (true) and `hideVanillaClouds` (true).
-- **Known limits (shader is frozen):** tint is baked into the vertex colour (quantised, rebuild at most every 3 s), not
+- **Known limits (shader is frozen):** tint is baked into the vertex colour (quantised, rebuild at most every 10 s), not
   multiplied in the shader; no alpha-sorted blending between cloud boxes; cloud shadows / weather darkening ignored.
 
 In game (checklist):

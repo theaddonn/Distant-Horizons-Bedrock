@@ -77,7 +77,13 @@ struct Huffman {
     }
 };
 
-inline bool inflateBlock(BitReader& br, std::vector<std::uint8_t>& out, Huffman const& lit, Huffman const& dist) {
+inline bool inflateBlock(
+    BitReader&                 br,
+    std::vector<std::uint8_t>& out,
+    Huffman const&             lit,
+    Huffman const&             dist,
+    std::size_t                limit
+) {
     static constexpr std::uint16_t lbase[29] = {3,  4,  5,  6,  7,  8,  9,  10, 11,  13,  15,  17,  19,  23, 27,
                                                 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258};
     static constexpr std::uint16_t lext[29]  = {0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 2, 2, 2,
@@ -89,7 +95,7 @@ inline bool inflateBlock(BitReader& br, std::vector<std::uint8_t>& out, Huffman 
                                                 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 13, 13};
     for (;;) {
         int sym = lit.decode(br);
-        if (sym < 0) return false;
+        if (sym < 0 || out.size() > limit) return false;
         if (sym < 256) {
             out.push_back(static_cast<std::uint8_t>(sym));
         } else if (sym == 256) {
@@ -102,6 +108,7 @@ inline bool inflateBlock(BitReader& br, std::vector<std::uint8_t>& out, Huffman 
             if (ds < 0 || ds >= 30) return false;
             std::size_t d = dbase[ds] + br.bits(dext[ds]);
             if (br.err || d > out.size()) return false;
+            if (out.size() + static_cast<std::size_t>(len) > limit + 1) return false;
             std::size_t from = out.size() - d;
             for (int i = 0; i < len; ++i) out.push_back(out[from + static_cast<std::size_t>(i)]);
         }
@@ -109,7 +116,7 @@ inline bool inflateBlock(BitReader& br, std::vector<std::uint8_t>& out, Huffman 
 }
 
 /// zlib stream -> raw bytes.
-inline bool inflateZlib(std::uint8_t const* data, std::size_t size, std::vector<std::uint8_t>& out) {
+inline bool inflateZlib(std::uint8_t const* data, std::size_t size, std::vector<std::uint8_t>& out, std::size_t limit) {
     if (size < 2) return false;
     BitReader br{data + 2, size - 2}; // skip the 2-byte zlib header
     bool      last = false;
@@ -123,7 +130,7 @@ inline bool inflateZlib(std::uint8_t const* data, std::size_t size, std::vector<
             if (br.pos + 4 > br.n) return false;
             unsigned len  = br.p[br.pos] | (static_cast<unsigned>(br.p[br.pos + 1]) << 8);
             br.pos       += 4;
-            if (br.pos + len > br.n) return false;
+            if (br.pos + len > br.n || out.size() + len > limit) return false;
             out.insert(out.end(), br.p + br.pos, br.p + br.pos + len);
             br.pos += len;
         } else if (typ == 1) {
@@ -138,7 +145,7 @@ inline bool inflateZlib(std::uint8_t const* data, std::size_t size, std::vector<
             std::uint8_t dl[30];
             std::memset(dl, 5, sizeof dl);
             dist.build(dl, 30);
-            if (!inflateBlock(br, out, lit, dist)) return false;
+            if (!inflateBlock(br, out, lit, dist, limit)) return false;
         } else if (typ == 2) {
             unsigned nlen = br.bits(5) + 257, ndist = br.bits(5) + 1, ncode = br.bits(4) + 4;
             if (br.err || nlen > 286 || ndist > 30) return false;
@@ -171,7 +178,7 @@ inline bool inflateZlib(std::uint8_t const* data, std::size_t size, std::vector<
             Huffman lit, dist;
             lit.build(all, static_cast<int>(nlen));
             dist.build(all + nlen, static_cast<int>(ndist));
-            if (!inflateBlock(br, out, lit, dist)) return false;
+            if (!inflateBlock(br, out, lit, dist, limit)) return false;
         } else {
             return false;
         }
@@ -215,13 +222,14 @@ inline bool decode(std::uint8_t const* data, std::size_t size, Image& img) {
         else if (!std::memcmp(type, "IEND", 4)) break;
         pos += 12 + static_cast<std::size_t>(len);
     }
-    if (w <= 0 || h <= 0 || w > 16384 || h > 16384 || depth != 8 || interlace != 0) return false;
+    if (w <= 0 || h <= 0 || w > 4096 || h > 4096 || depth != 8 || interlace != 0) return false;
     int channels = ctype == 0 ? 1 : ctype == 2 ? 3 : ctype == 3 ? 1 : ctype == 4 ? 2 : ctype == 6 ? 4 : 0;
     if (!channels) return false;
     std::vector<std::uint8_t> raw;
-    raw.reserve(static_cast<std::size_t>(h) * (static_cast<std::size_t>(w) * channels + 1));
-    if (!detail::inflateZlib(idat.data(), idat.size(), raw)) return false;
-    const std::size_t stride = static_cast<std::size_t>(w) * channels;
+    const std::size_t         stride   = static_cast<std::size_t>(w) * channels;
+    const std::size_t         rawBytes = static_cast<std::size_t>(h) * (stride + 1);
+    raw.reserve(rawBytes);
+    if (!detail::inflateZlib(idat.data(), idat.size(), raw, rawBytes)) return false;
     if (raw.size() < static_cast<std::size_t>(h) * (stride + 1)) return false;
 
     std::vector<std::uint8_t> pix(static_cast<std::size_t>(h) * stride);

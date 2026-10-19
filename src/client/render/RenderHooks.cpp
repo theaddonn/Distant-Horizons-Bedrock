@@ -102,6 +102,14 @@ IClientInstance* gClient = nullptr;
 // it on every non-shadow view before the vanilla world is drawn (LevelRenderer::renderLevel and
 // LevelRendererCamera::$render, whichever sees the view first) and put it back right after, so vanilla comes back the
 // frame the pipeline / DH clouds turn off. Hidden only once the DH cloud layer has actually been drawn (hand-off).
+/// Puts mDrawClouds back on destruction (also when the wrapped original throws).
+struct CloudRestore {
+    std::vector<ViewRenderObject*> views;
+    ~CloudRestore() {
+        for (auto* v : views) v->mViewData.get().mDrawClouds = true;
+    }
+};
+
 bool shouldHideVanillaClouds() {
     if (!gRenderer || !gEnabled || !bedrock::ClientWorldDriver::instance().pipeline()) return false;
     if (!bedrock::ConfigBridge::instance().config().options().client.graphics.clouds.hideVanillaClouds) return false;
@@ -139,7 +147,7 @@ LL_TYPE_INSTANCE_HOOK(
     ::ViewRenderObject const& vro,
     ::IClientInstance&        ci
 ) {
-    bool hidden = false;
+    CloudRestore restore;
     if (gRenderer) {
         try {
             auto const& vd = vro.mViewData.get();
@@ -169,14 +177,13 @@ LL_TYPE_INSTANCE_HOOK(
                     );
                 }
             }
-            hidden = hideVanillaCloudsOn(vro, "camera");
+            if (hideVanillaCloudsOn(vro, "camera")) restore.views.push_back(&const_cast<ViewRenderObject&>(vro));
         } catch (...) {
             static int n = 0;
             if (n++ < 3) DH_LOG_E("clouds: camera hook threw");
         }
     }
     origin(rc, vro, ci);
-    if (hidden) const_cast<ViewRenderObject&>(vro).mViewData.get().mDrawClouds = true;
     if (!gRenderer) return;
     gClient = &ci;
     gRenderer->noteView(vro);
@@ -209,18 +216,17 @@ LL_TYPE_INSTANCE_HOOK(
     bool     active =
         gRenderer && gEnabled && gClient && gRenderer->lastView().valid && !gRenderer->lastView().isShadowPass;
     if (active && m == DrawHook::LevelRenderBefore) guardedDraw(sc, *gClient, "level-before");
-    std::vector<ViewRenderObject*> hiddenViews;
+    CloudRestore restoreViews;
     if (gRenderer) {
         try {
             for (auto& v : const_cast<FrameRenderObject&>(fro).mViews.get())
-                if (hideVanillaCloudsOn(v, "level")) hiddenViews.push_back(&v);
+                if (hideVanillaCloudsOn(v, "level")) restoreViews.views.push_back(&v);
         } catch (...) {
             static int n = 0;
             if (n++ < 3) DH_LOG_E("clouds: level hook threw");
         }
     }
     origin(sc, fro);
-    for (auto* v : hiddenViews) v->mViewData.get().mDrawClouds = true;
     if (active && m == DrawHook::LevelRenderAfter) guardedDraw(sc, *gClient, "level-after");
 }
 
