@@ -22,7 +22,8 @@
 //   InternalServer: let the real ChunkSource generate and load the chunk (getOrLoadChunk on the server
 //        thread), poll until it reaches ChunkState::Loaded (TTL 15 s), then snapshot on the server thread.
 //
-// Threads: scratch generation runs on `genPool` workers like vanilla's own generation tasks;
+// Threads: scratch generation runs on this class's own FIFO worker threads (`scratchThreads`); only the LevelChunk
+// construction/destruction hops to the server thread;
 // InternalServer / PreExistingOnly hop to the server thread (ll::thread::ServerThreadExecutor).
 //
 // Contract (IChunkGenerator.h): queue() never blocks; onChunk once per generated chunk with a shared_ptr<IChunk>
@@ -36,8 +37,12 @@
 #include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
+#include <thread>
+#include <vector>
 
 class Dimension;
 class LevelChunk;
@@ -47,7 +52,15 @@ namespace dh::bedrock {
 class BdsWorldGenerator final : public dh::IChunkGenerator {
 public:
     /// `dimension` and `serializer` must outlive the generator; `genPool` runs the scratch generation.
-    BdsWorldGenerator(Dimension& dimension, BlockSerializer& serializer, dh::IExecutor& genPool);
+    /// `scratchThreads`: workers for scratch generation (0 = auto: max(2, hardware_concurrency - 2);
+    /// < 0 = legacy single worker with the whole task on the server thread).
+    BdsWorldGenerator(
+        Dimension&       dimension,
+        BlockSerializer& serializer,
+        dh::IExecutor&   genPool,
+        int              scratchThreads = 0
+    );
+    static int defaultScratchThreads();
     ~BdsWorldGenerator() override;
     BdsWorldGenerator(const BdsWorldGenerator&)            = delete;
     BdsWorldGenerator& operator=(const BdsWorldGenerator&) = delete;
@@ -73,6 +86,10 @@ private:
     struct Batch;
     struct TaskGuard;
     void                        runChunk(const std::shared_ptr<Batch>& batch, std::int32_t cx, std::int32_t cz);
+    void                        workerLoop();
+    void                        stopWorkers();
+    void                        noteChunkDone(long long ms);
+    static long long            nowMs();
     void                        finishChunk(const std::shared_ptr<Batch>& batch, bool ok);
     std::shared_ptr<dh::IChunk> generateScratch(std::int32_t cx, std::int32_t cz);
     std::shared_ptr<dh::IChunk>
@@ -89,6 +106,17 @@ private:
     std::atomic<std::uint64_t>        generated_{0}, failed_{0};
     std::atomic<bool>                 closing_{false};
     std::atomic<bool>                 warnedFeatures_{false};
+
+    // Own FIFO worker threads (the shared DH picker pool is sized for CPU-only work and cannot be oversubscribed
+    // by tasks that wait on the server thread).
+    int                               threads_          = 1;
+    bool                              serverThreadOnly_ = false;
+    std::mutex                        workMutex_;
+    std::condition_variable           workCv_;
+    std::deque<std::function<void()>> work_;
+    bool                              stopWorkers_ = false;
+    std::vector<std::thread>          workers_;
+    std::atomic<long long>            statChunks_{0}, statMs_{0}, lastStatMs_{0};
 };
 
 } // namespace dh::bedrock

@@ -117,6 +117,9 @@ struct WorldGeneratorOptions {
     /// Bedrock port safety switch: distant generation stays Disabled until scratch generation is validated in game.
     /// false
     bool allowUnvalidatedGenerator = false;
+    /// Bedrock port: worker threads for scratch (distant) chunk generation. 0 = auto (max(2, cores - 2)),
+    /// -1 = legacy single-thread server-thread generation. 0 / [-1, 64]
+    int scratchThreads = 0;
     /// FEATURES
     DistantGeneratorMode chunkGeneratorMode = DistantGeneratorMode::Features;
     /// true

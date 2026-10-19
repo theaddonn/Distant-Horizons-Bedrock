@@ -1,12 +1,12 @@
 #include "server/ServerWorldDriver.h"
 
+#include "bedrock_common/BdsWorldGenerator.h"
 #include "bedrock_common/BedrockChunk.h"
 #include "bedrock_common/BedrockLevelInfo.h"
 #include "bedrock_common/ConfigBridge.h"
 #include "bedrock_common/FileLogger.h"
 #include "bedrock_common/KvChunkHashStore.h"
 #include "bedrock_common/LevelDbLodStore.h"
-#include "bedrock_common/BdsWorldGenerator.h"
 #include "server/NetServer.h"
 
 #include "dh/build/LightingEngine.h"
@@ -322,7 +322,12 @@ ServerWorldDriver::Dim* ServerWorldDriver::Impl::createDim(int id) {
     });
     dim->propagator = std::make_unique<dh::UpdatePropagator>(*dim->provider, pools->updatePropagator(), threads);
 
-    dim->chunkGen = std::make_unique<BdsWorldGenerator>(*found, *serializer, pools->worldGen());
+    dim->chunkGen = std::make_unique<BdsWorldGenerator>(
+        *found,
+        *serializer,
+        pools->worldGen(),
+        opts.common.worldGenerator.scratchThreads
+    );
     dh::DhWorldGeneratorOptions wo;
     wo.plan                    = opts.common.worldGenerator.generatorPlan;
     wo.build.worldCompression  = opts.common.lodBuilding.worldCompression;

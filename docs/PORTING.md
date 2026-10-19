@@ -208,3 +208,9 @@ Format: date — WP — decision — why — evidence.
 - Chunk updates get independent snapshot copies of the 3x3 neighbourhood: `lightChunk` writes seeds into every chunk of the 3x3, so a snapshot shared between two queued updates would race.
 - Thread map: game thread (tick event, handles, remote ingestion), worker "DH Client Driver" (level load/unload, world tick), server thread (SP ingestion drain), render thread (render list under a try-shared lock; level unload/stop take the lock exclusively).
 - **Run 7 (fade, shading, water):** dither fade across the vanilla overlap band (clipStart/fadeEnd packed into `u_model[0][3][0]`); face shade is baked into vertex colours as in Java (direction index now also carried in `StageAVertex.u`, shader factor off by default); translucent water through a blended `DH_TerrainTransparent` clone of the same compiled material. See `docs/spikes/m1-lods.md`.
+
+### Parallel scratch generation (BdsWorldGenerator)
+
+- Scratch tasks run on the generator's own FIFO worker threads (`common.worldGenerator.scratchThreads`: 0 = auto `max(2, cores-2)`, -1 = legacy single worker doing everything on the server thread). Only `LevelChunk` construction (reads Dimension/Level) and destruction hop to the server thread; `loadChunk`, the snapshot, the non-air check and block lighting run on the worker. `WorldGenerator::mThreadLocalHeightmapProvider` (InstancedThreadLocalValue) and `OverworldGenerator::generatorHelpersPool` (InstancedThreadLocal) are per-calling-thread, i.e. built for generation workers.
+- Order: `GenQueue` already issues one `queue()` per section request (nearest first); the 16 chunks of a request are enqueued together in a FIFO, so a section is completed before the next starts.
+- If the terrain turns bad (nonAir 0 / garbage) with threads > 0, set `scratchThreads=-1` to confirm it is the off-thread call.

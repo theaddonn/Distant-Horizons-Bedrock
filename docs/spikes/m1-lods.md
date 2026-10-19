@@ -103,6 +103,10 @@ that may not know them; if joining a vanilla server gets you kicked, tell me.
    `generatorPlan=Disabled`, with a `config:` warning). To test, set it to `true`; look for the `world gen task N (x,z): ...`
    lines (first 10 tasks: ms, chunk state, nonAir count, top block at (8,8)). `FAILED after ... ms (null` = hop timeout or
    unsupported height. See PORTING.md "First in-game run".
+   Parallel generation: on start `world gen: T scratch worker thread(s)`; every 10 s while active
+   `world gen: N chunks in the last 10 s (avg M ms, in flight K, threads T)`. Expect N roughly T x 10 / (M/1000) (about
+   30-50 chunks/s with 6+ threads vs ~9 before); `task` lines must still show nonAir ~30k and real top blocks. Bad terrain or
+   crash only with T>1: set `common.worldGenerator.scratchThreads=-1` (legacy).
 7. Exit ordering: the Dimension pointers die with the Level; the session is stopped from `ClientExitLevelEvent`. A crash on
    leaving the world is most likely the server Level being destroyed before the event.
 
