@@ -1,6 +1,7 @@
 #include "bedrock_common/BedrockChunk.h"
 
 #include "dh/platform/ChunkHeightUtil.h"
+#include "dh/platform/FrozenSurface.h"
 #include "dh/util/Assert.h"
 
 #include "mc/world/level/ChunkBlockPos.h"
@@ -48,6 +49,14 @@ void BedrockChunk::ensureBlocks() const {
             }
         }
     }
+    // snow lying on frozen water defeats Java's water-under-ice rule (see FrozenSurface.h)
+    dh::stripSnowOverFrozenWater(
+        minY_,
+        maxY_,
+        serializer_.table().air(),
+        [&](int x, std::int32_t y, int z) { return blocks_[index(x, y, z)]; },
+        [&](int x, std::int32_t y, int z, const dh::BlockInfo* b) { blocks_[index(x, y, z)] = b; }
+    );
 }
 
 const dh::BlockInfo* BedrockChunk::blockAt(int relX, std::int32_t y, int relZ) const {
