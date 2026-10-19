@@ -370,6 +370,7 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
     const bool dhShader   = std::strcmp(matName, "DH_Terrain") == 0;
     float      cutoff2    = -1.0f;
     float      clipRadius = 0.0f;
+    float      fadeEnd    = 0.0f; // vanilla render distance in blocks: the dither fade band is [clipRadius, fadeEnd]
     if (cfg_.nearCutoff && listMode) {
         float rd = cfg_.vanillaRenderDistanceBlocks;
         if (rd <= 0.0f) {
@@ -384,8 +385,10 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
         nci.avgCameraSpeedBlocksPerSec     = speedEma_;
         const float overdraw               = renderutil::overdrawPrevention(nci);
         float r = std::max(1.0f, static_cast<float>(nci.vanillaChunkRenderDistance) * 16.0f * overdraw) * cfg_.overdraw;
-        if (dhShader) clipRadius = r;
-        else cutoff2 = r * r;
+        if (dhShader) {
+            clipRadius = r;
+            fadeEnd    = static_cast<float>(nci.vanillaChunkRenderDistance) * 16.0f;
+        } else cutoff2 = r * r;
         if (!loggedCutoff_) {
             DH_LOG_I(
                 "render: near cut-off radius %.1f blocks (mRenderDistance=%.2f, overdraw %.2f)",
@@ -457,6 +460,22 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
     sc.color                   = mce::Color{1.f, 1.f, 1.f, 1.f};
     sc.dirty                   = true;
 
+    // Transparent layer: blended clone of DH_Terrain (depth test, no depth write); falls back to the opaque material.
+    mce::MaterialPtr const* transMaterial = material;
+    if (dhShader && spikes::materialValid(spikes::dhTransparentMaterial()))
+        transMaterial = &spikes::dhTransparentMaterial();
+    if (!loggedTransMaterial_ && cfg_.drawTransparent && !vis.empty()) {
+        DH_LOG_I(
+            "render: transparent layer material: %s",
+            transMaterial != material ? "DH_TerrainTransparent (blended)"
+                                      : "same as opaque (DH_TerrainTransparent not resolved)"
+        );
+        loggedTransMaterial_ = transMaterial != material || !dhShader;
+    }
+    // [3][0] packs clipStart + fadeEnd * 4096 (both integer blocks <= 4095); see dh_terrain.vert.hlsl.
+    const float packedClip = std::floor(std::min(clipRadius, 4095.0f) + 0.5f)
+                           + std::floor(std::min(std::max(fadeEnd, clipRadius), 4095.0f) + 0.5f) * 4096.0f;
+
     std::size_t drawnSections = 0, drawCalls = 0;
     auto        drawLayer = [&](bool transparent) {
         if (transparent)
@@ -471,13 +490,21 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
             if (dhShader) {
                 // DH_Terrain reads its per-draw parameters from the projective row (glm m[col][row]; HLSL row 3).
                 auto& g = m._m.get();
-                g[0][3] = clipRadius;
+                g[0][3] = packedClip;
                 g[1][3] = fogStart;
                 g[2][3] = fogEnd;
             }
             cam.worldMatrixStack->getTop() = m;
             for (auto const& part : parts) {
-                part.mesh->renderMesh(mctx, *material, none, 0, part.verts, OffscreenCaptureDescription{}, nullptr);
+                part.mesh->renderMesh(
+                    mctx,
+                    transparent ? *transMaterial : *material,
+                    none,
+                    0,
+                    part.verts,
+                    OffscreenCaptureDescription{},
+                    nullptr
+                );
                 ++drawCalls;
             }
             if (!transparent) ++drawnSections;

@@ -46,9 +46,6 @@ std::size_t convertDhBuffer(
     const std::size_t quads = dhQuads.size() / kQuadBytes;
     out.reserve(out.size() + quads * verticesPerQuad(mode, params.doubleSided));
 
-    static constexpr float kU[4] = {0.0f, 1.0f, 1.0f, 0.0f};
-    static constexpr float kV[4] = {0.0f, 0.0f, 1.0f, 1.0f};
-
     for (std::size_t q = 0; q < quads; ++q) {
         StageAVertex v[4];
         for (int i = 0; i < 4; ++i) {
@@ -72,8 +69,10 @@ std::size_t convertDhBuffer(
             const std::uint8_t a = static_cast<std::uint8_t>(p[11]);
             v[i].rgba            = static_cast<std::uint32_t>(r) | (static_cast<std::uint32_t>(g) << 8)
                       | (static_cast<std::uint32_t>(b) << 16) | (static_cast<std::uint32_t>(a) << 24);
-            v[i].u = kU[i];
-            v[i].v = kV[i];
+            // u carries the DH face direction (EDhDirection order: 0 down, 1 up, 2 north, 3 south, 4 west, 5 east),
+            // v is unused (0). The DH_Terrain shader reads u as the face index.
+            v[i].u = static_cast<float>(std::min<unsigned>(static_cast<std::uint8_t>(p[13]), 5u));
+            v[i].v = 0.0f;
         }
 
         auto emit = [&](bool reversed) {

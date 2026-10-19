@@ -52,6 +52,8 @@ mce::MaterialPtr const& fallbackMaterial();
 /// Stage-B `DH_Terrain` (served by the MaterialInjector, looked up in switchable()); invalid until the injector's
 /// index splice has been loaded. Re-resolved whenever invalid, like fallbackMaterial().
 mce::MaterialPtr const& dhMaterial(mce::MaterialPtr const* altSource = nullptr);
+/// `DH_TerrainTransparent`: same compiled shader, blended render state (depth test, no depth write). May be invalid.
+mce::MaterialPtr const& dhTransparentMaterial();
 
 /// Drops cached meshes (call when the buffer service changes or on level exit).
 void resetMeshes();

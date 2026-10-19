@@ -143,6 +143,7 @@ private:
     bool                                  warnedDh_               = false;
     bool                                  warnedMaterialFallback_ = false;
     bool                                  loggedDhMaterial_       = false;
+    bool                                  loggedTransMaterial_    = false;
 };
 
 } // namespace dh::render

@@ -77,10 +77,25 @@ TEST_CASE("stagea: quad list conversion") {
     CHECK(out[2].z == 4.0f);
     // sky 15 at full brightness -> factor 1 -> colour unchanged; r in the low byte.
     CHECK(out[0].rgba == 0xFF3264C8u);
-    CHECK(out[1].u == 1.0f);
-    CHECK(out[1].v == 0.0f);
-    CHECK(out[3].u == 0.0f);
-    CHECK(out[3].v == 1.0f);
+    // u = direction index (handQuad writes normal 1 = up), v = 0
+    for (auto& vx : out) {
+        CHECK(vx.u == 1.0f);
+        CHECK(vx.v == 0.0f);
+    }
+}
+
+TEST_CASE("stagea: direction index travels in u") {
+    for (int dir = 0; dir < 6; ++dir) {
+        std::vector<std::byte> b;
+        for (int i = 0; i < 4; ++i) {
+            putVertex(b, i, 0, 0, 15u, 1, 2, 3, 255);
+            b[b.size() - 3] = static_cast<std::byte>(dir); // normal byte (offset 13 of the 16-byte vertex)
+        }
+        std::vector<StageAVertex> out;
+        convertDhBuffer(b, 6, 0.0f, out, Primitive::TriangleList);
+        REQUIRE(out.size() == 6);
+        for (auto& vx : out) CHECK(vx.u == static_cast<float>(dir));
+    }
 }
 
 TEST_CASE("stagea: triangle list conversion, flip and double sided") {
