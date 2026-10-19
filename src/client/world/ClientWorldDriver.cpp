@@ -169,7 +169,14 @@ void ClientWorldDriver::Impl::install() {
         onClientTick();
     });
     installHooks();
-    DH_LOG_I("client driver installed (pipeline off; F5 on/off, Shift+F7 ingestion, Shift+F5 test feed)");
+    // Java: client.enableRendering is the master switch; the pipeline (world driver + renderer) starts with it
+    // and the session begins on the first tick with a local player. F5 still toggles it.
+    const bool autoOn = ConfigBridge::instance().config().options().client.enableRendering;
+    DH_LOG_I(
+        "client driver installed (pipeline %s by client.enableRendering; F5 on/off, Shift+F7 ingestion, Shift+F5 test feed)",
+        autoOn ? "on" : "off"
+    );
+    if (autoOn) setPipeline(true);
 }
 
 void ClientWorldDriver::Impl::uninstall() {
