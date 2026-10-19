@@ -49,15 +49,32 @@ float4 main(PSIn i) : SV_Target0 {
     }
     float3 c = i.color.rgb * DhParams.rgb;
     // lightmap lookup (Java frag.frag: texture(uLightMap, lightMapUV) * vertexColor). Texel centres of a 16x16 map.
-    // DhParams.w < 0.5 disables lighting (fullbright vertex colour); texCoords.y < 0 means no lightmap is bound for
-    // this draw (u_model[0][3][3] == 0, see the VS): the vertex colour already carries the CPU light factor.
-    if (DhParams.w >= 0.5 && i.texCoords.y >= 0.0) {
-        float  packedLight = round(saturate(i.texCoords.y) * 255.0);
-        float  hi = floor(packedLight / 16.0), lo = packedLight - hi * 16.0;
-        float2 dim;
-        LightMap.GetDimensions(dim.x, dim.y);
-        float2 uv = (float2(lo, hi) / 15.0 * (dim - 1.0) + 0.5) / dim; // texel centres for any lightmap size (16 -> (l+0.5)/16)
-        c *= LightMap.SampleLevel(LightSamp, uv, 0).rgb;
+    // DhParams.w < 0.5 disables lighting (fullbright vertex colour). texCoords.y (see the VS): >= 1.5 unlit (clouds);
+    // 0..1 packed light with a lightmap texture bound at t0; < 0 shader lighting: packed = -y - 1, daylight = x.
+    if (DhParams.w >= 0.5 && i.texCoords.y < 1.5) {
+        if (i.texCoords.y >= 0.0) {
+            float  packedLight = round(saturate(i.texCoords.y) * 255.0);
+            float  hi = floor(packedLight / 16.0), lo = packedLight - hi * 16.0;
+            float2 dim;
+            LightMap.GetDimensions(dim.x, dim.y);
+            float2 uv = (float2(lo, hi) / 15.0 * (dim - 1.0) + 0.5) / dim; // texel centres for any lightmap size (16 -> (l+0.5)/16)
+            c *= LightMap.SampleLevel(LightSamp, uv, 0).rgb;
+        } else {
+            // Procedural lightmap (no vanilla texture available): Minecraft's brightness curve l / (4 - 3 l) per
+            // channel, sky light scaled by the daylight factor (ViewRenderData::mSkyBrightnessScalar), block light
+            // warm-tinted, floor at the vanilla night ambient. Packed light = sky * 16 + block.
+            float  packedLight = round(saturate(-i.texCoords.y - 1.0) * 255.0);
+            float  sky = floor(packedLight / 16.0), block = packedLight - sky * 16.0;
+            float  day = saturate(i.texCoords.x);
+            float  ls = sky / 15.0, lb = block / 15.0;
+            float  bs = ls / (4.0 - 3.0 * ls) * day;
+            float  bb = lb / (4.0 - 3.0 * lb);
+            float3 skyCol   = float3(bs, bs, bs);
+            float3 blockCol = float3(bb, bb * 0.93, bb * 0.84);
+            float3 l = max(skyCol, blockCol);
+            l = max(l, float3(0.035, 0.035, 0.05));
+            c *= l;
+        }
     }
 #if DH_SHADE_IN_SHADER
     static const float shade[6] = {0.5, 1.0, 0.8, 0.8, 0.6, 0.6};

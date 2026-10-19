@@ -33,10 +33,10 @@ enum class LightmapMode : int {
     DynamicSpan    = 2, ///< same texture through the renderMesh(span<ClientTexture const*>) overload
     AtlasTest      = 3, ///< binds LevelRenderer::mAtlasTexture instead: coloured noise = the binding path works
     Legacy         = 4, ///< LevelRenderer::mBrightnessTex (NULL client texture under RenderDragon so far)
-    Cpu            = 5, ///< no lightmap: CPU light factor baked into the vertex colours
+    Shader         = 5, ///< no lightmap texture: procedural lightmap in the FS (packed light + daylight factor) [default]
 };
 inline constexpr int         kLightmapModeCount   = 6;
-inline constexpr char const* kLightmapModeNames[] = {"dynamic", "dynamic-swapped", "dynamic-span", "atlas-test", "legacy", "cpu"};
+inline constexpr char const* kLightmapModeNames[] = {"dynamic", "dynamic-swapped", "dynamic-span", "atlas-test", "legacy", "shader"};
 
 /// Primitive / winding choices cycled by F4.
 struct PrimChoice {
@@ -63,6 +63,7 @@ struct ViewSnapshot {
     bool       isShadowPass = false;
     glm::dvec3 cameraPos{0.0};
     float      renderDistance = 0.0f;
+    float      skyBrightness  = 1.0f; ///< ViewRenderData::mSkyBrightnessScalar (daylight factor for shader lighting)
     glm::vec3  skyColor{0.5f, 0.7f, 1.0f}; ///< ViewRenderData::mSkyColor (cloud tint)
     bool       valid = false;
 };
@@ -96,7 +97,7 @@ struct LodRendererConfig {
 
     float skyBrightness    = 1.0f;   ///< CPU light stand-in input (0 night .. 1 day); fallback materials only
     bool  lightmapSwapAxes = false;  ///< DH_Terrain: swap the lightmap lookup axes (default u = block, v = sky)
-    LightmapMode lightmapMode = LightmapMode::Dynamic; ///< Numpad 3 cycles
+    LightmapMode lightmapMode = LightmapMode::Shader; ///< Numpad 3 cycles (2026-10-19: the dynamic texture samples black)
     float minYBlocks       = -64.0f; ///< DH y 0 maps to this Bedrock y
 };
 

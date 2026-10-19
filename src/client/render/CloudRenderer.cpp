@@ -264,7 +264,7 @@ std::size_t CloudRenderer::draw(
     g[0][3]                        = 0.0f;
     g[1][3]                        = fogStart;
     g[2][3]                        = fogEnd;
-    g[3][3]                        = 0.0f; // no lightmap bound for the cloud draw: the FS keeps the vertex colour
+    g[3][3]                        = 2.0f; // unlit marker (> 1.5): the FS keeps the tinted vertex colour
     cam.worldMatrixStack->getTop() = m;
 
     std::size_t calls = 0;
