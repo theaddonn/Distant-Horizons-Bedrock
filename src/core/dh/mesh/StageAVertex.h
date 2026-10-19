@@ -14,8 +14,8 @@ namespace dh {
 /// 24 bytes. `rgba` packs r | g<<8 | b<<16 | a<<24 (r in the lowest byte); the Bedrock backend repacks it into the
 /// engine's native colour order (ColorPacking). Positions are SECTION-LOCAL blocks (the section origin goes into the
 /// world matrix). `u` = DH face direction index (0 down, 1 up, 2 north, 3 south, 4 west, 5 east; the vertex's `normal`
-/// byte). `v` = packed light `(sky * 16 + block) / 255` (see packLight) when ConvertParams::cpuLighting is false,
-/// else 0.
+/// byte; the GPU gets encodeFaceU(u)). `v` = packed light `(sky * 16 + block) / 255` (see packLight) when
+/// ConvertParams::cpuLighting is false, else 0.
 struct StageAVertex {
     float         x, y, z;
     std::uint32_t rgba;

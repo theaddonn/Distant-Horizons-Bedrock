@@ -32,6 +32,9 @@ constexpr std::uint32_t kMaxPartVertices = 65000;
 constexpr std::size_t kFieldUV0 = 4;
 constexpr std::size_t kFieldUV2 = 6;
 
+/// One-time dh.log line with the field set actually uploaded (render thread only).
+bool loggedUploadFields = false;
+
 template <class V>
 void replicate(V& v, std::size_t n) {
     if (v.size() == 1) v.assign(n, v.front());
@@ -341,8 +344,14 @@ void buildLayer(
         md.mTextureUVs[0]                 = std::move(uv);
         md.mFieldEnabled.get()[kFieldUV0] = true;
         md.mFieldEnabled.get()[kFieldUV2] = true;
-        md.mPositions                     = std::move(pos);
-        md.mColors                        = std::move(col);
+        if (!loggedUploadFields) {
+            loggedUploadFields = true;
+            std::string f;
+            for (bool e : md.mFieldEnabled.get()) f += e ? '1' : '0';
+            DH_LOG_I("render: DH mesh vertex fields uploaded: mFieldEnabled=%s (uv0=[4] must be 1)", f.c_str());
+        }
+        md.mPositions = std::move(pos);
+        md.mColors    = std::move(col);
         replicate(md.mNormals.get(), n);
         replicate(md.mTangents.get(), n);
         replicate(md.mBoneId0s.get(), n);

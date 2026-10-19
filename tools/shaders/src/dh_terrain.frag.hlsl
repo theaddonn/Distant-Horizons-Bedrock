@@ -25,7 +25,8 @@ struct PSIn {
 // Face shade by DH direction index (down, up, north, south, west, east) = Java ClientLevelWrapper.getShade. Java bakes
 // it into the vertex colour on the CPU (ColumnMeshBuilder / LodQuadBuilder do the same here), so it is OFF by default;
 // set to 1 only if the CPU path is changed to leave colours unshaded (otherwise it would be applied twice). The face is
-// only in texCoords.x on the lightmap-texture path (x = (face + 1) / 8).
+// only in texCoords.x on the lightmap-texture path (x = (face + 1) / 8): with the define on, the shader /
+// debug modes (x = daylight or 3/4) would decode garbage, so it is valid with a bound lightmap only.
 #define DH_SHADE_IN_SHADER 0
 
 // Ordered 4x4 Bayer matrix in [0,1), as the Java DH shader's bayerMatrix4x4.
