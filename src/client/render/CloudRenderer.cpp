@@ -175,8 +175,11 @@ bool CloudRenderer::update(Inputs const& in) {
     minY_               = in.minY;
     const double tb     = static_cast<double>(kTileBlocks);
 
-    // classify the live tiles: promote finished ones, drop lost / stale / out-of-range ones
-    std::size_t ready = 0, quads = 0;
+    // classify the live tiles: promote finished ones, drop lost / stale / out-of-range ones. The upload timeout only
+    // runs while the uploader queue is empty: the queue is shared with the LOD sections and pump() applies a few per
+    // frame, so at low fps a tile can legitimately wait longer than 10 s behind it (review: drop/rebuild churn).
+    const std::size_t queued = sink_.stats().pending;
+    std::size_t       ready = 0, quads = 0;
     for (auto it = tiles_.begin(); it != tiles_.end();) {
         Tile& t    = it->second;
         bool  drop = t.yBottom != wantY;
@@ -191,6 +194,7 @@ bool CloudRenderer::update(Inputs const& in) {
             if (st == 2 || (st == 1 && !secs.count(g.pos))) drop = true; // dropped, or cleared (world exit)
             else if (st == 0) allReady = false;
         }
+        if (!allReady && queued > 0) t.since = now;
         if (!drop && !allReady && now - t.since > std::chrono::seconds(10)) {
             drop        = true; // upload never completed
             retryAfter_ = now + std::chrono::seconds(1);
@@ -232,7 +236,9 @@ bool CloudRenderer::update(Inputs const& in) {
         std::sort(missing.begin(), missing.end(), [](Want const& a, Want const& b) { return a.d < b.d; });
     }
 
-    if (!missing.empty() && !jobRunning_ && now >= retryAfter_) {
+    // throttle: start the next batch only when the uploader has caught up (at most ~one batch of groups queued)
+    if (!missing.empty() && !jobRunning_ && now >= retryAfter_
+        && queued <= static_cast<std::size_t>(kTilesPerJob * cloud::kFaceGroups)) {
         if (missing.size() > static_cast<std::size_t>(kTilesPerJob)) missing.resize(kTilesPerJob);
         cloud::TileParams tp;
         tp.cell      = kCellBlocks;
