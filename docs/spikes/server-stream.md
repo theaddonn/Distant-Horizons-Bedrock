@@ -157,3 +157,6 @@ address is not available. Either is fine; report which one.
 - The client `dh.log` for both runs, or the lines that match `client driver|net:|transport:|store:|ERR|exception`.
 - The HUD dump (F8) or a screenshot with the `mode`, `net.rx`, `net.tx` and `net.sections` keys, plus one screenshot of LODs per run.
 - For any failure: what you saw on the screen (disconnect message, kick, freeze).
+
+Note: the `dh:frame` packet id is derived from the packet class name, which moved to `dh::bedrock::wire` in this run. Client and
+server DLLs from before and after that change cannot talk to each other: always update both together.

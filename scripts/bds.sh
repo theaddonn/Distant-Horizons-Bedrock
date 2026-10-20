@@ -57,7 +57,8 @@ install_mod() {
   [ -f "$src/$MOD_NAME.dll" ] || die "no build output in $src (run scripts/build.sh server)"
   [ -d "$BDS_ROOT/plugins" ] || die "run '$0 setup' first"
   mkdir -p "$MOD_DIR/data"
-  cp -f "$src/$MOD_NAME.dll" "$src/$MOD_NAME.pdb" "$src/manifest.json" "$MOD_DIR/"
+  cp -f "$src/$MOD_NAME.dll" "$src/manifest.json" "$MOD_DIR/"
+  [ ! -f "$src/$MOD_NAME.pdb" ] || cp -f "$src/$MOD_NAME.pdb" "$MOD_DIR/"
   cp -f "$ROOT"/data/block_table.json "$ROOT"/data/biome_table.json "$MOD_DIR/data/"
   echo "installed $MOD_NAME.dll sha256=$(sha256sum "$MOD_DIR/$MOD_NAME.dll" | cut -d' ' -f1) -> $MOD_DIR"
 }
@@ -127,12 +128,12 @@ start() {
 
 cmd() {
   alive "$PID_FILE" || die "server not running"
-  printf '%s\n' "$*" > "$FIFO"
+  timeout 5 bash -c 'printf "%s\n" "$2" > "$1"' _ "$FIFO" "$*"
 }
 
 stop() {
   if alive "$PID_FILE"; then
-    printf 'stop\n' > "$FIFO" || true
+    timeout 5 bash -c 'printf "stop\n" > "$1"' _ "$FIFO" || true
     local i
     for i in $(seq 1 40); do alive "$PID_FILE" || break; sleep 1; done
     if alive "$PID_FILE"; then echo "graceful stop timed out, killing"; kill "$(cat "$PID_FILE")" 2>/dev/null || true; sleep 2; fi
