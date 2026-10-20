@@ -364,7 +364,8 @@ draws all cloud faces, as before). F5 on, DH clouds on (Numpad 2), video setting
    origin=(..) color=(..) camera=(..)`, `cloud probe: vanilla meshes=N`, up to 4 lines `cloud probe: mesh i prim=..
    vertexCount=.. raw=.. positions=.. indices=.. colors=.. pos[min=.. max=..] aabb[..] ys={..} cols={..}` and
    `cloud probe: DH layer wanted=.. drawn=.. quads=.. slab y 192..196 (cell 12, alpha 0.80) backFaceCull=on
-   (active=1)`. `ys` with two values 4 apart means vanilla boxes 4 thick, one value a flat sheet; `cols` gives the
+   (active if camera-relative=1)` (the default origin mode is camera-relative; in absolute mode, Shift+F6, the
+   cull never runs). `ys` with two values 4 apart means vanilla boxes 4 thick, one value a flat sheet; `cols` gives the
    baked face shades and vertex alpha; `positions=0` means the CPU copy was freed after upload (then the AABB and
    vertex counts are the only geometry hint).
 5. Far clouds unchanged: they fade into the sky at the DH fog end, tint follows day/night.

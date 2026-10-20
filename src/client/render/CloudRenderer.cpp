@@ -180,7 +180,7 @@ bool CloudRenderer::update(Inputs const& in) {
     want.half         = static_cast<int>(std::ceil((radius + kMarginBlocks) / 256.0)) * 256;
     want.yBottom      = static_cast<int>(std::lround(in.cloudY - in.minY));
     tint_             = in.tint; // per draw, continuous (no rebuild)
-    cloudY_           = in.cloudY;
+    minY_             = in.minY;
     const double snap = static_cast<double>(kCellBlocks) * 16.0;
     want.anchorX      = static_cast<long>(std::llround(camX / snap)) * static_cast<long>(snap);
     want.anchorZ      = static_cast<long>(std::llround(camZ / snap)) * static_cast<long>(snap);
@@ -309,7 +309,7 @@ void CloudRenderer::toggleBackFaceCull() {
 
 bool CloudRenderer::cullsBackFaces(double cameraY, bool cameraRelative) const {
     if (!gBackFaceCull || !cameraRelative) return false;
-    const double bottom = static_cast<double>(cloudY_);
+    const double bottom = static_cast<double>(slabBottom());
     return cameraY <= bottom || cameraY >= bottom + static_cast<double>(kThickness);
 }
 
