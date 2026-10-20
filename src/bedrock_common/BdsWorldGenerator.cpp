@@ -897,10 +897,31 @@ bool BdsWorldGenerator::structureCell(const std::shared_ptr<Batch>& batch, std::
         return t == "mineshaft" || (!fullView && t == "pillager_outpost");
     };
     auto& features = gen->mStructureFeatureRegistry->mStructureFeatures.get();
-    bool  hit      = false;
+    // Fail safe: the exclusion matches by type name. If no feature is called "mineshaft" (name not as expected), the
+    // legacy pass is skipped entirely rather than risking the real mineshafts' spawners; v2 structures still run.
+    bool        haveMineshaft = false;
+    std::string names;
+    for (auto& f : features) {
+        if (!f) continue;
+        std::string_view t = f->mStructureFeatureType->getString();
+        if (!names.empty()) names += ", ";
+        names += t;
+        if (t.starts_with("minecraft:")) t.remove_prefix(10);
+        haveMineshaft = haveMineshaft || t == "mineshaft";
+    }
+    if (!loggedFeatureNames_.exchange(true))
+        DH_LOG_I(
+            "world gen: structure features of this dimension: %s%s",
+            names.c_str(),
+            haveMineshaft || features.empty() ? ""
+                                              : " (no 'mineshaft' among them: legacy structure pass DISABLED, v2 only)"
+        );
+    bool hit = false;
     for (auto& f : features)
         if (f && excluded(*f)) f->foreachIntersectingStructureStart(chunkBB, [&hit](::StructureStart&) { hit = true; });
-    if (!hit) {
+    if (!haveMineshaft && !features.empty()) {
+        // legacy pass skipped (see above)
+    } else if (!hit) {
         gen->postProcessStructureFeatures(view.bs, rnd, seed, x, z);
     } else {
         excludedCells_.fetch_add(1);
