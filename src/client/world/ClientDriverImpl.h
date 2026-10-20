@@ -57,7 +57,7 @@ struct HandlePair {
     std::unique_ptr<ClientLevelHandle> client;
 };
 
-/// One world session (join -> exit, or F5 on -> off).
+/// One world session (join -> exit, or pipeline on -> off).
 struct Session {
     // construction order == reverse destruction order (see the shutdown order in ClientWorldDriver.h)
     dh::SystemClock  clock;

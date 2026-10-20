@@ -197,10 +197,10 @@ void ClientWorldDriver::Impl::install() {
     });
     installHooks();
     // Java: client.enableRendering is the master switch; the pipeline (world driver + renderer) starts with it
-    // and the session begins on the first tick with a local player. F5 still toggles it.
+    // and the session begins on the first tick with a local player. client.keys.toggleRendering (if bound) still toggles it.
     const bool autoOn = ConfigBridge::instance().config().options().client.enableRendering;
     DH_LOG_I(
-        "client driver installed (pipeline %s by client.enableRendering; F5 on/off, Shift+F7 ingestion, Shift+F5 test feed)",
+        "client driver installed (pipeline %s by client.enableRendering; client.keys.toggleRendering on/off, debug Numpad - ingestion, Shift+F5 test feed only with DH_TEST_FEED=1)",
         autoOn ? "on" : "off"
     );
     if (autoOn) setPipeline(true);
@@ -761,7 +761,7 @@ void ClientWorldDriver::setIngestion(bool on) {
             }
         }
     }
-    DH_LOG_I("client driver: chunk ingestion %s (Shift+F7)", on ? "on" : "off");
+    DH_LOG_I("client driver: chunk ingestion %s (debug Numpad -)", on ? "on" : "off");
     dh::hud::set("ingest.on", on ? "on" : "off");
 }
 bool ClientWorldDriver::ingestion() const { return impl_->ingestion.load(); }
