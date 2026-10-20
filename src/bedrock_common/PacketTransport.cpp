@@ -19,7 +19,19 @@ namespace dh::bedrock {
 
 namespace {
 
+#ifdef LL_PLAT_S
+constexpr const char* kSideName = "server";
+#else
+constexpr const char* kSideName = "client";
+#endif
+
 std::atomic<PacketTransport*> gActive{nullptr};
+
+} // namespace
+
+// Named (not anonymous) namespace: the packet id is hash(type name), so the text must be stable and identical in
+// the client and the server DLL.
+namespace wire {
 
 // The packet type. LeviLamina registers it in PacketRegistrar under hash(type name) at static-init time
 // (PacketBase::sRegistered), identically in the client and the server DLL (same source -> same name).
@@ -71,10 +83,27 @@ public:
     }
 };
 
-} // namespace
+} // namespace wire
+
+using wire::DhFramePacket;
 
 PacketTransport::PacketTransport() : dispatch_(std::make_unique<dh::SingleThreadExecutor>("DH Net Dispatch")) {
     gActive.store(this);
+    try {
+        // P1: the id must be identical in both DLLs (hash of the class name); logged per side.
+        DhFramePacket probe;
+        DH_LOG_I(
+            "transport: %s packet '%.*s' runtime id %llu (0x%llx), max frame %zu bytes",
+            kSideName,
+            (int)probe.getName().size(),
+            probe.getName().data(),
+            (unsigned long long)probe.getRuntimeId(),
+            (unsigned long long)probe.getRuntimeId(),
+            kMaxFrameBytes
+        );
+    } catch (...) {
+        DH_LOG_E("transport: exception swallowed while logging the packet id");
+    }
 }
 
 PacketTransport::~PacketTransport() {
@@ -159,7 +188,8 @@ std::size_t PacketTransport::flushOutbound() {
             packet.sendToServer();
 #endif
             ++sent;
-            ++framesSent_;
+            if (framesSent_.fetch_add(1) == 0)
+                DH_LOG_I("transport: %s sent its first dh:frame (%zu bytes)", kSideName, packet.payload.size());
         } catch (...) {
             ++framesDropped_;
             DH_LOG_E("transport: exception swallowed while sending a dh:frame");
@@ -264,7 +294,8 @@ void PacketTransport::receive(const NetworkIdentifier& from, std::string&& paylo
         ++framesDropped_;
         return;
     }
-    ++framesReceived_;
+    if (framesReceived_.fetch_add(1) == 0)
+        DH_LOG_I("transport: %s received its first dh:frame (%zu bytes)", kSideName, payload.size());
     post([this, session, bytes = std::move(payload)] {
         std::lock_guard lock(listenerMutex_);
         if (listener_)
@@ -330,7 +361,8 @@ void PacketTransport::receive(std::string&& payload) {
         ++framesDropped_;
         return;
     }
-    ++framesReceived_;
+    if (framesReceived_.fetch_add(1) == 0)
+        DH_LOG_I("transport: %s received its first dh:frame (%zu bytes)", kSideName, payload.size());
     post([this, session, bytes = std::move(payload)] {
         std::lock_guard lock(listenerMutex_);
         if (listener_)
