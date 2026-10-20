@@ -189,11 +189,16 @@ void logCloudProbe(ViewRenderObject const& vro, glm::vec3 const& camPos) {
             std::vector<unsigned> cols; // distinct packed vertex colours (up to 8): baked face shades
             for (auto c : cl)
                 if (cols.size() < 8 && std::find(cols.begin(), cols.end(), c) == cols.end()) cols.push_back(c);
-            char ybuf[160] = {0}, cbuf[160] = {0};
-            int  yo = 0, co2 = 0;
-            for (float y : ys) yo += std::snprintf(ybuf + yo, sizeof(ybuf) - static_cast<std::size_t>(yo), "%.2f ", y);
-            for (unsigned c : cols)
-                co2 += std::snprintf(cbuf + co2, sizeof(cbuf) - static_cast<std::size_t>(co2), "%08X ", c);
+            // append with the offset clamped to the buffer, so a truncating snprintf can never push it past the end
+            auto append = [](char* buf, std::size_t cap, std::size_t& at, char const* fmt, auto v) {
+                if (at + 1 >= cap) return;
+                const int n = std::snprintf(buf + at, cap - at, fmt, v);
+                if (n > 0) at = std::min(cap - 1, at + static_cast<std::size_t>(n));
+            };
+            char        ybuf[160] = {0}, cbuf[160] = {0};
+            std::size_t yo = 0, co2 = 0;
+            for (float y : ys) append(ybuf, sizeof(ybuf), yo, "%.2f ", static_cast<double>(y));
+            for (unsigned c : cols) append(cbuf, sizeof(cbuf), co2, "%08X ", c);
             DH_LOG_I(
                 "cloud probe: mesh %zu prim=%d vertexCount=%d raw=%zu positions=%zu indices=%zu colors=%zu "
                 "pos[min=(%.1f,%.1f,%.1f) max=(%.1f,%.1f,%.1f)] aabb[(%.1f,%.1f,%.1f)..(%.1f,%.1f,%.1f)] ys={%s} cols={%s}",
@@ -216,7 +221,7 @@ void logCloudProbe(ViewRenderObject const& vro, glm::vec3 const& camPos) {
         auto const& cr = gRenderer->clouds();
         DH_LOG_I(
             "cloud probe: DH layer wanted=%d drawn=%d quads=%zu slab y %.0f..%.0f (cell %d, alpha %.2f) backFaceCull=%s "
-            "(active=%d)",
+            "(active if camera-relative=%d)",
             static_cast<int>(gRenderer->cloudsWanted()),
             static_cast<int>(cr.stats().drawn),
             cr.stats().quads,
