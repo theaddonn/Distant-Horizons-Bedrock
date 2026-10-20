@@ -444,7 +444,9 @@ old content: look at a **new world** or terrain **never seen before**. Needs Fea
    vanilla decoration ...; only the batch is delivered`. First 10 batches: `world gen features batch (x,z) 4x4: ...
    structures 64 of 64 cells (0 without base, 0 threw, E with a mineshaft/outpost excluded) in S ms, decorated 36 of 36 cells (...) in D ms, delivered
    16, placedBlocks=P (structures Q)`. `threw > 0`, a crash, or junk blocks: set env `DH_BEDROCK_NO_STRUCTURES=1`
-   (structures off, decoration stays) and send the log; `DH_BEDROCK_NO_FEATURES=1` still turns everything off.
+   (structures off, decoration stays) and send the log. Also expected once: `world gen: structure features of this
+   dimension: <names>`; it must NOT end in `legacy structure pass DISABLED` (then mineshafts were not identified
+   by name and only jigsaw structures are generated; send the line); `DH_BEDROCK_NO_FEATURES=1` still turns everything off.
 2. Fly over new terrain with villages / outposts / ruined portals / shipwrecks / ocean ruins / desert or jungle
    temples / igloos / swamp huts / ocean monuments / mansions in range (a known seed helps; `/locate` works). The
    distant LODs should show the structure (village houses and paths, outpost tower, monument block, portal frame
