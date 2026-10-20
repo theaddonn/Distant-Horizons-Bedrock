@@ -432,3 +432,55 @@ Background: PORTING.md "Run 14 (crash + magenta LODs after leaving and re-joinin
 
 Send back: the second-join `mce material cloned` lines, any `invalid; drawing with` line, and whether a crash trace
 appeared in `logs/crash/`.
+
+## Run 15: render perf, late-repeat scope, overlap-band water, cloud tiles
+
+Background: PORTING.md "Run 15 (render perf + residual visuals)". Deploy the DLL. The material file is unchanged, but
+deploy `DH_Terrain.material.bin` with it as usual. Default sky order `overdraw`, late scope `beyond-vanilla`.
+
+Keys (new: Numpad 7): Numpad 2 DH clouds on/off, Numpad 4 sky order (late -> overdraw -> opaque), Numpad 5 cloud
+probe, Numpad 6 cloud back-face cull on/off, **Numpad 7 late-repeat scope `beyond-vanilla` <-> `full`** (log
+`render: late repeat scope -> ... (Numpad 7)`, HUD `render.lateScope`), F5 pipeline on/off, Ctrl+F4 near clip.
+
+Expected log lines:
+- Every 10 s: `render: perf N fps | calls/frame opaque A late B water C clouds D | kquads/frame opaque .. late ..
+  water .. clouds .. | ms/frame T (max M) opaque .. late .. water .. clouds .. | sections S, late skipped L, clip
+  skipped K | cloud tiles X drawn / Y live, Z kquads live | resolves/frame dh .. trans .. late .. water .. | sky
+  overdraw, late scope beyond-vanilla`.
+- Once, a few seconds after the first frame: `clouds: first tiles live: ~232 tiles, ~670000 quads, built in ~100 ms (tile 1152
+  blocks, radius 9216)`. There is no `clouds: first section live` any more.
+- The log no longer gets ~17 `materials: DH binding pass=...` lines per second (only the first 4).
+HUD: `render.cloudQuads` (live, ~670k), `render.cloudDrawn` (this frame), `render.lateScope`, `render.cutoff`.
+
+In game:
+1. **Perf A/B.** Daytime, standing on the ground with LOD land to the horizon, clouds on. Wait 20 s and copy two
+   `render: perf` lines. **PASS:** `clouds` kquads/frame well under 200 (expected ~110 looking horizontally, a few
+   looking straight down), cloud calls ~200-250 horizontally. Then Numpad 7 (`full`), wait 20 s, copy two lines:
+   `late` calls go up by at least the `late skipped` count of the first lines (sections; a section can have several parts). Numpad 7 back. Numpad 2 off: `clouds` drops to 0.
+2. **Vanilla reference (needed for the proof).** Night, clear sky, F5 **off**. Look at vanilla terrain at the far edge
+   of the vanilla render distance (hills 100-150 blocks away). **PASS:** no stars or moon in front of vanilla
+   terrain. If stars do show on vanilla terrain there, report it at once: `beyond-vanilla` then leaves stars on
+   LOD terrain in the 115..144 band, and `full` (Numpad 7) has to stay the default.
+3. **Stars over LODs.** F5 on, same night view, default `beyond-vanilla`. **PASS:** no stars, sun or moon on LOD land,
+   including the ring just beyond the vanilla terrain (the dither band at ~115-144 blocks). Compare with Numpad 7
+   (`full`): it must look the same. Stars in the band only with `beyond-vanilla` = FAIL, send a screenshot.
+4. **Overlap-band water (task 2).** Daytime, stand at a coast so that vanilla ocean reaches the vanilla render
+   distance and LOD ocean continues beyond it, and look along the sea at the 115..144-block ring. **PASS** with
+   `beyond-vanilla`: the vanilla water there keeps its blue tint over the seabed, with no untinted, sharper seabed
+   patches in a ring. Numpad 7 (`full`): the untinted ring may come back (the old side effect). Screenshot both.
+5. **Faint stars through LOD water/ice** (known, not fixed): night over LOD ocean. Report how visible they are; a
+   screenshot is enough.
+6. **Clouds.** Look around and fly 1000+ blocks in one direction at normal speed. **PASS:** no holes, square edges or
+   missing tiles. Clouds fade at the horizon as before, and tiles appear ahead without a visible pop inside ~3000
+   blocks. The vanilla clouds never flash on when you turn away from all DH clouds. From above and from below the
+   layer, Numpad 6 gives the same difference as in Run 14. Inside the layer (y 192..196) every face shows.
+7. **Near clip.** Walk around in the vanilla ring with LODs on: no LOD surface pops in or out at ~115 blocks
+   compared with before (the skipped sections were fully discarded by the shader anyway). Ctrl+F4 (near clip off)
+   still shows the LODs inside the ring.
+8. **Cloud probe (task 4, still open):** with DH clouds **off** (Numpad 2, vanilla clouds visible), stand below the
+   cloud layer and press Numpad 5 once, then fly above it (y > 200) and press it again. Expected: `cloud probe:
+   vanilla meshes=N` and up to 4 `cloud probe: mesh i ... ys={..} cols={..}` lines. `ys` with two values 4 apart =
+   4-thick boxes, one value = flat sheet. `cols` = baked face shades/alpha.
+
+Send back: the four `render: perf` lines from step 1 (with the sky order / scope in each), PASS/FAIL for steps 2-4 and
+6-7 with screenshots for 2-4, the `clouds: first tiles live` line, and all `cloud probe:` lines from step 8.

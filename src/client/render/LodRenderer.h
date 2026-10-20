@@ -14,6 +14,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <vector>
 
 class BaseActorRenderContext;
 class IClientInstance;
@@ -72,6 +73,22 @@ inline constexpr int kDrawHookCount = 4;
 enum class SkyOrder : int { Late = 0, Overdraw = 1, Opaque = 2 };
 inline constexpr int kSkyOrderCount = 3;
 
+/// Run 15: which fragments the Overdraw late repeat (DH_TerrainLate in the Transparent pass) keeps. `BeyondVanilla`
+/// (default) hard-clips it at the vanilla render distance (fadeEnd) and skips sections lying entirely inside: there
+/// every LOD fragment is nearer than the star sphere, so the stars already fail the depth test, and the repeat would
+/// only paint the LOD seabed over vanilla translucent water in the 115..144 overlap band. `Full` is the Run 14
+/// behaviour (same near clip / dither as the Opaque draw). Numpad 7 toggles.
+enum class LateScope : int { BeyondVanilla = 0, Full = 1 };
+
+/// A section that passed the cull this frame (translate = draw-space min corner, dist2 = horizontal centre distance²,
+/// maxDist = 3D distance of its farthest AABB corner from the camera).
+struct VisibleSection {
+    MeshUploader::Section const* sec = nullptr;
+    glm::vec3                    t{0.0f};
+    float                        dist2   = 0.0f;
+    float                        maxDist = 0.0f;
+};
+
 /// The per-frame view data the draw needs, copied from ViewRenderObject::mViewData.
 struct ViewSnapshot {
     bool       isShadowPass = false;
@@ -85,6 +102,7 @@ struct ViewSnapshot {
 struct LodRendererConfig {
     DrawHook drawHook = DrawHook::CameraAfter;
     SkyOrder skyOrder = SkyOrder::Overdraw; // Run 14 (was Late)
+    LateScope lateScope = LateScope::BeyondVanilla; // Run 15 (Numpad 7)
     /// selectionOpaqueMaterial drops the green channel (magenta terrain, 2026-10-19); the fogged fallback is the
     /// Stage-A default, F6 cycles back for comparison.
     MaterialChoice material   = MaterialChoice::Dh; // -> MeshFallback (fogged) -> selection, whichever resolves
@@ -157,6 +175,9 @@ public:
     /// Numpad 4 / Ctrl+F7: cycle SkyOrder (which pass the opaque LOD layer is drawn in).
     void        cycleSkyOrder();
     char const* skyOrderName() const;
+    /// Numpad 7: toggle LateScope (Overdraw late-repeat coverage).
+    void        toggleLateScope();
+    char const* lateScopeName() const;
     /// Numpad 3: cycle the lightmap source / binding path (LightmapMode).
     void cycleLightmapMode();
     /// Numpad 2: DH clouds on/off (the vanilla clouds come back while off).
@@ -208,6 +229,20 @@ private:
     bool cpuLighting_      = false; ///< ConvertParams::cpuLighting currently applied (DH_Terrain default: off)
     bool lightSwapApplied_ = false;
     std::chrono::steady_clock::time_point lastLightDiag_{};
+
+    // Run 15 perf accounting (render thread). Layers: 0 opaque, 1 late repeat, 2 water/translucent, 3 clouds.
+    struct PerfLayer {
+        std::uint64_t calls = 0, verts = 0;
+        double        ms    = 0; ///< CPU submit time
+    };
+    std::vector<VisibleSection>           vis_; ///< reused per frame (no per-frame allocation)
+    PerfLayer                             perf_[4]{};
+    std::uint64_t                         perfFrames_ = 0, perfSections_ = 0, perfLateSkipped_ = 0,
+                                          perfClipSkipped_ = 0, perfCloudQuads_ = 0;
+    double                                perfMsSum_ = 0, perfMsMax_ = 0;
+    std::uint64_t                         perfResolves_[4]{};
+    std::chrono::steady_clock::time_point lastPerf_{};
+    void                                  logPerf(std::chrono::steady_clock::time_point now);
 };
 
 } // namespace dh::render
