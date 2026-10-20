@@ -8,6 +8,7 @@
 #include "client/render/TestFeed.h"
 #include "client/spikes/SpikeGfx.h"
 #include "client/world/ClientWorldDriver.h"
+#include "dh/config/Options.h"
 #include "dh/render/RenderUtil.h"
 
 #include "ll/api/event/EventBus.h"
@@ -53,10 +54,12 @@ bool                         gInstalled = false;
 std::unique_ptr<LodRenderer> gRenderer;
 ll::event::ListenerPtr       gKeyListener;
 ll::event::ListenerPtr       gExitListener;
+bool                         gDebugKeys   = false; // client.debug.enabled
+int                          gToggleKey   = 0;     // client.keys.toggleRendering (VK), 0 = none
+bool                         gFeedAllowed = false; // DH_TEST_FEED=1
 
 enum class VFogMode { Off, PushDistanceFog, PushFogControl, All };
-VFogMode gVFog     = VFogMode::All;
-bool     gVFogInit = false;
+VFogMode gVFog = VFogMode::All;
 
 char const* vfogName(VFogMode m) {
     switch (m) {
@@ -75,8 +78,6 @@ void updateHud() {
     auto& r = *gRenderer;
     dh::hud::set("render.enabled", gEnabled ? "on" : "off");
     dh::hud::set("render.material", r.materialName());
-    dh::hud::set("render.origin", r.config().origin == OriginMode::CameraRelative ? "cam-relative" : "absolute");
-    dh::hud::set("render.prim", kPrimChoices[r.config().primChoice].name);
     dh::hud::set("render.far", r.farModeName());
     dh::hud::set("render.hook", r.drawHookName());
     dh::hud::set("render.vanillaFog", vfogName(gVFog));
@@ -140,7 +141,7 @@ bool hideVanillaCloudsOn(ViewRenderObject const& vro, char const* where) {
     return true;
 }
 
-// ---- cloud probe (Numpad 5, Run 14) ----------------------------------------------------------------------------------
+// ---- cloud probe (debug key, Run 14) ----------------------------------------------------------------------------------
 // One-shot log of the vanilla cloud geometry (box or sheet, thickness, face shades) next to the DH layer's parameters,
 // to settle what vanilla Bedrock draws: static RE found the cloud material (no texture, colour = CloudColor * vertex
 // colour, alpha fade 0.9..1.9 x DistanceControl.x) but not the CPU mesh builder. mce::MeshData may already be freed
@@ -295,7 +296,7 @@ LL_TYPE_INSTANCE_HOOK(
     gClient = &ci;
     gRenderer->noteView(vro);
     if (!gEnabled) {
-        gRenderer->observeCamera(vro); // so Shift+F5 can place the test feed before the first drawn frame
+        gRenderer->observeCamera(vro); // so the test feed can be placed before the first drawn frame
         return;
     }
     if (gRenderer->config().drawHook != DrawHook::CameraAfter) return;
@@ -385,7 +386,7 @@ LL_TYPE_INSTANCE_HOOK(
     }
 }
 
-// ---- vanilla fog (Java DH "disableVanillaFog") ----------------------------------------------------------------
+// ---- vanilla fog (client.graphics.fog.vanillaFog) ----------------------------------------------------------------
 // Experiment: which LevelRendererCamera fog fields feed the shader uniforms is unknown, so the write set is a mode.
 float lodFarBlocks() {
     float rad = static_cast<float>(
@@ -405,12 +406,6 @@ LL_TYPE_INSTANCE_HOOK(
 ) {
     origin(sc, sky);
     try {
-        if (!gVFogInit) {
-            gVFogInit = true;
-            gVFog     = bedrock::ConfigBridge::instance().config().options().client.graphics.fog.disableVanillaFog
-                          ? VFogMode::All
-                          : VFogMode::Off;
-        }
         if (gVFog == VFogMode::Off || !bedrock::ClientWorldDriver::instance().pipeline()) return;
         // Java keeps vanilla fog in fluids / blindness. We cannot tell directly: those fogs are short (< 48 blocks),
         // normal distance fog ends near the render distance, so only push when the fog is a far one.
@@ -463,87 +458,92 @@ LL_TYPE_INSTANCE_HOOK(
     }
 }
 
+/// Pipeline on/off (the whole thing: world driver hooks -> DH world -> quad tree, plus the renderer).
+void togglePipeline(LodRenderer& r) {
+    auto&      drv = bedrock::ClientWorldDriver::instance();
+    const bool on  = !drv.pipeline();
+    if (on && r.config().farMode == FarMode::Off) {
+        r.config().farMode = FarMode::LocalProjPush; // LODs live beyond the vanilla far plane
+        DH_LOG_I("render: far-plane mode -> local-proj-push (pipeline turned on)");
+    }
+    drv.setPipeline(on); // also calls setEnabled()
+    DH_LOG_I("render: pipeline %s", on ? "on" : "off");
+}
+
+/// The synthetic test feed (Stage-A smoke path, only with DH_TEST_FEED=1): Shift+F5.
+void toggleTestFeed(LodRenderer& r) {
+    glm::dvec3 pos;
+    if (!r.lastCameraPos(pos)) {
+        DH_LOG_W("render: test feed: no camera position seen yet (no world frame rendered?)");
+        return;
+    }
+    if (!gEnabled && !testfeed::active()) {
+        gEnabled = true;
+        DH_LOG_I("render: Stage-A renderer on (enabled by test feed)");
+    }
+    testfeed::toggle(r, pos);
+    r.config().drawAllUploaded = testfeed::active(); // feed sections are in no quad tree
+    DH_LOG_I("render: test feed %s", testfeed::active() ? "on" : "off");
+}
+
+/// Numpad debug map (client.debug.enabled only). The overlay key and Numpad . (HUD dump) live in DebugHud.
+void debugKeys(LodRenderer& r) {
+    using dh::input::pressed;
+    if (pressed(VK_NUMPAD1)) {
+        gVFog = static_cast<VFogMode>((static_cast<int>(gVFog) + 1) % 4);
+        DH_LOG_I("vfog: mode -> %s", vfogName(gVFog));
+    }
+    if (pressed(VK_NUMPAD2)) r.toggleClouds();
+    if (pressed(VK_NUMPAD3)) r.cycleLightmapMode();
+    if (pressed(VK_NUMPAD4)) r.cycleSkyOrder();
+    if (pressed(VK_NUMPAD5)) {
+        gCloudProbe = true; // logged by the next non-shadow camera hook (it has the ViewRenderObject)
+        DH_LOG_I("cloud probe: requested");
+    }
+    if (pressed(VK_NUMPAD6)) dh::render::CloudRenderer::toggleBackFaceCull();
+    if (pressed(VK_NUMPAD7)) r.toggleLateScope();
+    if (pressed(VK_NUMPAD8)) r.toggleNearCutoff();
+    if (pressed(VK_NUMPAD9)) r.cycleFarMode();
+    if (pressed(VK_DIVIDE)) r.cycleMaterial();
+    if (pressed(VK_MULTIPLY)) r.cycleDrawHook();
+    if (pressed(VK_SUBTRACT)) {
+        auto& drv = bedrock::ClientWorldDriver::instance();
+        drv.setIngestion(!drv.ingestion());
+    }
+    if (pressed(VK_ADD)) {
+        r.config().coreFrustum = !r.config().coreFrustum;
+        DH_LOG_I("render: core RenderList frustum cull -> %s", r.config().coreFrustum ? "on" : "off");
+    }
+}
+
 void onKeys(ll::event::AfterUIRenderEvent& e) {
-    if (e.screenView().getScreenName() != "hud_screen") return;
+    if (!gRenderer || e.screenView().getScreenName() != "hud_screen") return;
     try {
-        bool  shift = dh::input::shiftDown();
-        bool  ctrl  = dh::input::ctrlDown();
-        auto& r     = *gRenderer;
+        auto& r = *gRenderer;
         // keep the "draw everything uploaded" switch tied to the feed's real state (reset() paths clear the feed)
         r.config().drawAllUploaded = testfeed::active();
-        if (dh::input::pressed(VK_F5)) {
-            auto& drv = bedrock::ClientWorldDriver::instance();
-            if (shift) {
-                // The synthetic test feed (pre-GLUE-4 smoke path) is retired from the key map: it draws every
-                // uploaded section and disables the near cut-off, which kept confusing the real-pipeline tests.
-                // It stays available with DH_TEST_FEED=1 in the environment for Stage-A debugging.
-                static const bool feedAllowed = [] {
-                    char const* e = std::getenv("DH_TEST_FEED");
-                    return e && e[0] == '1';
-                }();
-                glm::dvec3 pos;
-                if (!feedAllowed) {
-                    DH_LOG_I("render: test feed is disabled (set DH_TEST_FEED=1 to enable Shift+F5)");
-                } else if (r.lastCameraPos(pos)) {
-                    if (!gEnabled && !testfeed::active()) {
-                        gEnabled = true;
-                        DH_LOG_I("render: Stage-A renderer on (enabled by test feed)");
-                    }
-                    testfeed::toggle(r, pos);
-                    r.config().drawAllUploaded = testfeed::active(); // feed sections are in no quad tree
-                    DH_LOG_I("render: test feed %s (Shift+F5)", testfeed::active() ? "on" : "off");
-                } else {
-                    DH_LOG_W("render: test feed: no camera position seen yet (no world frame rendered?)");
-                }
-            } else if (ctrl) {
-                r.config().coreFrustum = !r.config().coreFrustum;
-                DH_LOG_I("render: core RenderList frustum cull -> %s (Ctrl+F5)", r.config().coreFrustum ? "on" : "off");
-            } else {
-                // F5 = the whole pipeline: world driver (hooks -> DH world -> quad tree) + renderer
-                const bool on = !drv.pipeline();
-                if (on && r.config().farMode == FarMode::Off) {
-                    r.config().farMode = FarMode::LocalProjPush; // LODs live beyond the vanilla far plane
-                    DH_LOG_I("render: far-plane mode -> local-proj-push (pipeline on; Shift+F4 cycles)");
-                }
-                drv.setPipeline(on); // also calls setEnabled()
-                DH_LOG_I("render: pipeline %s (F5)", on ? "on" : "off");
-            }
+        if (gToggleKey != 0 && dh::input::pressed(gToggleKey)) togglePipeline(r);
+        if (gFeedAllowed && dh::input::shiftDown() && dh::input::pressed(VK_F5)) toggleTestFeed(r);
+        if (gDebugKeys) {
+            debugKeys(r);
+            updateHud();
         }
-        if (dh::input::pressed(VK_NUMPAD4) || (dh::input::pressed(VK_F7) && ctrl && !shift))
-            r.cycleSkyOrder(); // which frame-graph pass the opaque LODs land in (Run 13: stars over LODs)
-        if (dh::input::pressed(VK_F7) && shift) {
-            auto& drv = bedrock::ClientWorldDriver::instance();
-            drv.setIngestion(!drv.ingestion());
-        }
-        if (dh::input::pressed(VK_NUMPAD0) || (dh::input::pressed(VK_F8) && ctrl))
-            r.cycleDrawHook(); // Numpad 0 (Ctrl+F8 too)
-        if (dh::input::pressed(VK_F4)) {
-            if (shift) r.cycleFarMode();
-            else if (ctrl) r.toggleNearCutoff();
-            else r.cyclePrimitive();
-        }
-        if (dh::input::pressed(VK_F6)) {
-            if (shift) r.cycleOrigin();
-            else if (ctrl) r.toggleTransparent();
-            else r.cycleMaterial();
-        }
-        if (dh::input::pressed(VK_NUMPAD2)) r.toggleClouds();
-        if (dh::input::pressed(VK_NUMPAD5)) {
-            gCloudProbe = true; // logged by the next non-shadow camera hook (it has the ViewRenderObject)
-            DH_LOG_I("cloud probe: requested (Numpad 5)");
-        }
-        if (dh::input::pressed(VK_NUMPAD6)) dh::render::CloudRenderer::toggleBackFaceCull();
-        if (dh::input::pressed(VK_NUMPAD7)) r.toggleLateScope(); // Run 15: Overdraw late-repeat coverage A/B
-        if (dh::input::pressed(VK_NUMPAD1)) {
-            gVFogInit = true;
-            gVFog     = static_cast<VFogMode>((static_cast<int>(gVFog) + 1) % 4);
-            DH_LOG_I("vfog: mode -> %s (Numpad 1)", vfogName(gVFog));
-        }
-        if (dh::input::pressed(VK_NUMPAD3)) r.cycleLightmapMode();
-        updateHud();
     } catch (...) {
         static int n = 0;
         if (n++ < 3) DH_LOG_E("render: key handler threw");
+    }
+}
+
+VFogMode fogModeOf(dh::VanillaFogMode m) {
+    switch (m) {
+    case dh::VanillaFogMode::Off:
+        return VFogMode::Off;
+    case dh::VanillaFogMode::Distance:
+        return VFogMode::PushDistanceFog;
+    case dh::VanillaFogMode::FogControl:
+        return VFogMode::PushFogControl;
+    default:
+        return VFogMode::All;
     }
 }
 
@@ -560,13 +560,27 @@ void install() {
     if (gInstalled) return;
     gInstalled = true;
     gRenderer  = std::make_unique<LodRenderer>();
+
+    // Options (config.json is loaded by ConfigBridge::init in DistantHorizons::enable before this runs).
+    const dh::Options opts = bedrock::ConfigBridge::instance().config().options();
+    gRenderer->applyOptions(opts);
+    gVFog      = fogModeOf(opts.client.graphics.fog.vanillaFog);
+    gDebugKeys = opts.client.debug.enabled;
+    gToggleKey = dh::input::resolveKey(opts.client.keys.toggleRendering, "client.keys.toggleRendering");
+    {
+        char const* feed = std::getenv("DH_TEST_FEED");
+        gFeedAllowed     = feed != nullptr && feed[0] == '1';
+    }
+
     LodRenderHook::hook();
     LodLevelRenderHook::hook();
     LodPostLevelHook::hook();
     LodSetupCameraHook::hook();
     VanillaFogHook::hook();
-    auto& bus     = ll::event::EventBus::getInstance();
-    gKeyListener  = bus.emplaceListener<ll::event::AfterUIRenderEvent>(onKeys);
+    auto& bus = ll::event::EventBus::getInstance();
+    // The key poll only exists when something needs it: a bound key, the debug keys or the env test feed.
+    if (gToggleKey != 0 || gDebugKeys || gFeedAllowed)
+        gKeyListener = bus.emplaceListener<ll::event::AfterUIRenderEvent>(onKeys);
     gExitListener = bus.emplaceListener<ll::event::ClientExitLevelEvent>([](auto&) {
         if (gRenderer) {
             gRenderer->sink().requestClear();
@@ -574,13 +588,17 @@ void install() {
         }
         testfeed::reset();
     });
-    updateHud();
-    DH_LOG_I(
-        "render: Stage-A renderer installed (off; F5 pipeline on/off, Shift+F5 test feed, Ctrl+F5 core frustum, "
-        "Shift+F7 ingestion, F4 prim, Shift+F4 far plane, Ctrl+F4 "
-        "near cut-off, "
-        "F6 material, Shift+F6 origin, Ctrl+F6 transparent, Ctrl+F8 draw hook, Numpad 4 / Ctrl+F7 sky order)"
-    );
+    if (gDebugKeys) updateHud();
+
+    std::string keys = "toggleRendering=" + (gToggleKey != 0 ? opts.client.keys.toggleRendering : std::string("none"));
+    if (gDebugKeys) {
+        keys += ", debug on (overlay=" + opts.client.debug.hudKey +
+                ", numpad 1-9 / . / + - * keys active, see docs/DEBUG.md)";
+    } else {
+        keys += ", debug off";
+    }
+    if (gFeedAllowed) keys += ", test feed Shift+F5 (DH_TEST_FEED=1)";
+    DH_LOG_I("keys: %s", keys.c_str());
 }
 
 void uninstall() {

@@ -3,6 +3,20 @@
 Log file: `~/.steam/steam/steamapps/common/MinecraftBedrockGDK/builds/Retail-1.26.5101-Levi/mods/DistantHorizons/logs/dh.log`.
 Every run below ends with explicit PASS/FAIL lines; report each one.
 
+> **Key names changed (housekeeping, 2026-10-20).** The F-key hotkeys used by the checklists below no longer exist. See
+> `docs/DEBUG.md` for the current keys; they work only with `client.debug.enabled = true` in `config.json`, except the
+> optional pipeline toggle `client.keys.toggleRendering`. Mapping, old -> new:
+> F5 pipeline on/off -> `client.enableRendering` (auto-starts) or `client.keys.toggleRendering`; Shift+F5 test feed -> unchanged
+> (needs `DH_TEST_FEED=1`); Ctrl+F5 core frustum -> Numpad +; F7 HUD -> Numpad 0 (`client.debug.hudKey`); Shift+F7 ingestion ->
+> Numpad -; Ctrl+F7 sky order -> Numpad 4 / `client.advanced.skyOrder`; F8 HUD dump -> Numpad . ; Ctrl+F8 and old Numpad 0 draw
+> hook -> Numpad * / `client.advanced.drawHook`; F4 primitive, Shift+F6 origin: removed (fixed at QuadList, camera-relative);
+> Shift+F4 far plane -> Numpad 9 / `client.advanced.farPlane`; Ctrl+F4 near clip -> Numpad 8 / `client.advanced.nearClip`;
+> F6 material -> Numpad / / `client.advanced.material`; Ctrl+F6 transparent pass -> `client.advanced.drawTransparent`;
+> Numpad 1 fog -> Numpad 1 (cycles `client.graphics.fog.vanillaFog`); Numpad 3 lightmap -> Numpad 3 /
+> `client.advanced.lightmapMode`; Numpad 7 late scope -> Numpad 7 / `client.advanced.lateScope`.
+> The R0/R1/R1b/R2/R3 spike keys (F9, F10 family, F12 family) are removed together with the spike module.
+> The text below is left as originally written.
+
 Status: cross-compiled (client + server build, host tests green), **never run in game**. Everything below is a hypothesis
 until you run it. Build + deploy: `scripts/build.sh client && scripts/deploy.sh client` (the block tables are read from
 `<modDir>/data`). Logs: `logs/dh.log`. HUD: F7 toggles it, F8 dumps it to the log.
@@ -244,6 +258,8 @@ In game (checklist):
 
 ## Run 13 (lighting): checklist
 
+> Key names in this checklist are the pre-housekeeping ones; see the mapping at the top of this file and `docs/DEBUG.md`.
+
 Root cause of the pitch-black LODs: no uv0 vertex stream (see docs/PORTING.md "Run 13"). Expected after this build:
 
 1. Load a world by day, F5 on (or startup with `client.enableRendering`). dh.log: `render: native vertex format ok:
@@ -434,6 +450,8 @@ Send back: the second-join `mce material cloned` lines, any `invalid; drawing wi
 appeared in `logs/crash/`.
 
 ## Run 15: render perf, late-repeat scope, overlap-band water, cloud tiles
+
+> Key names in this checklist are the pre-housekeeping ones; see the mapping at the top of this file and `docs/DEBUG.md`.
 
 Background: PORTING.md "Run 15 (render perf + residual visuals)". Deploy the DLL. The material file is unchanged, but
 deploy `DH_Terrain.material.bin` with it as usual. Default sky order `overdraw`, late scope `beyond-vanilla`.

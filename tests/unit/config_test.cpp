@@ -559,3 +559,110 @@ TEST_CASE("config store: listeners") {
     s.set([](Options& o) { applyQualityPreset(o, QualityPreset::Extreme); });
     CHECK(seen == QualityPreset::Extreme);
 }
+
+TEST_CASE("config: Bedrock option defaults") {
+    const Options o;
+    CHECK(o.client.keys.toggleRendering == "none");
+    CHECK(o.client.graphics.fog.vanillaFog == VanillaFogMode::All);
+    CHECK(o.client.graphics.clouds.backFaceCull);
+    CHECK(o.client.advanced.skyOrder == SkyOrderMode::Overdraw);
+    CHECK(o.client.advanced.lateScope == LateScopeMode::BeyondVanilla);
+    CHECK(o.client.advanced.lightmapMode == LightmapSource::Dynamic);
+    CHECK(o.client.advanced.nearClip);
+    CHECK(o.client.advanced.farPlane == FarPlaneMode::LocalProjPush);
+    CHECK(o.client.advanced.material == MaterialMode::Dh);
+    CHECK(o.client.advanced.drawHook == DrawHookMode::CameraAfter);
+    CHECK(o.client.advanced.coreFrustum);
+    CHECK(o.client.advanced.drawTransparent);
+    CHECK_FALSE(o.client.debug.enabled);
+    CHECK(o.client.debug.hudKey == "numpad0");
+    CHECK(o.client.debug.logRenderPerf);
+    CHECK_FALSE(o.client.debug.logLightingDiag);
+    CHECK(o.common.worldGenerator.allowUnvalidatedGenerator);
+    CHECK_FALSE(o.common.worldGenerator.compareMode);
+    CHECK(findOptionMeta("client.graphics.fog.disableVanillaFog") == nullptr);
+}
+
+TEST_CASE("config store: enum names are case-insensitive and treat - and _ alike") {
+    ConfigStore s(4);
+    const auto  err = s.load(R"({"client":{"advanced":{"lateScope":"FULL","skyOrder":"Late",
+        "farPlane":"ZFAR_OVERRIDE","drawHook":"level-render-after","material":"MESH_FALLBACK",
+        "lightmapMode":"Dynamic_Swapped"},"graphics":{"fog":{"vanillaFog":"fog_control"}}},
+        "common":{"worldGenerator":{"chunkGeneratorMode":"surface"}}})");
+    CHECK_FALSE(err.has_value());
+    CHECK(s.warnings().empty());
+    const Options& o = s.options();
+    CHECK(o.client.advanced.lateScope == LateScopeMode::Full);
+    CHECK(o.client.advanced.skyOrder == SkyOrderMode::Late);
+    CHECK(o.client.advanced.farPlane == FarPlaneMode::ZFarOverride);
+    CHECK(o.client.advanced.drawHook == DrawHookMode::LevelRenderAfter);
+    CHECK(o.client.advanced.material == MaterialMode::MeshFallback);
+    CHECK(o.client.advanced.lightmapMode == LightmapSource::DynamicSwapped);
+    CHECK(o.client.graphics.fog.vanillaFog == VanillaFogMode::FogControl);
+    CHECK(o.common.worldGenerator.chunkGeneratorMode == DistantGeneratorMode::Surface);
+
+    // canonical names are written back
+    const std::string text = s.save();
+    CHECK(text.find("\"lateScope\": \"full\"") != std::string::npos);
+    CHECK(text.find("\"vanillaFog\": \"fog-control\"") != std::string::npos);
+    CHECK(text.find("\"chunkGeneratorMode\": \"SURFACE\"") != std::string::npos);
+
+    // unknown value -> warning + default
+    CHECK_FALSE(s.load(R"({"client":{"advanced":{"lateScope":"sideways"}}})").has_value());
+    CHECK(s.warnings().size() == 1);
+    CHECK(s.options().client.advanced.lateScope == LateScopeMode::BeyondVanilla);
+}
+
+TEST_CASE("config store: _doc keys are written and ignored on load") {
+    ConfigStore s(4);
+    const auto  text = s.save();
+    CHECK(text.find("\"enableRendering_doc\"") != std::string::npos);
+    CHECK(text.find("\"toggleRendering_doc\"") != std::string::npos);
+    CHECK(text.find("\"skyOrder_doc\"") != std::string::npos);
+    CHECK(text.find("Values: overdraw|late|opaque.") != std::string::npos);
+    CHECK(text.find("Values: dh|mesh-fallback|selection.") != std::string::npos);
+
+    ConfigStore b(4);
+    CHECK_FALSE(b.load(text).has_value());
+    CHECK(b.warnings().empty());
+    CHECK(b.save() == text);
+
+    // a _doc key never overrides or breaks the value next to it
+    CHECK_FALSE(
+        b.load(R"({"client":{"enableRendering":false,"enableRendering_doc":42,"debug":{"enabled_doc":true}}})")
+            .has_value()
+    );
+    CHECK(b.warnings().empty());
+    CHECK_FALSE(b.options().client.enableRendering);
+    CHECK_FALSE(b.options().client.debug.enabled);
+}
+
+TEST_CASE("config store: Bedrock options round trip") {
+    ConfigStore a(4);
+    Options&    o                         = a.options();
+    o.client.keys.toggleRendering         = "numpad-add";
+    o.client.debug.enabled                = true;
+    o.client.debug.hudKey                 = "f9";
+    o.client.advanced.skyOrder            = SkyOrderMode::Opaque;
+    o.client.advanced.drawHook            = DrawHookMode::PostLevelRender;
+    o.client.advanced.nearClip            = false;
+    o.client.graphics.fog.vanillaFog      = VanillaFogMode::Off;
+    o.client.graphics.clouds.backFaceCull = false;
+    o.common.worldGenerator.compareMode   = true;
+    o.common.worldGenerator.allowUnvalidatedGenerator = false;
+
+    ConfigStore b(4);
+    CHECK_FALSE(b.load(a.save()).has_value());
+    CHECK(b.warnings().empty());
+    CHECK(b.options().client.keys.toggleRendering == "numpad-add");
+    CHECK(b.options().client.debug.enabled);
+    CHECK(b.options().client.debug.hudKey == "f9");
+    CHECK(b.options().client.advanced.skyOrder == SkyOrderMode::Opaque);
+    CHECK(b.options().client.advanced.drawHook == DrawHookMode::PostLevelRender);
+    CHECK_FALSE(b.options().client.advanced.nearClip);
+    CHECK(b.options().client.graphics.fog.vanillaFog == VanillaFogMode::Off);
+    CHECK_FALSE(b.options().client.graphics.clouds.backFaceCull);
+    CHECK(b.options().common.worldGenerator.compareMode);
+    CHECK_FALSE(b.options().common.worldGenerator.allowUnvalidatedGenerator);
+    CHECK(b.save() == a.save());
+}
