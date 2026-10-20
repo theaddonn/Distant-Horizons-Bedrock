@@ -1,6 +1,6 @@
 # Server driver (GLUE-3): BDS DLL, packet transport, world-gen adapter
 
-Status: compile-only. `scripts/build.sh client` and `server` both build; nothing here has run against a real BDS.
+Status: loads and enables on a real BDS 1.26.51.1 under wine (scripts/bds.sh); no client has joined yet.
 This page says what was built, what to expect in the log, and what is still a guess.
 
 ## What exists
@@ -39,20 +39,13 @@ No core (`src/core`) file was touched.
 
 ## BDS setup under wine (1.26.51)
 
-1. Download Bedrock Dedicated Server 1.26.51 for Windows (`bedrock-server-1.26.51.x.zip`) into e.g. `~/bds`.
-   Install LeviLamina 26.51.6 for the server (`lip install github.com/LiteLDev/LeviLamina#server@26.51.6` or unpack the
-   release zip over the BDS directory; it adds `PreLoader.dll`, `LeviLamina.dll`, `plugins/`).
-2. `scripts/build.sh server`, then `BDS_DIR=~/bds scripts/deploy.sh server`. Result:
-   `plugins/DistantHorizonsServer/{DistantHorizonsServer.dll,manifest.json,data/block_table.json,data/biome_table.json}`.
-   (`tooth.json` already places `DistantHorizonsServer/` into `plugins/DistantHorizonsServer/`; the release zip must
-   additionally contain `data/*.json`, same as for the client.)
-3. Run: `cd ~/bds && wine bedrock_server_mod.exe` (LeviLamina's launcher; plain `bedrock_server.exe` does not load
-   plugins). Use `WINEDEBUG=-all` and a 64-bit prefix. Create the world once with the console if needed.
-4. Join with the GDK client over LAN/direct IP (`Retail-1.26.5101-Levi` with the client DLL) or any client; the
-   client DLL is only needed to receive LODs.
-5. Logs: `plugins/DistantHorizonsServer/logs/dh.log` (our file) and the console (LeviLamina logger).
-   Config: `plugins/DistantHorizonsServer/config/config.json` (same options as the client, `server.*` section matters).
-   Data: `plugins/DistantHorizonsServer/data/worlds/<level>/<dimension>/{lods,chunkhash}`.
+Verified 2026-10-20 with `scripts/bds.sh` (see `docs/spikes/server-stream.md`, "Test server"): `scripts/bds.sh setup`
+downloads BDS 1.26.51.1, LeviLamina 26.51.6 server, PreLoader 1.16.3, bedrock-runtime-data and PeEditor, runs
+`wine PeEditor.exe -mb` (creates `bedrock_server_mod.exe`; plain `bedrock_server.exe` does not load mods), installs the mod to
+`plugins/DistantHorizonsServer/{DistantHorizonsServer.dll,manifest.json,data/*.json}`, and `scripts/bds.sh start` runs it headless.
+Manual deploy into another BDS: `BDS_DIR=... scripts/deploy.sh server`. Set `transport=nethernet` in server.properties.
+Logs: `plugins/DistantHorizonsServer/logs/dh.log` and the console. Config: `plugins/DistantHorizonsServer/config/config.json`.
+Data: `plugins/DistantHorizonsServer/data/worlds/<level>/<dimension>/{lods,chunkhash}`. Join over LAN/direct IP with the client DLL.
 
 ## Log lines to expect
 
@@ -60,14 +53,22 @@ No core (`src/core`) file was touched.
 server: loading
 server: enabling (git <sha>)
 server driver: block table loaded (N blocks, M biomes)
+transport: server packet 'dh::bedrock::wire::DhFramePacket' runtime id 17321610017666881597 (0xf062b88988e1d83d), max frame 32768 bytes
 net: server network started (max frame 32768 bytes)
+net: effective server settings: playerBandwidthLimit=500 KB/s (25001 B/tick) globalBandwidthLimit=0 KB/s (0 B/tick) generationRequestRateLimit=20 ... generatorPlan=3 chunkGeneratorMode=2 ... frameBytes=32768 (0 B/tick = unlimited)
+server driver: dimension minecraft:overworld initial sweep: N chunk map entries, M loaded chunks queued
 server driver: started for world '<level name>' (T worker threads, data ...)
 server driver: dimension minecraft:overworld ready (level '<level>@minecraft:overworld', -64..320, sky=1, store ...)
-net: player '<name>' joined, session 1
+net: player '<name>' joined, session 1            (or: net: player '<name>' already online, session N, for players present at enable)
+transport: server received its first dh:frame (N bytes)   / transport: server sent its first dh:frame (N bytes)
+net: session N changed level 'a' -> 'b'            (SessionConfig is re-sent: the generation centre depends on the dimension scale)
 server driver: dims=1 players=1 chunks: noted=... ingested=... unchanged=... skipped=... pending=... | sections: ok=... failed=0 | worldgen: chunks=... failed=0 | net: tx=... rx=...
 net: player '<name>' left
+server driver: final drain: N pending at stop, M left
 server driver: stopped
 ```
+`/dh sweep` (game director) re-notes every loaded chunk of every dimension (same sweep as at start; logs the counts).
+The client DLL logs the same `transport:` lines with `client` (compare the runtime ids: they must be identical).
 `/dh status` (game director permission) prints the same status line. Healthy signs: `ingested` grows while chunks load,
 a second run of the same world shows `unchanged` instead (hash store), `sections ok` grows, `failed=0`, and with a mod
 client connected `rx` grows (its config message), then `tx` (config + responses).
@@ -144,19 +145,24 @@ Fixed after review: pool shutdown dropping queued world-gen tasks (RAII `TaskGua
 outbound swap, hook result checks, all dimensions created at start and on join, 100 ms accumulator, status line only on change, settings
 written on the dispatch thread.
 
+Fixed 2026-10-20 (BDS-verified unless stated): P1 (packet name + runtime id logged per side, first sent / received frame logged per side; the
+client side is still to be seen with a real join), P2 (initial sweep over `ChunkSource::getChunkMap()` when a dimension is created, plus
+`/dh sweep`; verified with a ticking area: `357 chunk map entries, 98 loaded chunks queued`; at start the map is empty because no chunk is loaded
+yet), final drain of `pending` (bounded 2 s, then waits up to 3 s for the section saves) before the hooks come off, no hash commit while
+stopping (a rejected update completes `Ok(false)`, which used to commit hashes for data that was never written), round-robin ingest cursor (no
+starvation of high coordinates), packet class in a named namespace (`dh::bedrock::wire`, the anonymous one put "(anonymous namespace)" into the id text),
+players already online at enable get a session, the level name/position is set at join (SessionConfig before the first 100 ms tick had no level), a
+level change re-sends the SessionConfig.
+
 Still to check (reviewer items, abridged):
 
-* P1 log the dh:frame packet id (hash) and the first received frame on each side, to prove registration and routing.
-* P2 initial sweep: chunks loaded before the hooks were installed (spawn chunks at ServerStarted) are never noted; add a sweep over the
-  loaded chunk map (`ChunkSource::getChunkMap`/`getStorage`) at start and on first sight of a dimension.
 * P12 `ServerPlayers::settings` is read by core worker threads (request handlers); only the dispatch-thread read is synchronised.
 * P17 `loadChunk` on a pool worker: `WorldGenerator` keeps a thread-local `ChunkAccessor*` heightmap provider
   (`mThreadLocalHeightmapProvider`); vanilla sets it per generation task. If scratch generation crashes or yields flat terrain on workers, run it on
   vanilla's worker context or the server thread.
 * `/dh` command: `getOrCreateCommand` is called once per mod enable; after disable/enable (hot reload) check that it is not registered twice and that
   the lambda does not outlive `this`.
-* Final save after hooks off: `stop()` unhooks first, so chunks saved during server shutdown are not ingested; consider draining `pending` once
-  before unhooking.
+* Chunks saved by the engine after `ServerStoppingEvent` (the final level save) are not ingested; `pending` is drained before unhooking only.
 * Hook result convention: `hook()` returning 0 = success is assumed.
 
 ## Additional in-game checklist items (from the GLUE-3 review)
@@ -166,14 +172,39 @@ Still to check (reviewer items, abridged):
 - [ ] Sub-client id on `sendToClient`; split-screen players share one session per `NetworkIdentifier`.
 - [ ] Frame cap 32 KiB vs `getString(maxLen)` 33 KiB: an oversized frame fails the packet read and may disconnect that client (sender-guarded).
 - [ ] `flushOutbound` sends everything queued per tick — watch `tx` counters and the bandwidth limiter under a burst.
-- [ ] Hot-enable / late start does not open sessions for players already online (they must rejoin).
+- [x] Hot-enable / late start: sessions are opened for players already online (not testable without a client).
 - [ ] `saveLiveChunk` fires on unload too; a chunk saved at unload may be `Missing` when re-fetched 100 ms later (self-heals on next load) — consider snapshotting in the hook.
 - [ ] Ingest/snapshot cost on the server thread (up to 16 chunks per section group; ~98k block + biome reads each) — measure ms per group.
-- [ ] `pending` map is coordinate-ordered: a steady re-note flow could starve high coordinates.
-- [ ] Hash recipe: drop the hash commit when `updateFromDataSource` reported no write.
+- [x] `pending` map is coordinate-ordered: ingest now starts at a round-robin cursor.
+- [x] Hash recipe: `Ok(false)` from the update future = "already up to date" and keeps its commit (ChunkHashStore.h), but never while stopping.
 - [ ] `ServerLevelTickEvent` cadence: once per game tick (20 Hz) or once per dimension?
 - [ ] `createNewChunk` on `WorldGenerator` returns non-null? (fallback ctor path logged)
 - [ ] `Features` currently falls back to `Surface` (logged once) — it is the DEFAULT mode, so the Surface path is the default path.
 - [ ] Scratch `LevelChunk` destructor safety (touches `Dimension`/`Level`?).
 - [ ] Core request handlers read `ServerPlayers::settings` on worker threads unsynchronised (documented) — runtime config changes while players are connected.
 - [ ] Nether coordinate scale uses dimension id 1 = 8.0.
+
+## Server mod completion (2026-10-20)
+
+* **Java protocol parity (checked against `multiplayer/server/ServerPlayerState`, `ServerPlayerStateManager`):** LevelInit is client driven in Java
+  (the client sends `RequestLevelInit(dimension)` after joining / changing level, `ServerPlayerState` answers with `LevelInit`, nothing is sent
+  unprompted); the core `ServerNetwork` does the same, so no extra "LevelInit on join" is needed on the server. Java sends no `CloseReason` at
+  shutdown or leave either (only for an incompatible protocol, which the core does). Gaps fixed: the SessionConfig of a player is derived from his
+  current level (generation centre / coordinate scale): the level is set at join and a dimension change re-sends the config (`ServerNetwork::resendConfig`),
+  players present at enable get sessions. Not done: no `CloseReason("server stopping")` at disable (Java has none).
+* **Config:** `<modDir>/config/config.json` is created with the full default option tree on first start (verified). The safety overrides in
+  `ConfigBridge` (`generatorPlan` -> `ChunksOnly` / `Disabled` while `allowUnvalidatedGenerator=false`) no longer overwrite the user's plan in the file;
+  they only apply to the running process. `server.*` options feed `NetServer::settingsFrom`; the core applies them (`PayloadSender`:
+  bytes/tick = rate*1000/20+1, 0 = unlimited; share = min(player, global / max(active senders, 1)); chunk size from `ITransport::maxFrameBytes()`;
+  request distance/rate limits in `ServerRequestHandler`). One line at start (and after a config change) shows the effective values.
+* **Distant generation on the server:** the shipped default is the same as the client's (`allowUnvalidatedGenerator=false` in `Options.h`, nothing in
+  PORTING flips it), so the server stays Disabled by default, with the warning in the log. With `allowUnvalidatedGenerator=true` the server runs the
+  same `BdsWorldGenerator` (scratch workers + server-thread hops, Features mode) and only generates while a ready player is in the dimension
+  (`DimListener::shouldDoWorldGen`). Verified on the BDS with no player: starts and idles, `worldgen: chunks=0 failed=0`, no crash. Generation with a
+  player online is not verified on the server.
+* **Packaging:** `xmake.lua` `after_build` copies `data/*.json` into `bin/<mod>/data/`, so the CI artifact and the release zip (which zip `bin/`) contain
+  the tables the drivers read from `<modDir>/data`; `tooth.json` (server variant) places `DistantHorizonsServer/` at `plugins/DistantHorizonsServer/` and
+  preserves `config/config.json`; `scripts/deploy.sh server` and `scripts/bds.sh install-mod` copy the same files.
+* **BDS shutdown under wine:** with chunks loaded (ticking area) the BDS process does not exit after "Disabling mods" even with the mod removed
+  (reproduced without the mod), so `scripts/bds.sh stop` falls back to a kill; the mod itself logs `final drain` and `stopped` first.
+  Before killing, `save hold` / `save resume` flushes the world. Do not leave a ticking area in the shared test world.

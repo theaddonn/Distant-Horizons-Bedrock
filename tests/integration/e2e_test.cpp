@@ -13,6 +13,7 @@
 #include <doctest.h>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <cstdio>
 #include <map>
@@ -22,6 +23,8 @@
 
 #include "dh/fulldata/FullDataPoint.h"
 #include "dh/gen/FakeChunkGenerator.h"
+#include "dh/net/MessageRegistry.h"
+#include "dh/net/Messages.h"
 #include "dh/platform/IClock.h"
 #include "dh/pos/SectionPos.h"
 #include "dh/storage/MemoryLodStore.h"
@@ -558,15 +561,16 @@ struct NetFx {
     std::unique_ptr<DhClientWorld>     cworld;
     SessionId                          sid = 0;
 
-    NetFx() {
+    explicit NetFx(int serverBandwidth = 500, int clientBandwidth = 500, int clientMaxGenDistance = -1) {
         for (Stack* st : {&server, &client}) {
             st->options.common.worldGenerator.generatorPlan            = GeneratorPlan::ChunksOnly;
             st->options.common.worldGenerator.generationCenterChunkX   = -8; // centre block (0,0): see ChunkPos quirk
             st->options.common.worldGenerator.generationCenterChunkZ   = -8;
             st->options.common.worldGenerator.generationMaxChunkRadius = 6;
-            st->options.server.playerBandwidthLimit                    = 500; // KB/s
+            st->options.server.playerBandwidthLimit = st == &server ? serverBandwidth : clientBandwidth; // KB/s
             st->options.client.graphics.quality.lodChunkRenderDistanceRadius = 24;
         }
+        if (clientMaxGenDistance >= 0) client.options.server.maxGenerationRequestDistance = clientMaxGenDistance;
         server.deps.chunkGeneratorFactory = [this](ILevelHandle&) -> std::unique_ptr<IChunkGenerator> {
             return std::make_unique<FakeChunkGenerator>(
                 server.pools.worldGen,
@@ -793,6 +797,217 @@ TEST_CASE("e2e net: client requests sections, server generates them, stored copi
     CHECK(fx.client.idle());
     CHECK(fx.server.idle());
     CHECK_EQ(fx.client.sink.residentCount(), 0u);
+}
+
+namespace {
+
+/// Result of one download run, for the assertions of the protocol tests.
+struct NetRun {
+    DhClientLevel* cli              = nullptr;
+    DhServerLevel* srv              = nullptr;
+    bool           quiet            = false;
+    int            rounds           = 0;
+    std::uint64_t  maxDataPerTick   = 0;
+    std::uint64_t  maxWirePerTick   = 0;
+    std::uint64_t  maxSplitsPerTick = 0;
+};
+
+/// Loads both levels and runs until every requested section arrived. Records per-round (= per server 20 Hz tick)
+/// payload bytes on the server wire.
+NetRun runDownload(NetFx& fx, int maxRounds) {
+    NetRun r;
+    for (int i = 0; i < 4; ++i) fx.round();
+    r.srv = fx.sworld->getOrLoadLevel(fx.serverLevel);
+    fx.cworld->getOrLoadLevel(fx.clientLevel);
+    for (int i = 0; i < 25; ++i) fx.round();
+    r.cli = fx.cworld->getOrLoadLevel(fx.clientLevel);
+    if (!r.cli || !r.srv) return r;
+    int quiet = 0;
+    for (; r.rounds < maxRounds && quiet < 12; ++r.rounds) {
+        const auto frames0 = fx.serverWire.log().size();
+        const auto bytes0  = fx.serverWire.bytes();
+        fx.round();
+        std::uint64_t data = 0, splits = 0;
+        const auto&   log = fx.serverWire.log();
+        for (std::size_t i = frames0; i < log.size(); ++i) {
+            if (log[i].id != CountingTransport::kSplitId) continue;
+            data += log[i].size - mp::kSplitFrameOverhead;
+            ++splits;
+        }
+        r.maxDataPerTick   = std::max(r.maxDataPerTick, data);
+        r.maxSplitsPerTick = std::max(r.maxSplitsPerTick, splits);
+        r.maxWirePerTick   = std::max<std::uint64_t>(r.maxWirePerTick, fx.serverWire.bytes() - bytes0);
+        auto t = r.cli->clientside().tree();
+        if (!t) continue;
+        std::size_t leaves = 0;
+        if (auto all = r.cli->store().allPositions())
+            for (auto p : *all) leaves += sec::detail(p) == 6 ? 1 : 0;
+        const bool done = leaves >= 16 && t->queuedRetrievalCount() == 0 && fx.client.idle() && fx.server.idle()
+                       && r.cli->isQuiescent() && r.srv->isQuiescent();
+        quiet = done ? quiet + 1 : 0;
+    }
+    r.quiet = quiet >= 12;
+    return r;
+}
+
+/// Every detail-6 section of the server store is in the client store with identical decoded columns.
+std::size_t requireStoresEqual(NetRun& r) {
+    auto sp = r.srv->store().allPositions();
+    REQUIRE(sp.has_value());
+    std::size_t compared = 0;
+    for (std::uint64_t pos : *sp) {
+        if (sec::detail(pos) != 6) continue;
+        auto sv = r.srv->provider().get(pos);
+        auto c  = r.cli->provider().get(pos);
+        REQUIRE_MESSAGE(sv, sec::toString(pos));
+        REQUIRE_MESSAGE(c, "client lacks server section " << sec::toString(pos));
+        for (int i = 0; i < FullDataSource::COLUMN_COUNT; ++i) {
+            const auto k = static_cast<std::size_t>(i);
+            if (c->columns[k] != sv->columns[k]) FAIL("column " << i << " differs in " << sec::toString(pos));
+        }
+        CHECK(c->contentEquals(*sv));
+        CHECK_FALSE(c->isEmpty);
+        ++compared;
+    }
+    return compared;
+}
+
+/// Splits the server frame log into transfers (maximal runs of FullDataSplit frames) and checks the framing rules.
+/// Returns {transfers, transfersWithMoreThanOneSplit, totalSplits, transfersClosedByResponse}.
+std::array<std::size_t, 4> checkTransfers(const CountingTransport& wire, std::size_t mtu) {
+    const auto&                log = wire.log();
+    std::array<std::size_t, 4> out{0, 0, 0, 0};
+    for (std::size_t i = 0; i < log.size();) {
+        if (log[i].id != CountingTransport::kSplitId) {
+            ++i;
+            continue;
+        }
+        std::size_t j = i, firsts = 0;
+        for (; j < log.size() && log[j].id == CountingTransport::kSplitId; ++j) {
+            firsts += log[j].first ? 1 : 0;
+            CHECK(log[j].size <= mtu);
+        }
+        CHECK_EQ(firsts, 1u); // exactly one isFirst, and it opens the run
+        CHECK(log[i].first);
+        REQUIRE(j < log.size());
+        // the closing message is the FullDataSourceResponse (8) of a request, or the FullDataPartialUpdate (9) of a
+        // real-time update (the generated chunks are pushed to the player too)
+        CHECK((log[j].id == 8 || log[j].id == 9));
+        out[3] += log[j].id == 8 ? 1 : 0;
+        ++out[0];
+        out[1] += j - i > 1 ? 1 : 0;
+        out[2] += j - i;
+        i = j;
+    }
+    return out;
+}
+
+} // namespace
+
+TEST_CASE("e2e net protocol: handshake, payload splitting at the frame limit, bandwidth cap, stores equal") {
+    // client asks 800 KB/s + generation distance 2000; server allows 300 KB/s + 4096 -> min of each side
+    NetFx fx(300, 800, 2000);
+    for (int i = 0; i < 4; ++i) fx.round();
+
+    // 1. handshake: SessionConfig(client wanted) -> constrained SessionConfig(server) + LevelInit for the dimension
+    REQUIRE(fx.cworld->networkState()->isReady());
+    const auto cfg = fx.cworld->networkState()->sessionConfig();
+    CHECK_EQ(cfg.playerBandwidthLimit, 300);          // min(800, 300)
+    CHECK_EQ(cfg.maxGenerationRequestDistance, 2000); // min(2000, 4096)
+    CHECK_EQ(cfg.generationMaxChunkRadius, 6);        // the server's bounds win
+    CHECK_EQ(cfg.generationCenterChunkX, -8);
+    CHECK(cfg.generatorPlan == net::GeneratorPlan::ChunksOnly);
+    CHECK(cfg.enableRealTimeUpdates);
+    CHECK(fx.cworld->networkState()->serverSupport() == mp::ServerSupport::Full);
+    {
+        bool sawClientConfig = false; // the client sent its wanted values, not the constrained ones
+        for (const auto& f : fx.clientWire.log()) {
+            if (f.id != net::MsgIds::SessionConfig) continue;
+            auto m = net::decodeFrame(f.frame);
+            REQUIRE(m.has_value());
+            const auto& v = static_cast<net::SessionConfigMessage&>(**m).config;
+            CHECK_EQ(v.playerBandwidthLimit, 800);
+            CHECK_EQ(v.maxGenerationRequestDistance, 2000);
+            sawClientConfig = true;
+        }
+        CHECK(sawClientConfig);
+        bool sawServerConfig = false; // the server answered with the constrained values
+        for (const auto& f : fx.serverWire.log()) {
+            if (f.id != net::MsgIds::SessionConfig) continue;
+            auto m = net::decodeFrame(f.frame);
+            REQUIRE(m.has_value());
+            CHECK(static_cast<net::SessionConfigMessage&>(**m).config == cfg);
+            sawServerConfig = true;
+        }
+        CHECK(sawServerConfig);
+    }
+    NetRun run = runDownload(fx, 6000);
+    REQUIRE(run.cli != nullptr);
+    REQUIRE(run.srv != nullptr);
+    {
+        std::size_t inits = 0;
+        for (const auto& f : fx.serverWire.log()) {
+            if (f.id != net::MsgIds::LevelInit) continue;
+            auto m = net::decodeFrame(f.frame);
+            REQUIRE(m.has_value());
+            const auto& li = static_cast<net::LevelInitMessage&>(**m);
+            CHECK_EQ(li.dimensionResourceLocation, std::string("minecraft:overworld"));
+            CHECK_EQ(li.levelKey, fx.serverLevel.levelKey());
+            CHECK_EQ(li.levelKey, std::string("lvl"));
+            CHECK(net::isValidLevelKey(li.levelKey));
+            ++inits;
+        }
+        CHECK_EQ(inits, 1u); // once per client level object
+    }
+    REQUIRE(run.quiet);
+    CHECK_EQ(fx.cworld->networkState()->pendingRequestCount(), 0u);
+
+    // 2. payload splitting: MTU 1500 -> FullDataSplit frames of at most 1500 B, each run closed by the response
+    CHECK_EQ(fx.serverWire.rejected(), 0u);
+    CHECK_EQ(fx.clientWire.rejected(), 0u);
+    CHECK(fx.serverWire.largestFrame() <= 1500);
+    const auto tr = checkTransfers(fx.serverWire, 1500);
+    CHECK(tr[0] >= 16u);
+    CHECK(tr[1] >= 1u); // at least one response needed several FullDataSplit frames
+    CHECK(tr[3] >= 16u); // one payload response per requested section
+    CHECK(fx.clientWire.countId(net::MsgIds::FullDataSourceRequest) >= tr[3]);
+    // 300 KB/s = 15001 data bytes per 20 Hz tick, plus one frame of slack for the wire total
+    CHECK(run.maxDataPerTick <= 300u * 1000 / 20 + 1);
+    CHECK(run.maxWirePerTick <= 300u * 1000 / 20 + 1 + 1500 + 13u * run.maxSplitsPerTick);
+
+    // 3. receive: every server section arrived and decodes to the same columns
+    const std::size_t compared = requireStoresEqual(run);
+    CHECK(compared >= 16u);
+
+    MESSAGE(
+        "protocol: rounds=", run.rounds, " serverFrames=", fx.serverWire.frames(), " splitFrames=", tr[2],
+        " transfers=", tr[0], " multiSplitTransfers=", tr[1], " maxDataPerTick=", run.maxDataPerTick,
+        " maxWirePerTick=", run.maxWirePerTick, " maxSplitsPerTick=", run.maxSplitsPerTick, " sections=", compared
+    );
+    fx.cworld->close();
+    fx.sworld->close();
+}
+
+TEST_CASE("e2e net protocol: a tiny bandwidth limit stretches transfers over many ticks but never exceeds it") {
+    NetFx fx(48, 500); // 48 KB/s -> 2401 data bytes per tick; client asks more, min wins
+    for (int i = 0; i < 4; ++i) fx.round();
+    REQUIRE(fx.cworld->networkState()->isReady());
+    CHECK_EQ(fx.cworld->networkState()->sessionConfig().playerBandwidthLimit, 48);
+    NetRun run = runDownload(fx, 20000);
+    REQUIRE(run.cli != nullptr);
+    REQUIRE(run.quiet);
+    CHECK(run.maxDataPerTick <= 48u * 1000 / 20 + 1);
+    CHECK(run.maxWirePerTick <= 48u * 1000 / 20 + 1 + 1500 + 13u * run.maxSplitsPerTick);
+    CHECK(run.maxDataPerTick > 1500u); // the cap, not the idle link, is what limits it
+    const auto tr = checkTransfers(fx.serverWire, 1500);
+    CHECK(tr[1] >= 1u);
+    CHECK(requireStoresEqual(run) >= 16u);
+    MESSAGE(
+        "tiny limit: rounds=", run.rounds, " splitFrames=", tr[2], " transfers=", tr[0],
+        " maxDataPerTick=", run.maxDataPerTick, " maxWirePerTick=", run.maxWirePerTick
+    );
+    fx.cworld->close();
+    fx.sworld->close();
 }
 
 //===========================================================================================================//

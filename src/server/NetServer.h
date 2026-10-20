@@ -56,6 +56,10 @@ public:
         const dh::Options& options
     );
 
+    /// Server thread: the player's level (dimension) changed; re-sends his SessionConfig (generation centre depends
+    /// on the dimension coordinate scale, Java ServerPlayerState.sendConfigMessage).
+    void onPlayerLevelChanged(dh::SessionId session);
+
     /// Runs on the server thread when a player joined (after the session opened).
     void setJoinHook(std::function<void()> hook) { joinHook_ = std::move(hook); }
     /// False while the (live) generator plan is Disabled; readable from any thread.
@@ -64,6 +68,8 @@ public:
     std::size_t playerCount() const { return transport_.sessionCount(); }
 
 private:
+    void logEffectiveSettings() const;
+
     PacketTransport&      transport_;
     dh::ConfigStore&      config_;
     dh::mp::ServerPlayers players_;

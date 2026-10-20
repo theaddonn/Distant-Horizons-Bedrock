@@ -180,6 +180,10 @@ DhClientLevel* DhClientWorld::getOrLoadLevel(ILevelHandle& handle) {
 
 bool DhClientWorld::ensureLevelKeyWhenAvailable(ILevelHandle& handle) {
     if (net_ == nullptr) return true; // no DH server to ask
+    // The server never answered (client-only fallback, ClientNetworkState::kServerReplyTimeoutMs): the level loads with
+    // the locally derived key and LevelInit is not asked for again. A level whose request was already sent keeps its
+    // single request (Java: once per client level object).
+    if (net_->dhMode() == mp::DhMode::ClientOnly) return true;
     bool sendInit;
     {
         std::lock_guard lock(mutex_);

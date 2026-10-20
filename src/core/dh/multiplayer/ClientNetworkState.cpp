@@ -72,6 +72,7 @@ ClientNetworkState::ClientNetworkState(
   ),
   wanted_(config.wanted) {
     adaptive_.store(config.adaptiveTransferSpeed);
+    windowStartMs_ = modeChangedMs_ = clock_.nowMillis();
     transport_.setListener(this);
 }
 
@@ -236,6 +237,13 @@ Result<FullDataSource> ClientNetworkState::decodePayload(const net::FullDataPayl
     return receiver_.decode(payload.dtoBufferId, registry_);
 }
 
+Result<FullDataSource> ClientNetworkState::decodePayload(const net::FullDataPayload& payload, std::size_t* bytes) {
+    auto raw = receiver_.take(payload.dtoBufferId);
+    if (!raw) return Error(ErrorCode::NotFound, "no complete buffer for a received payload");
+    if (bytes) *bytes = raw->size();
+    return decodePayloadBytes(*raw, registry_);
+}
+
 std::uint64_t ClientNetworkState::addSessionConfigListener(std::function<void()> listener) {
     std::lock_guard lock(mutex_);
     const auto      id   = nextListener_++;
@@ -259,12 +267,54 @@ void ClientNetworkState::setPartialUpdateHandler(
     else partialHandlers_.erase(levelName);
 }
 
+DhMode ClientNetworkState::dhMode() {
+    std::lock_guard lock(mutex_);
+    if (mode_ == DhMode::Pending && clock_.nowMillis() - windowStartMs_ >= kServerReplyTimeoutMs) {
+        mode_          = DhMode::ClientOnly;
+        modeChangedMs_ = clock_.nowMillis();
+        modeReason_    = "no DH reply";
+    }
+    return mode_;
+}
+
+std::int64_t ClientNetworkState::modeDecisionMs() const {
+    std::lock_guard lock(mutex_);
+    return modeChangedMs_ - windowStartMs_;
+}
+
+std::string ClientNetworkState::modeReason() const {
+    std::lock_guard lock(mutex_);
+    return modeReason_;
+}
+
+void ClientNetworkState::noteReplyLocked(const char* reason) {
+    if (mode_ == DhMode::Server) return;
+    mode_          = DhMode::Server;
+    modeChangedMs_ = clock_.nowMillis();
+    modeReason_    = reason;
+}
+
+void ClientNetworkState::noteSectionReceived(std::uint64_t pos, std::size_t bytes) {
+    const std::uint64_t n = ++sections_;
+    if (n <= 20 || n % 100 == 0)
+        log::logf(
+            LogLevel::Info,
+            "net: rx FullDataSourceResponse pos=%llu bytes=%zu (#%llu)",
+            static_cast<unsigned long long>(pos),
+            bytes,
+            static_cast<unsigned long long>(n)
+        );
+}
+
 void ClientNetworkState::onConnected(SessionId session, std::string_view) {
     {
         std::lock_guard lock(mutex_);
         session_        = session;
         connected_      = true;
         configReceived_ = false;
+        mode_           = DhMode::Pending;
+        windowStartMs_  = modeChangedMs_ = clock_.nowMillis();
+        modeReason_.clear();
     }
     sendConfigMessage(true);
 }
@@ -288,6 +338,9 @@ void ClientNetworkState::onDisconnected(SessionId) {
         std::lock_guard lock(mutex_);
         connected_      = false;
         configReceived_ = false;
+        mode_           = DhMode::Pending;
+        windowStartMs_  = modeChangedMs_ = clock_.nowMillis();
+        modeReason_.clear();
     }
     failAllPending();
 }
@@ -327,6 +380,7 @@ void ClientNetworkState::onFrame(SessionId, std::span<const std::byte> frame) {
                 support_ = ServerSupport::LevelsOnly; // may also arrive with full support
             serverTimeOffset_ = m.serverTime - clock_.nowMillis();
             handler           = levelInitHandler_;
+            noteReplyLocked("level init received");
         }
         if (handler) handler(m);
         break;
@@ -340,6 +394,7 @@ void ClientNetworkState::onFrame(SessionId, std::span<const std::byte> frame) {
             support_                    = ServerSupport::Full;
             sessionConfig_              = m.config;
             configReceived_             = true;
+            noteReplyLocked("session config received");
             if (planChanged)
                 for (auto& [id, l] : configListeners_) listeners.push_back(l);
         }
