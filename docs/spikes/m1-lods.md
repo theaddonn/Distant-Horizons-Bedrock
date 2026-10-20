@@ -386,3 +386,33 @@ direction). Distant generation needs `common.worldGenerator.allowUnvalidatedGene
    chunk); the TOTAL line is the measure. Send the TOTAL lines.
 6. Performance: generation is slower than before (64 base chunks per 16-chunk batch instead of 36, decoration serial
    per batch). Report the 10 s `world gen: N chunks in the last 10 s` line.
+
+## Run 14: cloud cell "white box" near the camera
+
+Background: PORTING.md "Run 14". Deploy the DLL and the rebuilt `DH_Terrain.material.bin` together (an old material
+draws all cloud faces, as before). F5 on, DH clouds on (Numpad 2), video setting clouds on.
+
+1. **From above** (fly to y ~200-230, look down at the cloud layer near the camera, ideally the same snowy peaks):
+   each cloud cell shows its top and the walls that face you, translucent (terrain visible through the top at the
+   same strength everywhere), not a flat opaque white block. Press **Numpad 6** (log `clouds: back-face cull -> off
+   (Numpad 6)`): the cells become whiter and more solid (bottom and inner walls show through, the old look); Numpad 6
+   again (`-> on`) brings the translucent look back. PASS: with the cull on, the box from screenshot 30 reads as a
+   translucent cloud, not as terrain.
+2. **From below** (y < 192, look up): bottoms and the outward walls, same translucency; Numpad 6 off/on makes the same
+   difference.
+3. **Inside the layer** (y 192..196): every face is drawn (the cull is off there by design); the clouds around you are
+   visible, nothing disappears when you cross y 192 or 196 (one frame of change at the boundary is acceptable).
+4. **Cloud probe:** press **Numpad 5** once with DH clouds on and once with DH clouds off (Numpad 2, vanilla clouds
+   visible), each time from above the layer. Expected log: `cloud probe: requested (Numpad 5)`, then
+   `cloud probe: vanilla drawClouds=.. aboveClouds=.. fancy=.. meshSize=.. gridSize=.. yTranslation=.. center=(..)
+   origin=(..) color=(..) camera=(..)`, `cloud probe: vanilla meshes=N`, up to 4 lines `cloud probe: mesh i prim=..
+   vertexCount=.. raw=.. positions=.. indices=.. colors=.. pos[min=.. max=..] aabb[..] ys={..} cols={..}` and
+   `cloud probe: DH layer wanted=.. drawn=.. quads=.. slab y 192..196 (cell 12, alpha 0.80) backFaceCull=on
+   (active if camera-relative=1)` (the default origin mode is camera-relative; in absolute mode, Shift+F6, the
+   cull never runs). `ys` with two values 4 apart means vanilla boxes 4 thick, one value a flat sheet; `cols` gives the
+   baked face shades and vertex alpha; `positions=0` means the CPU copy was freed after upload (then the AABB and
+   vertex counts are the only geometry hint).
+5. Far clouds unchanged: they fade into the sky at the DH fog end, tint follows day/night.
+
+Send back: the `cloud probe:` lines (both runs), the Numpad 6 lines, and a screenshot from above with the cull on
+and one with it off at the same spot; say whether the cells still look like solid boxes.

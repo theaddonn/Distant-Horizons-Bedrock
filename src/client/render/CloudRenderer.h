@@ -88,6 +88,20 @@ public:
 
     Stats const& stats() const { return stats_; }
 
+    /// True when draw() asks the VS to drop back faces (cloud marker 4): camera-relative positions and the camera
+    /// outside the slab [slabBottom(), slabBottom() + kThickness].
+    bool cullsBackFaces(double cameraY, bool cameraRelative) const;
+
+    /// World y of the bottom of the drawn slab: the live mesh's own (rounded) bottom plus the uploader's min-y offset,
+    /// so a pending rebuild at a new height cannot skew the inside-slab test (192 before the first mesh).
+    float slabBottom() const {
+        return haveCur_ ? static_cast<float>(cur_.key.yBottom) + minY_ : 192.0f;
+    }
+
+    /// Numpad 6 A/B switch for the back-face cull (default on). Render thread only (key handler and draw()).
+    static bool backFaceCullEnabled();
+    static void toggleBackFaceCull();
+
     /// pos of a cloud section (detail level 0 never occurs for real sections: the minimum is 6).
     static bool isCloudSection(std::uint64_t pos);
 
@@ -118,6 +132,7 @@ private:
     bool                                  patternTried_ = false;
     std::chrono::steady_clock::time_point t0_;
     glm::vec3                             tint_{1.0f}; ///< latest Inputs::tint, applied per draw
+    float                                 minY_ = -64.0f; ///< latest Inputs::minY (the uploader's y offset)
     std::chrono::steady_clock::time_point pendingSince_{};
     std::chrono::steady_clock::time_point retryAfter_{};
 
