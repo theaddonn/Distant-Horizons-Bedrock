@@ -45,10 +45,19 @@ void ChunkDiff::add(const ChunkDiff& o) {
     iceReal += o.iceReal;
     iceGen += o.iceGen;
     diffBlocks += o.diffBlocks;
+    staged = staged || o.staged;
+    structGen += o.structGen;
+    structSame += o.structSame;
+    decoGen += o.decoGen;
+    decoSame += o.decoSame;
+    realOnly += o.realOnly;
+    diffStruct += o.diffStruct;
+    diffDeco += o.diffDeco;
+    diffUntouched += o.diffUntouched;
 }
 
 std::string ChunkDiff::summary() const {
-    char buf[320];
+    char buf[640];
     std::snprintf(
         buf,
         sizeof buf,
@@ -67,7 +76,25 @@ std::string ChunkDiff::summary() const {
         iceGen,
         static_cast<long long>(diffBlocks)
     );
-    return buf;
+    std::string out = buf;
+    if (staged) {
+        std::snprintf(
+            buf,
+            sizeof buf,
+            "; structure blocks gen %lld same %lld, decoration blocks gen %lld same %lld, real-only changes %lld; "
+            "differing: structure %lld, decoration %lld, untouched %lld",
+            static_cast<long long>(structGen),
+            static_cast<long long>(structSame),
+            static_cast<long long>(decoGen),
+            static_cast<long long>(decoSame),
+            static_cast<long long>(realOnly),
+            static_cast<long long>(diffStruct),
+            static_cast<long long>(diffDeco),
+            static_cast<long long>(diffUntouched)
+        );
+        out += buf;
+    }
+    return out;
 }
 
 ChunkDiff compareChunks(const IChunk& real, const IChunk& gen) {
@@ -95,6 +122,37 @@ ChunkDiff compareChunks(const IChunk& real, const IChunk& gen) {
                 if (real.blockAt(x, y, z) != gen.blockAt(x, y, z)) ++d.diffBlocks;
         }
     }
+    return d;
+}
+
+ChunkDiff compareChunksStaged(const IChunk& real, const IChunk& base, const IChunk& afterStructures, const IChunk& gen) {
+    ChunkDiff d = compareChunks(real, gen);
+    d.staged    = true;
+    std::int32_t lo = std::max(real.inclusiveMinBuildHeight(), gen.inclusiveMinBuildHeight());
+    std::int32_t hi = std::min(real.exclusiveMaxBuildHeight(), gen.exclusiveMaxBuildHeight());
+    lo              = std::max({lo, base.inclusiveMinBuildHeight(), afterStructures.inclusiveMinBuildHeight()});
+    hi              = std::min({hi, base.exclusiveMaxBuildHeight(), afterStructures.exclusiveMaxBuildHeight()});
+    for (int x = 0; x < IChunk::kWidth; ++x)
+        for (int z = 0; z < IChunk::kWidth; ++z)
+            for (std::int32_t y = lo; y < hi; ++y) {
+                const BlockInfo* b    = base.blockAt(x, y, z);
+                const BlockInfo* s    = afterStructures.blockAt(x, y, z);
+                const BlockInfo* g    = gen.blockAt(x, y, z);
+                const BlockInfo* r    = real.blockAt(x, y, z);
+                const bool       same = g == r;
+                if (g != s) { // decoration was the last pass to change it
+                    ++d.decoGen;
+                    d.decoSame += same;
+                    d.diffDeco += !same;
+                } else if (s != b) {
+                    ++d.structGen;
+                    d.structSame += same;
+                    d.diffStruct += !same;
+                } else {
+                    d.realOnly += r != b;
+                    d.diffUntouched += !same;
+                }
+            }
     return d;
 }
 
