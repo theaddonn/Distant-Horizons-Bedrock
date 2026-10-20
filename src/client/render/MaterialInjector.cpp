@@ -899,6 +899,11 @@ mce::RenderMaterialInfo* gDhTransInfo  = nullptr; // "DH_TerrainTransparent" (sa
 mce::RenderMaterialInfo* gDhLateInfo   = nullptr; // "DH_TerrainLate" (opaque output, Blending flag: late pass bin)
 mce::RenderMaterialInfo* gDhWaterInfo  = nullptr; // "DH_TerrainWater" (blended like Transparent, but depth write)
 TlsFlag                  gDhResolving; // dynamic TLS, see TlsFlag
+std::atomic<std::uint64_t> gDhResolves[4]{}; // dragon binding resolves per clone (render: perf line)
+
+int kindOf(void const* info) {
+    return info == gDhInfo ? 0 : info == gDhTransInfo ? 1 : info == gDhLateInfo ? 2 : 3;
+}
 bool                     gKeyRewrite   = false;
 
 struct ResolvingGuard {
@@ -935,7 +940,7 @@ LL_STATIC_HOOK(
             void*          r = origin(sret, ctx, ds, pass);
             // Run 13 evidence: which dragon pass index each DH clone is resolved for (Opaque vs Transparent bin).
             {
-                const int kind = info == gDhInfo ? 0 : info == gDhTransInfo ? 1 : info == gDhLateInfo ? 2 : 3;
+                const int kind = kindOf(info);
                 static std::atomic<std::uint32_t> seen[4]{};
                 static constexpr char const*      kNames[4] = {
                     "DH_Terrain",
@@ -949,10 +954,15 @@ LL_STATIC_HOOK(
             }
             // Binding struct: dragon material impl @+0x80, `bool valid` @+0x88 (RE 2026-10-19). An invalid binding
             // means the draw is skipped silently - the difference between "drawn with DH_Terrain" and "nothing".
-            static std::atomic<int> logged{0};
+            // Run 15: bindings resolve at ~10k/s (2026-10-20 log, apparently once per draw), so the old `n % 600`
+            // sample filled the log with ~17 lines/s. Now: the first 4, then only invalid bindings (sampled); the count goes
+            // to the 10 s `render: perf` line instead.
+            gDhResolves[kindOf(info)].fetch_add(1, std::memory_order_relaxed);
+            static std::atomic<int> logged{0}, invalidSeen{0};
             const bool              valid = sret && *(reinterpret_cast<uint8_t*>(sret) + 0x88) != 0;
             const int               n     = logged.fetch_add(1);
-            if (n < 4 || (valid && n == 4) || n % 600 == 0) {
+            const int               bad   = valid ? -1 : invalidSeen.fetch_add(1);
+            if (n < 4 || bad == 0 || (bad > 0 && bad % 6000 == 0)) {
                 DH_LOG_I(
                     "materials: DH binding pass=%d valid=%d impl=%p singleBlock=%d texture=%p alphaTest=%d",
                     pass,
@@ -1388,6 +1398,10 @@ void uninstallMaterialInjector() {
         MaterialLoadExtHook::unhook();
         MaterialLoadHook::unhook();
     }
+}
+
+void dhBindingResolves(std::uint64_t out[4]) {
+    for (int i = 0; i < 4; ++i) out[i] = gDhResolves[i].load(std::memory_order_relaxed);
 }
 
 } // namespace dh::render

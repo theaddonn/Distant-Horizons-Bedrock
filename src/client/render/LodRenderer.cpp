@@ -2,6 +2,8 @@
 
 #include "bedrock_common/FileLogger.h"
 #include "client/hud/DebugHud.h"
+#include "client/render/Frustum5.h"
+#include "client/render/MaterialInjector.h"
 #include "client/spikes/SpikeGfx.h"
 #include "client/world/ClientWorldDriver.h"
 
@@ -52,46 +54,6 @@ namespace dh::render {
 namespace {
 
 using Texture = std::variant<std::monostate, mce::TexturePtr, mce::ClientTexture, mce::ServerTexture>;
-
-/// Visibility planes in the "draw space" the section translate lands in. Five planes only: left, right, bottom, top and
-/// "in front of the camera" (clip w > 0). Near/far depth planes are intentionally not used: their convention
-/// (reversed-Z, [0,1] vs [-1,1]) is unverified (R3) and LODs have no meaningful far plane.
-struct Frustum5 {
-    bool      valid = false;
-    glm::vec4 p[5]{};
-
-    /// `transposed` = row-vector layout as detected by spikes::analyzeProjection (clip = v * M); see the derivation in
-    /// docs/spikes/stage-a-render.md.
-    static Frustum5 build(glm::mat4 const& proj, glm::mat4 const& view, bool transposed) {
-        Frustum5  f;
-        glm::mat4 m   = transposed ? view * proj : proj * view;
-        auto      row = [&](int i) { return transposed ? m[i] : glm::row(m, i); };
-        glm::vec4 r0 = row(0), r1 = row(1), r3 = row(3);
-        f.p[0]  = r3 + r0;
-        f.p[1]  = r3 - r0;
-        f.p[2]  = r3 + r1;
-        f.p[3]  = r3 - r1;
-        f.p[4]  = r3;
-        f.valid = true;
-        for (auto const& pl : f.p)
-            if (!std::isfinite(pl.x + pl.y + pl.z + pl.w)) f.valid = false;
-        return f;
-    }
-
-    bool visible(glm::vec3 const& lo, glm::vec3 const& hi) const {
-        for (auto const& pl : p) {
-            glm::vec3 v{pl.x >= 0 ? hi.x : lo.x, pl.y >= 0 ? hi.y : lo.y, pl.z >= 0 ? hi.z : lo.z};
-            if (pl.x * v.x + pl.y * v.y + pl.z * v.z + pl.w < 0) return false;
-        }
-        return true;
-    }
-};
-
-struct Visible {
-    MeshUploader::Section const* sec;
-    glm::vec3                    t;
-    float                        dist2;
-};
 
 } // namespace
 
@@ -224,6 +186,15 @@ void LodRenderer::cycleSkyOrder() {
     cfg_.skyOrder = static_cast<SkyOrder>((static_cast<int>(cfg_.skyOrder) + 1) % kSkyOrderCount);
     loggedSkyOrder_ = false; // log which material the next frame really uses
     DH_LOG_I("render: sky order -> %s (Numpad 4 / Ctrl+F7)", skyOrderName());
+}
+
+char const* LodRenderer::lateScopeName() const {
+    return cfg_.lateScope == LateScope::BeyondVanilla ? "beyond-vanilla" : "full";
+}
+
+void LodRenderer::toggleLateScope() {
+    cfg_.lateScope = cfg_.lateScope == LateScope::BeyondVanilla ? LateScope::Full : LateScope::BeyondVanilla;
+    DH_LOG_I("render: late repeat scope -> %s (Numpad 7)", lateScopeName());
 }
 
 bool LodRenderer::cloudsWanted() const {
@@ -456,7 +427,7 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
         // the cloud section is not terrain: keep it out of the section/byte statistics
         const std::size_t cb = clouds_.liveBytes();
         if (cb) {
-            stats.liveSections -= std::min<std::size_t>(stats.liveSections, 1);
+            stats.liveSections -= std::min(stats.liveSections, clouds_.liveSectionCount());
             stats.liveBytes    -= std::min(stats.liveBytes, cb);
         }
     }
@@ -631,9 +602,12 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
         dh::hud::set("render.fog", std::string("off"));
     }
 
-    std::vector<Visible> vis;
-    vis.reserve(listMode ? list.positions.size() : uploader_.sections().size());
-    std::size_t culledFrustum = 0, culledNear = 0;
+    auto& vis = vis_; // member: no per-frame allocation once grown
+    vis.clear();
+    std::size_t culledFrustum = 0, culledNear = 0, clipSkipped = 0;
+    // Run 15: with the DH shader's near clip a section whose farthest corner is nearer than clipRadius (3D, as the
+    // FS measures `length(worldPos)` in camera-relative space) has every fragment discarded: skip all its draws.
+    const bool clipSkip = dhShader && camRel && clipRadius > 0.0f;
     auto        consider = [&](std::uint64_t pos, MeshUploader::Section const& sec) {
         if (sec.opaque.empty() && sec.transparent.empty()) return;
         if (CloudRenderer::isCloudSection(pos)) return; // drawn by CloudRenderer
@@ -656,11 +630,21 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
             ++culledFrustum;
             return;
         }
+        float maxDist = 0.0f;
+        {
+            const glm::vec3 lo = sec.bmin + t, hi = sec.bmax + t;
+            const glm::vec3 rel = camRel ? glm::vec3(0.0f) : glm::vec3(camPos);
+            maxDist             = glm::length(glm::max(glm::abs(lo - rel), glm::abs(hi - rel)));
+        }
+        if (clipSkip && maxDist < clipRadius) {
+            ++clipSkipped;
+            return;
+        }
         glm::vec3 c  = t + (sec.bmin + sec.bmax) * 0.5f;
         float     d2 = camRel
                                 ? c.x * c.x + c.z * c.z
                                 : static_cast<float>((c.x - camPos.x) * (c.x - camPos.x) + (c.z - camPos.z) * (c.z - camPos.z));
-        vis.push_back({&sec, t, d2});
+        vis.push_back({&sec, t, d2, maxDist});
     };
     if (listStatus == bedrock::RenderListStatus::Ready) {
         auto const& all = uploader_.sections();
@@ -726,23 +710,39 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
         );
     }
 
-    std::size_t drawnSections = 0, drawCalls = 0;
+    std::size_t drawnSections = 0, drawCalls = 0, lateSkipped = 0;
+    // Late repeat scope (Run 15, LateScope): clipStart = fadeEnd with no dither band, i.e. only the fragments beyond the
+    // vanilla render distance are repainted, and sections entirely inside it are not submitted at all.
+    const bool  lateBeyond = cfg_.lateScope == LateScope::BeyondVanilla && dhShader && camRel && fadeEnd > 0.0f;
+    // never below the Opaque draw's own clip (overdraw tuning > 1 can put clipRadius beyond fadeEnd)
+    const float lateClip   = std::floor(std::min(std::max(fadeEnd, clipRadius), 4095.0f) + 0.5f);
+    const float packedLate = lateBeyond ? lateClip + lateClip * 4096.0f : packedClip;
+    // one sort per frame (near to far); the translucent layer walks it backwards
+    std::sort(vis.begin(), vis.end(), [](VisibleSection const& a, VisibleSection const& b) {
+        return a.dist2 < b.dist2;
+    });
     // `material` (the parameter) shadows the outer opaque material on purpose: the opaque layer is drawn with
-    // whichever pass-bin material the SkyOrder picks; countSections = false for the Overdraw repeat.
-    auto drawLayer = [&](bool transparent, mce::MaterialPtr const* material, bool countSections) {
-        if (transparent)
-            std::sort(vis.begin(), vis.end(), [](Visible const& a, Visible const& b) { return a.dist2 > b.dist2; });
-        else std::sort(vis.begin(), vis.end(), [](Visible const& a, Visible const& b) { return a.dist2 < b.dist2; });
-        for (auto const& v : vis) {
+    // whichever pass-bin material the SkyOrder picks; countSections = false for the Overdraw repeat; layer = perf_
+    // index; late = this is the Overdraw repeat (LateScope applies).
+    auto drawLayer = [&](bool transparent, mce::MaterialPtr const* material, bool countSections, int layer, bool late) {
+        const auto        lt0    = std::chrono::steady_clock::now();
+        const float       packed = late ? packedLate : packedClip;
+        const std::size_t n      = vis.size();
+        for (std::size_t k = 0; k < n; ++k) {
+            auto const& v     = vis[transparent ? n - 1 - k : k];
             auto const& parts = transparent ? v.sec->transparent : v.sec->opaque;
             if (parts.empty()) continue;
+            if (late && lateBeyond && v.maxDist < lateClip) {
+                ++lateSkipped;
+                continue;
+            }
             auto   wref = cam.worldMatrixStack->push(false);
             Matrix m    = Matrix::IDENTITY();
             m.translate(v.t.x, v.t.y, v.t.z);
             if (dhShader) {
                 // DH_Terrain reads its per-draw parameters from the projective row (glm m[col][row]; HLSL row 3).
                 auto& g = m._m.get();
-                g[0][3] = packedClip;
+                g[0][3] = packed;
                 g[1][3] = fogStart;
                 g[2][3] = fogEnd;
                 // [3][3]: 1 = lightmap texture at t0; -daylight (<= 0) = procedural lightmap in the FS (see the VS).
@@ -760,20 +760,30 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
                     nullptr
                 );
                 ++drawCalls;
+                ++perf_[layer].calls;
+                perf_[layer].verts += part.verts;
             }
             if (!transparent && countSections) ++drawnSections;
         }
+        perf_[layer].ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - lt0).count();
     };
     std::size_t cloudCalls = 0;
     auto        drawAll    = [&] {
         // submission order: opaque LODs (late), then DH water, then clouds. The Transparent pass re-sorts these back to
         // front by a per-draw distance key (Run 14), so this is not necessarily the order the GPU sees.
-        if (!lateMaterial || cfg_.skyOrder == SkyOrder::Overdraw) drawLayer(false, material, true);
-        if (lateMaterial) drawLayer(false, lateMaterial, cfg_.skyOrder != SkyOrder::Overdraw);
-        if (cfg_.drawTransparent) drawLayer(true, material, true);
+        if (!lateMaterial || cfg_.skyOrder == SkyOrder::Overdraw) drawLayer(false, material, true, 0, false);
+        // the scope only applies to the Overdraw repeat; in `late` this is the only opaque draw
+        if (lateMaterial)
+            drawLayer(false, lateMaterial, cfg_.skyOrder != SkyOrder::Overdraw, 1, cfg_.skyOrder == SkyOrder::Overdraw);
+        if (cfg_.drawTransparent) drawLayer(true, material, true, 2, false);
         if (cloudsReady && transMaterial != material) {
-            cloudCalls = clouds_.draw(mctx, *transMaterial, camPos, camRel, fogStart, fogEnd);
-            if (cloudCalls) cloudsDrawnNs_ = nowNs();
+            const auto ct0 = std::chrono::steady_clock::now();
+            cloudCalls     = clouds_.draw(mctx, *transMaterial, camPos, camRel, fogStart, fogEnd, fr);
+            perf_[3].ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - ct0).count();
+            perf_[3].calls += cloudCalls;
+            perfCloudQuads_ += clouds_.stats().quadsDrawn;
+            // live tiles that are all culled (looking away) still count: vanilla's clouds must stay hidden
+            if (cloudCalls || clouds_.stats().tiles) cloudsDrawnNs_ = nowNs();
         }
     };
 
@@ -839,8 +849,72 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
     emaMs_    = emaMs_ == 0 ? ms : emaMs_ * 0.9 + ms * 0.1;
     dh::hud::set("render.drawn", static_cast<std::int64_t>(drawnSections));
     dh::hud::set("render.culled", static_cast<std::int64_t>(culledFrustum));
-    dh::hud::set("render.cutoff", static_cast<std::int64_t>(culledNear));
+    dh::hud::set("render.cutoff", static_cast<std::int64_t>(culledNear + clipSkipped));
     dh::hud::set("render.ms", emaMs_);
+    dh::hud::set("render.cloudDrawn", static_cast<std::int64_t>(cloudCalls ? clouds_.stats().quadsDrawn : 0));
+    dh::hud::set("render.lateScope", lateMaterial && cfg_.skyOrder == SkyOrder::Overdraw ? lateScopeName() : "-");
+
+    ++perfFrames_;
+    perfSections_    += vis.size();
+    perfLateSkipped_ += lateSkipped;
+    perfClipSkipped_ += clipSkipped;
+    perfMsSum_       += ms;
+    perfMsMax_        = std::max(perfMsMax_, ms);
+    if (const auto now = std::chrono::steady_clock::now(); now - lastPerf_ >= std::chrono::seconds(10)) logPerf(now);
+}
+
+void LodRenderer::logPerf(std::chrono::steady_clock::time_point now) {
+    const bool    first = lastPerf_ == std::chrono::steady_clock::time_point{};
+    const double  secs  = first ? 0.0 : std::chrono::duration<double>(now - lastPerf_).count();
+    std::uint64_t res[4];
+    dhBindingResolves(res);
+    if (secs > 0.0 && perfFrames_ > 0) {
+        const double f = static_cast<double>(perfFrames_);
+        auto         c = [&](int l) { return static_cast<double>(perf_[l].calls) / f; };
+        auto         q = [&](int l) { return static_cast<double>(perf_[l].verts) / 4.0 / f / 1000.0; };
+        auto         t = [&](int l) { return perf_[l].ms / f; };
+        auto         r = [&](int k) { return static_cast<double>(res[k] - perfResolves_[k]) / f; };
+        // per-frame averages over the window (frames = drawFrame calls); kquads assume the QuadList primitive
+        // (verts / 4); ms = CPU submit time on the render thread (the GPU cost is not measurable from here)
+        DH_LOG_I(
+            "render: perf %.1f fps | calls/frame opaque %.0f late %.0f water %.0f clouds %.0f | kquads/frame opaque "
+            "%.0f late %.0f water %.0f clouds %.0f | ms/frame %.2f (max %.2f) opaque %.2f late %.2f water %.2f clouds "
+            "%.2f | sections %.0f, late skipped %.0f, clip skipped %.0f | cloud tiles %zu drawn / %zu live, %zu "
+            "kquads live | resolves/frame dh %.0f trans %.0f late %.0f water %.0f | sky %s, late scope %s",
+            f / secs,
+            c(0),
+            c(1),
+            c(2),
+            c(3),
+            q(0),
+            q(1),
+            q(2),
+            static_cast<double>(perfCloudQuads_) / f / 1000.0,
+            perfMsSum_ / f,
+            perfMsMax_,
+            t(0),
+            t(1),
+            t(2),
+            t(3),
+            static_cast<double>(perfSections_) / f,
+            static_cast<double>(perfLateSkipped_) / f,
+            static_cast<double>(perfClipSkipped_) / f,
+            clouds_.stats().tilesDrawn,
+            clouds_.stats().tiles,
+            clouds_.stats().quads / 1000,
+            r(0),
+            r(1),
+            r(2),
+            r(3),
+            skyOrderName(),
+            lateScopeName()
+        );
+    }
+    lastPerf_ = now;
+    for (auto& l : perf_) l = PerfLayer{};
+    perfFrames_ = perfSections_ = perfLateSkipped_ = perfClipSkipped_ = perfCloudQuads_ = 0;
+    perfMsSum_ = perfMsMax_ = 0;
+    for (int k = 0; k < 4; ++k) perfResolves_[k] = res[k];
 }
 
 } // namespace dh::render

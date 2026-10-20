@@ -533,6 +533,7 @@ void onKeys(ll::event::AfterUIRenderEvent& e) {
             DH_LOG_I("cloud probe: requested (Numpad 5)");
         }
         if (dh::input::pressed(VK_NUMPAD6)) dh::render::CloudRenderer::toggleBackFaceCull();
+        if (dh::input::pressed(VK_NUMPAD7)) r.toggleLateScope(); // Run 15: Overdraw late-repeat coverage A/B
         if (dh::input::pressed(VK_NUMPAD1)) {
             gVFogInit = true;
             gVFog     = static_cast<VFogMode>((static_cast<int>(gVFog) + 1) % 4);

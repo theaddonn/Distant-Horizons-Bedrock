@@ -111,30 +111,52 @@ void CloudRenderer::loadPattern() {
     stats_.fallbackPattern = true;
 }
 
+namespace {
+std::uint64_t tileKey(int ti, int tj) {
+    return (static_cast<std::uint64_t>(static_cast<std::uint32_t>(ti)) << 32) | static_cast<std::uint32_t>(tj);
+}
+} // namespace
+
+void CloudRenderer::dropTile(Tile const& t) {
+    for (auto const& g : t.g)
+        if (g.quads) sink_.removeIf(g.pos, g.id);
+}
+
 void CloudRenderer::release() {
-    if (haveCur_) sink_.removeIf(cur_.pos, cur_.id);
-    if (havePending_) sink_.removeIf(pending_.pos, pending_.id);
-    haveCur_     = false;
-    havePending_ = false;
+    for (auto const& [k, t] : tiles_) dropTile(t);
+    tiles_.clear();
+    haveY_       = false;
     stats_.drawn = false;
+    stats_.tiles = stats_.quads = stats_.tilesDrawn = stats_.drawCalls = stats_.quadsDrawn = 0;
 }
 
 bool CloudRenderer::update(Inputs const& in) {
     const auto  now  = Clock::now();
     auto const& secs = sink_.sections();
+    stats_.tilesDrawn = stats_.drawCalls = stats_.quadsDrawn = 0; // refilled by draw()
 
     if (jobRunning_ && job_.wait_for(std::chrono::seconds(0)) == std::future_status::ready) {
         jobRunning_ = false; // before get(): a throwing job must not leave an invalid future marked running
         try {
-            pending_ = job_.get();
+            Batch b = job_.get();
+            for (auto& t : b.tiles) {
+                t.since = now;
+                auto k  = tileKey(t.ti, t.tj);
+                auto it = tiles_.find(k);
+                if (it != tiles_.end()) dropTile(it->second); // cannot happen (only missing tiles are built)
+                tiles_[k] = std::move(t);
+            }
+            stats_.lastBuildMs  = b.ms;
+            totalBuildMs_      += b.ms;
+            stats_.builds      += b.tiles.size();
+            if (b.failed) {
+                retryAfter_ = now + std::chrono::seconds(5);
+                DH_LOG_E("clouds: tile build failed; retrying in 5 s");
+            }
         } catch (...) {
-            pending_       = Built{};
-            pending_.empty = true;
-            retryAfter_    = now + std::chrono::seconds(5);
+            retryAfter_ = now + std::chrono::seconds(5);
             DH_LOG_E("clouds: build job threw; retrying in 5 s");
         }
-        havePending_  = !pending_.empty;
-        pendingSince_ = now;
     }
 
     if (!in.enable || in.farBlocks <= 0.0f) {
@@ -142,108 +164,148 @@ bool CloudRenderer::update(Inputs const& in) {
         return false;
     }
 
-    if (havePending_) {
-        const int st = pending_.state->load();
-        if (st == 1 && secs.count(pending_.pos)) {
-            if (haveCur_ && cur_.pos != pending_.pos) sink_.removeIf(cur_.pos, cur_.id);
-            cur_         = pending_;
-            haveCur_     = true;
-            havePending_ = false;
-            stats_.quads = cur_.quads;
-            ++stats_.builds;
-            stats_.lastBuildMs = cur_.ms;
-            if (!loggedFirst_) {
-                loggedFirst_ = true;
-                DH_LOG_I(
-                    "clouds: first section live: %zu quads, built in %.1f ms, half extent %d, anchor (%ld,%ld)",
-                    cur_.quads,
-                    cur_.ms,
-                    cur_.key.half,
-                    cur_.key.anchorX,
-                    cur_.key.anchorZ
-                );
-            }
-        } else if (st == 2 || now - pendingSince_ > std::chrono::seconds(5)) {
-            havePending_ = false;
-            retryAfter_  = now + std::chrono::seconds(1);
-        }
-    }
-    if (haveCur_ && !secs.count(cur_.pos)) haveCur_ = false; // cleared (world exit) or never produced geometry
-
     if (!patternTried_) loadPattern();
     if (!pattern_ || pattern_->empty()) return false;
 
     const double radius = std::min<double>(in.farBlocks, 15000.0);
     const double offX   = offsetX();
     const double camX = in.camera.x - offX, camZ = in.camera.z; // camera in cloud space
-    Key          want;
-    want.half         = static_cast<int>(std::ceil((radius + kMarginBlocks) / 256.0)) * 256;
-    want.yBottom      = static_cast<int>(std::lround(in.cloudY - in.minY));
-    tint_             = in.tint; // per draw, continuous (no rebuild)
-    minY_             = in.minY;
-    const double snap = static_cast<double>(kCellBlocks) * 16.0;
-    want.anchorX      = static_cast<long>(std::llround(camX / snap)) * static_cast<long>(snap);
-    want.anchorZ      = static_cast<long>(std::llround(camZ / snap)) * static_cast<long>(snap);
+    const int    wantY  = static_cast<int>(std::lround(in.cloudY - in.minY));
+    tint_               = in.tint; // per draw, continuous (no rebuild)
+    minY_               = in.minY;
+    const double tb     = static_cast<double>(kTileBlocks);
 
-    bool need = !haveCur_;
-    if (haveCur_) {
-        Key const&   k    = cur_.key;
-        const double far_ = std::max(
-            std::fabs(camX - static_cast<double>(k.anchorX)),
-            std::fabs(camZ - static_cast<double>(k.anchorZ))
-        );
-        if (k.half != want.half || k.yBottom != want.yBottom || far_ > kMarginBlocks - 48) need = true;
+    // classify the live tiles: promote finished ones, drop lost / stale / out-of-range ones. The upload timeout only
+    // runs while the uploader queue is empty: the queue is shared with the LOD sections and pump() applies a few per
+    // frame, so at low fps a tile can legitimately wait longer than 10 s behind it (review: drop/rebuild churn).
+    const std::size_t queued = sink_.stats().pending;
+    std::size_t       ready = 0, quads = 0;
+    for (auto it = tiles_.begin(); it != tiles_.end();) {
+        Tile& t    = it->second;
+        bool  drop = t.yBottom != wantY;
+        if (!drop) {
+            const double d = cloud::rectDistance(t.ti * tb, t.tj * tb, (t.ti + 1) * tb, (t.tj + 1) * tb, camX, camZ);
+            drop           = d > radius + tb; // hysteresis: one tile beyond the build radius
+        }
+        bool allReady = true;
+        for (auto const& g : t.g) {
+            if (!g.quads || drop) continue;
+            const int st = g.state->load();
+            if (st == 2 || (st == 1 && !secs.count(g.pos))) drop = true; // dropped, or cleared (world exit)
+            else if (st == 0) allReady = false;
+        }
+        if (!allReady && queued > 0) t.since = now;
+        if (!drop && !allReady && now - t.since > std::chrono::seconds(10)) {
+            drop        = true; // upload never completed
+            retryAfter_ = now + std::chrono::seconds(1);
+        }
+        if (drop) {
+            dropTile(t);
+            it = tiles_.erase(it);
+            continue;
+        }
+        t.ready = allReady;
+        if (allReady) {
+            ++ready;
+            quads += t.quads;
+            haveY_ = true;
+            liveY_ = t.yBottom;
+        }
+        ++it;
     }
-    if (need && !jobRunning_ && !havePending_ && now >= retryAfter_) {
-        cloud::BuildParams bp;
-        bp.cell           = kCellBlocks;
-        bp.centerX        = static_cast<double>(want.anchorX);
-        bp.centerZ        = static_cast<double>(want.anchorZ);
-        bp.halfExtent     = static_cast<double>(want.half);
-        bp.anchorX        = static_cast<int>(want.anchorX);
-        bp.anchorZ        = static_cast<int>(want.anchorZ);
-        bp.yBottom        = static_cast<float>(want.yBottom);
-        bp.thickness      = kThickness;
-        bp.fancy          = true;
+    if (ready == 0) haveY_ = false;
+    stats_.tiles = ready;
+    stats_.quads = quads;
+
+    // missing tiles within the radius, nearest first
+    struct Want {
+        int    ti, tj;
+        double d;
+    };
+    std::vector<Want> missing;
+    {
+        const int i0 = static_cast<int>(std::floor((camX - radius) / tb));
+        const int i1 = static_cast<int>(std::floor((camX + radius) / tb));
+        const int j0 = static_cast<int>(std::floor((camZ - radius) / tb));
+        const int j1 = static_cast<int>(std::floor((camZ + radius) / tb));
+        for (int tj = j0; tj <= j1; ++tj)
+            for (int ti = i0; ti <= i1; ++ti) {
+                const double d = cloud::rectDistance(ti * tb, tj * tb, (ti + 1) * tb, (tj + 1) * tb, camX, camZ);
+                if (d <= radius && !tiles_.count(tileKey(ti, tj))) missing.push_back({ti, tj, d});
+            }
+        std::sort(missing.begin(), missing.end(), [](Want const& a, Want const& b) { return a.d < b.d; });
+    }
+
+    // throttle: start the next batch only when the uploader has caught up (at most ~one batch of groups queued)
+    if (!missing.empty() && !jobRunning_ && now >= retryAfter_
+        && queued <= static_cast<std::size_t>(kTilesPerJob * cloud::kFaceGroups)) {
+        if (missing.size() > static_cast<std::size_t>(kTilesPerJob)) missing.resize(kTilesPerJob);
+        cloud::TileParams tp;
+        tp.cell      = kCellBlocks;
+        tp.yBottom   = static_cast<float>(wantY);
+        tp.thickness = kThickness;
+        tp.fancy     = true;
         // white mesh (face shading only): the sky tint is applied per draw by the VS (draw(), u_model[0][3][0])
-        bp.r              = 255;
-        bp.g              = 255;
-        bp.b              = 255;
-        bp.a              = static_cast<std::uint8_t>(std::lround(kAlpha * 255.0f));
-        // the mesh is generated in cloud space around the anchor; int16 local coordinates need half + cell < 32768
+        tp.r = tp.g = tp.b = 255;
+        tp.a               = static_cast<std::uint8_t>(std::lround(kAlpha * 255.0f));
         auto          pat  = pattern_;
         MeshUploader* sink = &sink_;
-        job_               = std::async(std::launch::async, [pat, bp, want, sink]() {
-            Built b;
-            b.key = want;
-            try {
-                const auto t = Clock::now();
-                auto       r = cloud::build(*pat, bp);
-                b.quads      = r.quads;
-                b.ms         = std::chrono::duration<double, std::milli>(Clock::now() - t).count();
-                b.state      = std::make_shared<std::atomic<int>>(0);
-                if (r.quads == 0) {
-                    b.empty = true;
-                    return b;
+        job_               = std::async(std::launch::async, [pat, tp, missing, sink, wantY]() {
+            Batch      batch;
+            const auto t0 = Clock::now();
+            for (auto const& w : missing) {
+                Tile t;
+                t.ti      = w.ti;
+                t.tj      = w.tj;
+                t.yBottom = wantY;
+                try {
+                    cloud::TileParams p = tp;
+                    p.ti                = w.ti;
+                    p.tj                = w.tj;
+                    auto built          = cloud::buildTile(*pat, p);
+                    try {
+                        for (int f = 0; f < cloud::kFaceGroups; ++f) {
+                            auto& bf = built[static_cast<std::size_t>(f)];
+                            if (bf.quads == 0) continue;
+                            Group& g = t.g[static_cast<std::size_t>(f)];
+                            g.quads  = bf.quads;
+                            g.state  = std::make_shared<std::atomic<int>>(0);
+                            // ti * 8 + group: tiny and signed-safe in the 28-bit x field
+                            g.pos = sec::encode(0, static_cast<std::int32_t>(w.ti * 8 + f), static_cast<std::int32_t>(w.tj));
+                            MeshBuffers mb;
+                            for (auto& v : bf.buffers) mb.transparent.push_back(std::move(v));
+                            auto st = g.state;
+                            g.id = sink->uploadWithId(g.pos, std::move(mb), [st](bool ok) { st->store(ok ? 1 : 2); });
+                            t.quads += bf.quads;
+                        }
+                    } catch (...) {
+                        for (auto const& g : t.g)
+                            if (g.quads && g.id) sink->removeIf(g.pos, g.id);
+                        throw;
+                    }
+                } catch (...) {
+                    batch.failed = true;
+                    break;
                 }
-                MeshBuffers mb;
-                for (auto& v : r.buffers) mb.transparent.push_back(std::move(v));
-                b.pos =
-                    sec::encode(0, static_cast<std::int32_t>(want.anchorX), static_cast<std::int32_t>(want.anchorZ));
-                auto st = b.state;
-                b.id    = sink->uploadWithId(b.pos, std::move(mb), [st](bool ok) { st->store(ok ? 1 : 2); });
-                return b;
-            } catch (...) {
-                Built e;
-                e.key   = want;
-                e.empty = true;
-                return e;
+                batch.tiles.push_back(std::move(t));
             }
+            batch.ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
+            return batch;
         });
         jobRunning_        = true;
+    } else if (missing.empty() && !jobRunning_ && !loggedFirst_ && ready > 0 && ready == tiles_.size()) {
+        loggedFirst_ = true;
+        DH_LOG_I(
+            "clouds: first tiles live: %zu tiles, %zu quads, built in %.1f ms (tile %d blocks, radius %.0f)",
+            ready,
+            quads,
+            totalBuildMs_,
+            kTileBlocks,
+            radius
+        );
     }
-    stats_.drawn = haveCur_;
-    return haveCur_;
+    stats_.drawn = ready > 0;
+    return ready > 0;
 }
 
 std::size_t CloudRenderer::draw(
@@ -252,43 +314,76 @@ std::size_t CloudRenderer::draw(
     glm::dvec3 const&       camera,
     bool                    cameraRelative,
     float                   fogStart,
-    float                   fogEnd
+    float                   fogEnd,
+    Frustum5 const&         frustum
 ) {
-    if (!haveCur_) return 0;
-    auto const& secs = sink_.sections();
-    auto        it   = secs.find(cur_.pos);
-    if (it == secs.end()) return 0;
+    stats_.tilesDrawn = stats_.drawCalls = stats_.quadsDrawn = 0;
+    if (!haveY_) return 0;
+    auto const&          secs = sink_.sections();
     static Texture const none{std::monostate{}};
 
     auto&        cam  = mctx.camera;
     auto         wref = cam.worldMatrixStack->push(false);
-    Matrix       m    = Matrix::IDENTITY();
     const double cx = cameraRelative ? camera.x : 0.0, cy = cameraRelative ? camera.y : 0.0,
                  cz = cameraRelative ? camera.z : 0.0; // absolute mode: the view matrix carries the camera
-    m.translate(
-        static_cast<float>(static_cast<double>(cur_.key.anchorX) + offsetX() - cx),
-        static_cast<float>(-cy),
-        static_cast<float>(static_cast<double>(cur_.key.anchorZ) - cz)
-    );
-    // DH_Terrain per-draw parameters in the projective row: no near clip / fade, DH far fog
-    auto& g                        = m._m.get();
-    // [0][3]: with the cloud marker the VS reads the tint here (r + g * 256 + b * 65536) instead of clip/fade
-    g[0][3] = static_cast<float>(to8(tint_.r) | (to8(tint_.g) << 8) | (to8(tint_.b) << 16));
-    g[1][3]                        = fogStart;
-    g[2][3]                        = fogEnd;
-    // cloud marker 3: unlit for the light helper (> 1.5) and, distinct from the terrain unlit-test flag 2, makes the
-    // VS decode [0][3] as the tint (> 2.5). Marker 4 (> 3.5) additionally drops back faces (Run 14): only when the VS
-    // positions are camera-relative (the test puts the camera at the origin) and the camera is outside the slab;
-    // inside it every face stays, as vanilla shows the clouds around a camera inside the layer.
-    g[3][3]                        = cullsBackFaces(camera.y, cameraRelative) ? 4.0f : 3.0f;
-    cam.worldMatrixStack->getTop() = m;
+    const bool   cull    = cullsBackFaces(camera.y, cameraRelative);
+    const double offX    = offsetX();
+    const double slabBot = static_cast<double>(slabBottom()), slabTop = slabBot + static_cast<double>(kThickness);
+    const double tb      = static_cast<double>(kTileBlocks);
 
     std::size_t calls = 0;
-    for (auto const* layer : {&it->second.opaque, &it->second.transparent})
-        for (auto const& part : *layer) {
-            part.mesh->renderMesh(mctx, material, none, 0, part.verts, OffscreenCaptureDescription{}, nullptr);
-            ++calls;
+    for (auto const& [key, t] : tiles_) {
+        if (!t.ready || t.quads == 0) continue;
+        const double x0 = t.ti * tb + offX, x1 = x0 + tb, z0 = t.tj * tb, z1 = z0 + tb;
+        // fully faded: the shader fades by 3D distance, which is >= the horizontal distance tested here
+        if (fogEnd > 0.0f && cloud::rectDistance(x0, z0, x1, z1, camera.x, camera.z) >= static_cast<double>(fogEnd))
+            continue;
+        if (frustum.valid) {
+            const glm::vec3 lo{
+                static_cast<float>(x0 - cx) - 0.5f,
+                static_cast<float>(slabBot - cy) - 0.5f,
+                static_cast<float>(z0 - cz) - 0.5f};
+            const glm::vec3 hi{
+                static_cast<float>(x1 - cx) + 0.5f,
+                static_cast<float>(slabTop - cy) + 0.5f,
+                static_cast<float>(z1 - cz) + 0.5f};
+            if (!frustum.visible(lo, hi)) continue;
         }
+        const unsigned skip =
+            cull ? cloud::backFaceGroupMask(camera.x, camera.y, camera.z, x0, x1, z0, z1, slabBot, slabTop) : 0u;
+
+        Matrix m = Matrix::IDENTITY();
+        m.translate(static_cast<float>(x0 - cx), static_cast<float>(-cy), static_cast<float>(z0 - cz));
+        // DH_Terrain per-draw parameters in the projective row: no near clip / fade, DH far fog
+        auto& g = m._m.get();
+        // [0][3]: with the cloud marker the VS reads the tint here (r + g * 256 + b * 65536) instead of clip/fade
+        g[0][3] = static_cast<float>(to8(tint_.r) | (to8(tint_.g) << 8) | (to8(tint_.b) << 16));
+        g[1][3] = fogStart;
+        g[2][3] = fogEnd;
+        // cloud marker 3: unlit for the light helper (> 1.5) and, distinct from the terrain unlit-test flag 2, makes
+        // the VS decode [0][3] as the tint (> 2.5). Marker 4 (> 3.5) additionally drops back faces (Run 14): only when
+        // the VS positions are camera-relative (the test puts the camera at the origin) and the camera is outside the
+        // slab; inside it every face stays, as vanilla shows the clouds around a camera inside the layer.
+        g[3][3]                        = cull ? 4.0f : 3.0f;
+        cam.worldMatrixStack->getTop() = m;
+
+        std::size_t tileCalls = 0;
+        for (int f = 0; f < cloud::kFaceGroups; ++f) {
+            Group const& grp = t.g[static_cast<std::size_t>(f)];
+            if (!grp.quads || (skip & (1u << f))) continue;
+            auto it = secs.find(grp.pos);
+            if (it == secs.end()) continue;
+            for (auto const* layer : {&it->second.opaque, &it->second.transparent})
+                for (auto const& part : *layer) {
+                    part.mesh->renderMesh(mctx, material, none, 0, part.verts, OffscreenCaptureDescription{}, nullptr);
+                    ++tileCalls;
+                }
+            stats_.quadsDrawn += grp.quads;
+        }
+        if (tileCalls) ++stats_.tilesDrawn;
+        calls += tileCalls;
+    }
+    stats_.drawCalls = calls;
     return calls;
 }
 
@@ -314,9 +409,22 @@ bool CloudRenderer::cullsBackFaces(double cameraY, bool cameraRelative) const {
 }
 
 std::size_t CloudRenderer::liveBytes() const {
-    if (!haveCur_) return 0;
-    auto it = sink_.sections().find(cur_.pos);
-    return it == sink_.sections().end() ? 0 : it->second.bytes;
+    std::size_t n = 0;
+    for (auto const& [k, t] : tiles_)
+        for (auto const& g : t.g) {
+            if (!g.quads) continue;
+            auto it = sink_.sections().find(g.pos);
+            if (it != sink_.sections().end()) n += it->second.bytes;
+        }
+    return n;
+}
+
+std::size_t CloudRenderer::liveSectionCount() const {
+    std::size_t n = 0;
+    for (auto const& [k, t] : tiles_)
+        for (auto const& g : t.g)
+            if (g.quads && sink_.sections().count(g.pos)) ++n;
+    return n;
 }
 
 } // namespace dh::render

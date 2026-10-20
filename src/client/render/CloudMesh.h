@@ -4,6 +4,7 @@
 // dh/platform/IVertexSink.h) that the Stage-A MeshUploader turns into an mce::Mesh. Host-testable
 // (tests/unit/cloud_mesh_test.cpp).
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -56,5 +57,44 @@ struct Built {
 /// Greedy-merged top/bottom rectangles plus run-merged side walls. Face shading as Java DH's cloud shading
 /// (top 1.0, bottom 0.7, north/south 0.9, east/west 0.8) is baked into the vertex colour. Sky light 15.
 Built build(Pattern const& pattern, BuildParams const& p);
+
+/// Face group indices (also the vertex normal field and the DH_Terrain face encoding): 0 down, 1 up, 2 north (-Z),
+/// 3 south (+Z), 4 west (-X), 5 east (+X).
+inline constexpr int kFaceGroups = 6;
+/// Tiles are fixed squares of kTileCells cells in cloud space (tile (ti, tj) = cells [ti * kTileCells, ...)), so
+/// camera movement only adds/removes tiles. Local coordinates (<= kTileCells * cell) stay far inside int16.
+inline constexpr int kTileCells = 96;
+
+struct TileParams {
+    int          cell = 12;
+    int          ti = 0, tj = 0;
+    float        yBottom   = 0;
+    float        thickness = 4;
+    bool         fancy     = true;
+    std::uint8_t r = 255, g = 255, b = 255, a = 204;
+};
+
+/// One tile as six per-face-group quad lists (index = face), coordinates local to the tile's min corner
+/// (ti * kTileCells * cell, tj * kTileCells * cell). Same quads and shading as build() over the tile's cell square.
+std::array<Built, 6> buildTile(Pattern const& pattern, TileParams const& t);
+
+/// Horizontal distance from (px, pz) to the rectangle [x0, x1] x [z0, z1] (0 inside).
+double rectDistance(double x0, double z0, double x1, double z1, double px, double pz);
+
+/// Bit mask (1 << face) of the face groups of a tile that the VS back-face cull (cloud marker 4, dhCloudBackFace)
+/// drops entirely for a camera at (camX, camY, camZ); the tile spans [minX, maxX] x [minZ, maxZ] horizontally and
+/// the slab [slabBottom, slabTop] vertically (all in the same space as the camera). Only valid for a camera outside
+/// the slab and camera-relative draws, like marker 4 itself.
+unsigned backFaceGroupMask(
+    double camX,
+    double camY,
+    double camZ,
+    double minX,
+    double maxX,
+    double minZ,
+    double maxZ,
+    double slabBottom,
+    double slabTop
+);
 
 } // namespace dh::render::cloud
