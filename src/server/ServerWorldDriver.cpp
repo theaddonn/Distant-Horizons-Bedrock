@@ -204,6 +204,9 @@ struct ServerWorldDriver::Impl {
 
     mutable std::mutex        pendingMutex;
     std::map<PendingKey, int> pending; ///< chunk -> failed "not loaded yet" attempts
+    PendingKey                cursor;  ///< round-robin start of the next ingest batch (pendingMutex): no starvation
+    std::atomic<bool>         stopping{false}; ///< stop() began: update futures must not commit hashes any more
+    std::map<dh::SessionId, std::string> lastLevel; ///< level name last sent per session (server thread)
 
     std::atomic<std::uint64_t> noted{0}, ingested{0}, unchanged{0}, skipped{0}, sectionsOk{0}, sectionsFailed{0};
 
@@ -241,6 +244,8 @@ struct ServerWorldDriver::Impl {
     void destroyDim(Dim& d);
     void ensureAllDims();
     void ingestPending();
+    void drainForStop();
+    void sweepDim(Dim& d);
     void updatePlayers();
     void tickDims();
     void logPeriodic();
@@ -367,7 +372,75 @@ ServerWorldDriver::Dim* ServerWorldDriver::Impl::createDim(int id) {
         dir.string().c_str()
     );
     dims.push_back(std::move(dim));
+    sweepDim(*raw);
     return raw;
+}
+
+// P2: chunks that were loaded before our hooks existed (spawn chunks at ServerStarted, a dimension first seen
+// later) never fire onChunkLoaded for us: note every loaded chunk of the dimension's chunk map once.
+void ServerWorldDriver::Impl::sweepDim(Dim& d) {
+    std::size_t seen = 0, queued = 0;
+    try {
+        const auto* map = d.dimension->getChunkSource().getChunkMap();
+        if (!map) {
+            DH_LOG_W("server driver: dimension %s: no chunk map for the initial sweep", d.resource.c_str());
+            return;
+        }
+        std::lock_guard lock(pendingMutex);
+        for (const auto& [pos, weak] : *map) {
+            ++seen;
+            auto lc = weak.lock();
+            if (!lc || lc->mLoadState->load() < ChunkState::Loaded) continue;
+            PendingKey k;
+            k.dim = d.id;
+            k.x   = pos.x;
+            k.z   = pos.z;
+            if (pending.emplace(k, 0).second) ++queued;
+        }
+    } catch (...) {
+        DH_LOG_E("server driver: exception swallowed in the initial sweep of %s", d.resource.c_str());
+    }
+    noted += queued;
+    DH_LOG_I(
+        "server driver: dimension %s initial sweep: %zu chunk map entries, %zu loaded chunks queued",
+        d.resource.c_str(),
+        seen,
+        queued
+    );
+}
+
+// Stop: ingest what was noted but not yet processed (bounded), and let the section saves finish, before the
+// hooks come off and the pools shut down.
+void ServerWorldDriver::Impl::drainForStop() {
+    const auto  deadline = Clock::now() + std::chrono::seconds(2);
+    std::size_t before;
+    {
+        std::lock_guard lock(pendingMutex);
+        before = pending.size();
+    }
+    while (Clock::now() < deadline) {
+        {
+            std::lock_guard lock(pendingMutex);
+            if (pending.empty()) break;
+        }
+        ingestPending();
+    }
+    const auto waitEnd = Clock::now() + std::chrono::seconds(3);
+    for (;;) {
+        bool busy = false;
+        for (auto& d : dims) {
+            std::lock_guard lock(d->inflightMutex);
+            if (!d->inflight.empty()) busy = true;
+        }
+        if (!busy || Clock::now() > waitEnd) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    std::size_t left;
+    {
+        std::lock_guard lock(pendingMutex);
+        left = pending.size();
+    }
+    DH_LOG_I("server driver: final drain: %zu pending at stop, %zu left", before, left);
 }
 
 void ServerWorldDriver::Impl::ensureAllDims() {
@@ -398,11 +471,15 @@ void ServerWorldDriver::Impl::ingestPending() {
     std::vector<std::pair<PendingKey, int>> batch;
     {
         std::lock_guard lock(pendingMutex);
-        auto            it = pending.begin();
-        while (it != pending.end() && static_cast<int>(batch.size()) < kIngestBatchChunks) {
+        // Round robin from the cursor so a steady re-note flow of low coordinates cannot starve high ones.
+        auto it = pending.lower_bound(cursor);
+        if (it == pending.end()) it = pending.begin();
+        while (!pending.empty() && static_cast<int>(batch.size()) < kIngestBatchChunks) {
             batch.emplace_back(it->first, it->second);
             it = pending.erase(it);
+            if (it == pending.end()) it = pending.begin();
         }
+        cursor = it == pending.end() ? PendingKey{} : it->first;
     }
     if (batch.empty()) return;
 
@@ -527,7 +604,8 @@ void ServerWorldDriver::Impl::ingestPending() {
         auto fut  = d->provider->updateAsync(std::make_shared<const dh::FullDataSource>(std::move(*acc)));
         fut->onComplete([this, d, secPos](const dh::Result<bool>& r) {
             // ChunkHashStore.h: commit only on success and only if the provider is still open.
-            if (r.has_value() && !d->provider->isClosed()) {
+            // Ok(false) is also what a rejected / shut-down update completes with: never commit while stopping.
+            if (r.has_value() && !stopping.load() && !d->provider->isClosed()) {
                 d->tracker->commit(secPos);
                 ++sectionsOk;
             } else {
@@ -551,6 +629,18 @@ void ServerWorldDriver::Impl::updatePlayers() {
         d->lastTarget =
             dh::BlockPos2D{static_cast<std::int32_t>(std::floor(pos.x)), static_cast<std::int32_t>(std::floor(pos.z))};
         players.setPosition(sid, d->info.levelName, d->lastTarget);
+        auto& last = lastLevel[sid];
+        if (last != d->info.levelName) {
+            if (!last.empty()) // dimension change: the generation centre depends on the coordinate scale
+                DH_LOG_I(
+                    "net: session %llu changed level '%s' -> '%s'",
+                    (unsigned long long)sid,
+                    last.c_str(),
+                    d->info.levelName.c_str()
+                );
+            last = d->info.levelName;
+            net->onPlayerLevelChanged(sid);
+        }
         return true;
     });
 }
@@ -641,8 +731,12 @@ bool ServerWorldDriver::start() {
             return false;
         }
         m.saveHookInstalled = true;
-        m.net->setJoinHook([&m] { m.ensureAllDims(); });
+        m.net->setJoinHook([&m] {
+            m.ensureAllDims();
+            m.updatePlayers(); // level name + position known before the client's first SessionConfig arrives
+        });
         m.ensureAllDims();
+        m.updatePlayers(); // players already online
         gDriver.store(this);
         running_.store(true);
         DH_LOG_I(
@@ -663,6 +757,9 @@ void ServerWorldDriver::stop() {
     Impl& m = *impl_;
     if (!running_.exchange(false) && !m.pools) return;
     try {
+        // 0. final drain of the noted chunks while the pools still run (stop() runs on the server thread)
+        m.drainForStop();
+        m.stopping.store(true);
         // 1. hooks off; wait for threads already inside a hook
         gDriver.store(nullptr);
         if (m.hooksInstalled && !ServerOnChunkLoadedHook::unhook())
