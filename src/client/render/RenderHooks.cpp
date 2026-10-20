@@ -24,6 +24,8 @@
 #include "mc/client/renderer/game/LevelRendererPlayer.h"
 #include "mc/deps/minecraft_renderer/objects/FrameRenderObject.h"
 #include "mc/deps/minecraft_renderer/objects/ViewRenderObject.h"
+#include "mc/deps/minecraft_renderer/renderer/Mesh.h"
+#include "mc/deps/minecraft_renderer/renderer/MeshData.h"
 #include "mc/deps/renderer/Camera.h"
 #include "mc/deps/renderer/MatrixStack.h"
 
@@ -36,7 +38,9 @@
 
 #pragma clang diagnostic ignored "-Wdeprecated-declarations" // std::getenv
 
+#include <algorithm>
 #include <atomic>
+#include <cstdio>
 #include <memory>
 #include <vector>
 
@@ -136,6 +140,96 @@ bool hideVanillaCloudsOn(ViewRenderObject const& vro, char const* where) {
     return true;
 }
 
+// ---- cloud probe (Numpad 5, Run 14) ----------------------------------------------------------------------------------
+// One-shot log of the vanilla cloud geometry (box or sheet, thickness, face shades) next to the DH layer's parameters,
+// to settle what vanilla Bedrock draws: static RE found the cloud material (no texture, colour = CloudColor * vertex
+// colour, alpha fade 0.9..1.9 x DistanceControl.x) but not the CPU mesh builder. mce::MeshData may already be freed
+// after the GPU upload; then positions=0 is logged and only the AABB/vertex counts are informative.
+std::atomic<bool> gCloudProbe{false};
+
+void logCloudProbe(ViewRenderObject const& vro, glm::vec3 const& camPos) {
+    auto const& vd  = vro.mViewData.get();
+    auto const& cs  = vro.mCloudState.get();
+    auto const  col = cs.mCloudColor.get();
+    auto const  cc  = cs.mCloudCenterPos.get();
+    auto const  co  = cs.mCloudOrigin.get();
+    DH_LOG_I(
+        "cloud probe: vanilla drawClouds=%d aboveClouds=%d fancy=%d meshSize=%d gridSize=%d yTranslation=%.2f "
+        "center=(%.1f,%.1f,%.1f) origin=(%.1f,%.1f,%.1f) color=(%.2f,%.2f,%.2f,%.2f) camera=(%.1f,%.1f,%.1f)",
+        static_cast<int>(vd.mDrawClouds),
+        static_cast<int>(vd.mCameraAboveClouds),
+        static_cast<int>(cs.mIsFancy),
+        static_cast<int>(cs.mMeshSize),
+        static_cast<int>(cs.mGridSize),
+        cs.mYTranslation,
+        cc.x, cc.y, cc.z, co.x, co.y, co.z,
+        col.r, col.g, col.b, col.a,
+        camPos.x, camPos.y, camPos.z
+    );
+    auto const meshes = cs.mCloudMeshes.get(); // shared_ptr copy keeps the vector alive while we read it
+    DH_LOG_I("cloud probe: vanilla meshes=%zu", meshes ? meshes->size() : static_cast<std::size_t>(0));
+    if (meshes) {
+        std::size_t idx = 0;
+        for (auto const& mesh : *meshes) {
+            if (idx >= 4) break;
+            auto const& md  = mesh.mMeshData.get();
+            auto const& pos = md.mPositions.get();
+            auto const& cl  = md.mColors.get();
+            auto const& bb  = md.mAABB.get();
+            auto const  vc  = mesh.mVertexCount.get();
+            glm::vec3   lo{0.0f}, hi{0.0f};
+            std::vector<float> ys; // distinct y values (up to 8): 1 = flat sheet, 2 = box top/bottom
+            for (std::size_t k = 0; k < pos.size(); ++k) {
+                auto const& v = pos[k];
+                if (k == 0) lo = hi = v;
+                lo = glm::min(lo, v);
+                hi = glm::max(hi, v);
+                if (ys.size() < 8 && std::find(ys.begin(), ys.end(), v.y) == ys.end()) ys.push_back(v.y);
+            }
+            std::vector<unsigned> cols; // distinct packed vertex colours (up to 8): baked face shades
+            for (auto c : cl)
+                if (cols.size() < 8 && std::find(cols.begin(), cols.end(), c) == cols.end()) cols.push_back(c);
+            char ybuf[160] = {0}, cbuf[160] = {0};
+            int  yo = 0, co2 = 0;
+            for (float y : ys) yo += std::snprintf(ybuf + yo, sizeof(ybuf) - static_cast<std::size_t>(yo), "%.2f ", y);
+            for (unsigned c : cols)
+                co2 += std::snprintf(cbuf + co2, sizeof(cbuf) - static_cast<std::size_t>(co2), "%08X ", c);
+            DH_LOG_I(
+                "cloud probe: mesh %zu prim=%d vertexCount=%d raw=%zu positions=%zu indices=%zu colors=%zu "
+                "pos[min=(%.1f,%.1f,%.1f) max=(%.1f,%.1f,%.1f)] aabb[(%.1f,%.1f,%.1f)..(%.1f,%.1f,%.1f)] ys={%s} cols={%s}",
+                idx,
+                static_cast<int>(mesh.mPrimitiveMode),
+                vc ? static_cast<int>(*vc) : -1,
+                mesh.mRawData.get().size(),
+                pos.size(),
+                md.mIndices.get().size(),
+                cl.size(),
+                lo.x, lo.y, lo.z, hi.x, hi.y, hi.z,
+                bb.first.x, bb.first.y, bb.first.z, bb.second.x, bb.second.y, bb.second.z,
+                ybuf,
+                cbuf
+            );
+            ++idx;
+        }
+    }
+    if (gRenderer) {
+        auto const& cr = gRenderer->clouds();
+        DH_LOG_I(
+            "cloud probe: DH layer wanted=%d drawn=%d quads=%zu slab y %.0f..%.0f (cell %d, alpha %.2f) backFaceCull=%s "
+            "(active=%d)",
+            static_cast<int>(gRenderer->cloudsWanted()),
+            static_cast<int>(cr.stats().drawn),
+            cr.stats().quads,
+            static_cast<double>(cr.slabBottom()),
+            static_cast<double>(cr.slabBottom() + dh::render::CloudRenderer::kThickness),
+            dh::render::CloudRenderer::kCellBlocks,
+            static_cast<double>(dh::render::CloudRenderer::kAlpha),
+            dh::render::CloudRenderer::backFaceCullEnabled() ? "on" : "off",
+            static_cast<int>(cr.cullsBackFaces(camPos.y, true))
+        );
+    }
+}
+
 // Draw the LODs right after the vanilla world (same hook point as spike R1); also caches the view every frame.
 LL_TYPE_INSTANCE_HOOK(
     LodRenderHook,
@@ -175,6 +269,14 @@ LL_TYPE_INSTANCE_HOOK(
                         col.b,
                         col.a
                     );
+                }
+            }
+            if (!vd.mIsShadowPass && gCloudProbe.exchange(false)) {
+                try {
+                    auto const& p = vd.mCameraPos.get();
+                    logCloudProbe(vro, glm::vec3(p.x, p.y, p.z));
+                } catch (...) {
+                    DH_LOG_E("cloud probe: threw");
                 }
             }
             if (hideVanillaCloudsOn(vro, "camera")) restore.views.push_back(&const_cast<ViewRenderObject&>(vro));
@@ -421,6 +523,11 @@ void onKeys(ll::event::AfterUIRenderEvent& e) {
             else r.cycleMaterial();
         }
         if (dh::input::pressed(VK_NUMPAD2)) r.toggleClouds();
+        if (dh::input::pressed(VK_NUMPAD5)) {
+            gCloudProbe = true; // logged by the next non-shadow camera hook (it has the ViewRenderObject)
+            DH_LOG_I("cloud probe: requested (Numpad 5)");
+        }
+        if (dh::input::pressed(VK_NUMPAD6)) dh::render::CloudRenderer::toggleBackFaceCull();
         if (dh::input::pressed(VK_NUMPAD1)) {
             gVFogInit = true;
             gVFog     = static_cast<VFogMode>((static_cast<int>(gVFog) + 1) % 4);
