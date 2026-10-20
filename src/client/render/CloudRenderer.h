@@ -115,9 +115,10 @@ public:
         return haveY_ ? static_cast<float>(liveY_) + minY_ : 192.0f;
     }
 
-    /// Numpad 6 A/B switch for the back-face cull (default on). Render thread only (key handler and draw()).
+    /// Back-face cull switch (option client.graphics.clouds.backFaceCull; the debug key toggles it at runtime).
     static bool backFaceCullEnabled();
     static void toggleBackFaceCull();
+    static void setBackFaceCull(bool on);
 
     /// pos of a cloud section (detail level 0 never occurs for real sections: the minimum is 6).
     static bool isCloudSection(std::uint64_t pos);

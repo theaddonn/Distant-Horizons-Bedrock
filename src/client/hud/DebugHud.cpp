@@ -1,8 +1,11 @@
 // Debug HUD: text block top-left, drawn after the UI with MinecraftUIRenderContext::drawDebugText (the built-in
-// debug font; needs no Font handle). F7 toggles, F8 writes the registry as JSON to dh.log.
+// debug font; needs no Font handle). Only installed when config client.debug.enabled is true; the key named by
+// client.debug.hudKey (default numpad0) shows/hides it, Numpad . writes the registry as JSON to dh.log.
+// The key/value registry itself (set / dumpJson) always works, overlay or not.
 
 #include "client/hud/DebugHud.h"
 
+#include "bedrock_common/ConfigBridge.h"
 #include "bedrock_common/FileLogger.h"
 #include "client/Input.h"
 #include "client/Version.h"
@@ -31,6 +34,7 @@ std::mutex                         gMutex;
 std::map<std::string, std::string> gValues;
 ll::event::ListenerPtr             gListener;
 bool                               gVisible = true;
+int                                gHudKey  = 0; // VK of client.debug.hudKey
 double                             gFrameMs = 0.0;
 
 std::string jsonEscape(std::string const& s) {
@@ -105,8 +109,8 @@ void onRender(ll::event::AfterUIRenderEvent& e) {
     last             = now;
     if (dt > 0.0 && dt < 1000.0) gFrameMs = gFrameMs == 0.0 ? dt : gFrameMs * 0.95 + dt * 0.05;
 
-    if (dh::input::pressed(0x76) && !dh::input::shiftDown()) gVisible = !gVisible; // F7 (Shift+F7 = chunk ingress)
-    if (dh::input::pressed(0x77) && !dh::input::ctrlDown()) DH_LOG_I("hud-dump: %s", dumpJson().c_str()); // F8
+    if (gHudKey != 0 && dh::input::pressed(gHudKey)) gVisible = !gVisible;
+    if (dh::input::pressed(0x6E)) DH_LOG_I("hud-dump: %s", dumpJson().c_str()); // VK_DECIMAL (Numpad .)
 
     if (!gVisible) return;
 
@@ -161,6 +165,10 @@ double frameMs() { return gFrameMs; }
 
 void install() {
     if (gListener) return;
+    auto const& dbg = bedrock::ConfigBridge::instance().config().options().client.debug;
+    if (!dbg.enabled) return; // no overlay, no key polling
+    gHudKey   = dh::input::resolveKey(dbg.hudKey, "client.debug.hudKey");
+    gVisible  = true;
     gListener = ll::event::EventBus::getInstance().emplaceListener<ll::event::AfterUIRenderEvent>(onRender);
 }
 

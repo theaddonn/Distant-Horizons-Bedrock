@@ -1,5 +1,8 @@
 #include "client/Input.h"
 
+#include "bedrock_common/FileLogger.h"
+#include "dh/config/KeyNames.h"
+
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -11,10 +14,9 @@
 namespace dh::input {
 
 bool pressed(int vk) {
-    // Edge detection per key, but shared between callers within the same frame: several handlers (HUD, renderer,
-    // spikes) poll the same key with different modifiers, and the first poll must not eat the edge for the others
-    // (Ctrl+F8 never arrived at the renderer because the HUD's F8 poll ran first, 2026-10-19). Polls within 10 ms
-    // of the first sample reuse its result.
+    // Edge detection per key, but shared between callers within the same frame: several handlers (HUD, renderer)
+    // may poll the same key, and the first poll must not eat the edge for the others. Polls within 10 ms of the
+    // first sample reuse its result.
     struct State {
         bool          was       = false;
         bool          edge      = false;
@@ -49,11 +51,15 @@ bool shiftDown() {
 
 namespace dh::input {
 
-bool ctrlDown() {
-    HWND  fg  = GetForegroundWindow();
-    DWORD pid = 0;
-    if (fg) GetWindowThreadProcessId(fg, &pid);
-    return pid == GetCurrentProcessId() && (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+int resolveKey(std::string const& name, char const* optionPath) {
+    if (!dh::config::isValidKeyName(name)) {
+        DH_LOG_W("config: %s: unknown key name \"%s\" (treated as none; see config.json docs)", optionPath, name.c_str());
+        return 0;
+    }
+    const int vk = dh::config::parseKeyName(name);
+    if (vk != 0 && dh::config::isVanillaKey(vk))
+        DH_LOG_W("config: %s: \"%s\" is a key Minecraft uses itself (F1, F2, F3, F5, F11); pick another", optionPath, name.c_str());
+    return vk;
 }
 
 } // namespace dh::input
