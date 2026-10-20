@@ -1,6 +1,6 @@
 # Server driver (GLUE-3): BDS DLL, packet transport, world-gen adapter
 
-Status: compile-only. `scripts/build.sh client` and `server` both build; nothing here has run against a real BDS.
+Status: loads and enables on a real BDS 1.26.51.1 under wine (scripts/bds.sh); no client has joined yet.
 This page says what was built, what to expect in the log, and what is still a guess.
 
 ## What exists
@@ -39,20 +39,13 @@ No core (`src/core`) file was touched.
 
 ## BDS setup under wine (1.26.51)
 
-1. Download Bedrock Dedicated Server 1.26.51 for Windows (`bedrock-server-1.26.51.x.zip`) into e.g. `~/bds`.
-   Install LeviLamina 26.51.6 for the server (`lip install github.com/LiteLDev/LeviLamina#server@26.51.6` or unpack the
-   release zip over the BDS directory; it adds `PreLoader.dll`, `LeviLamina.dll`, `plugins/`).
-2. `scripts/build.sh server`, then `BDS_DIR=~/bds scripts/deploy.sh server`. Result:
-   `plugins/DistantHorizonsServer/{DistantHorizonsServer.dll,manifest.json,data/block_table.json,data/biome_table.json}`.
-   (`tooth.json` already places `DistantHorizonsServer/` into `plugins/DistantHorizonsServer/`; the release zip must
-   additionally contain `data/*.json`, same as for the client.)
-3. Run: `cd ~/bds && wine bedrock_server_mod.exe` (LeviLamina's launcher; plain `bedrock_server.exe` does not load
-   plugins). Use `WINEDEBUG=-all` and a 64-bit prefix. Create the world once with the console if needed.
-4. Join with the GDK client over LAN/direct IP (`Retail-1.26.5101-Levi` with the client DLL) or any client; the
-   client DLL is only needed to receive LODs.
-5. Logs: `plugins/DistantHorizonsServer/logs/dh.log` (our file) and the console (LeviLamina logger).
-   Config: `plugins/DistantHorizonsServer/config/config.json` (same options as the client, `server.*` section matters).
-   Data: `plugins/DistantHorizonsServer/data/worlds/<level>/<dimension>/{lods,chunkhash}`.
+Verified 2026-10-20 with `scripts/bds.sh` (see `docs/spikes/server-stream.md`, "Test server"): `scripts/bds.sh setup`
+downloads BDS 1.26.51.1, LeviLamina 26.51.6 server, PreLoader 1.16.3, bedrock-runtime-data and PeEditor, runs
+`wine PeEditor.exe -mb` (creates `bedrock_server_mod.exe`; plain `bedrock_server.exe` does not load mods), installs the mod to
+`plugins/DistantHorizonsServer/{DistantHorizonsServer.dll,manifest.json,data/*.json}`, and `scripts/bds.sh start` runs it headless.
+Manual deploy into another BDS: `BDS_DIR=... scripts/deploy.sh server`. Set `transport=nethernet` in server.properties.
+Logs: `plugins/DistantHorizonsServer/logs/dh.log` and the console. Config: `plugins/DistantHorizonsServer/config/config.json`.
+Data: `plugins/DistantHorizonsServer/data/worlds/<level>/<dimension>/{lods,chunkhash}`. Join over LAN/direct IP with the client DLL.
 
 ## Log lines to expect
 
