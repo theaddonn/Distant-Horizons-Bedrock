@@ -5,6 +5,7 @@
 
 #include "dh/config/ConfigStore.h"
 
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -57,6 +58,19 @@ double shortFloat(float f) {
         if (std::strtof(buf, nullptr) == f) break;
     }
     return std::strtod(buf, nullptr);
+}
+
+/// Enum names compare case-insensitively with '-' == '_' ("beyond-vanilla" == "BEYOND_VANILLA").
+bool enumNameEquals(const std::string& a, const char* b) {
+    const auto norm = [](char c) {
+        if (c == '-') return '_';
+        return static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    };
+    std::size_t i = 0;
+    for (; i < a.size() && b[i] != '\0'; ++i) {
+        if (norm(a[i]) != norm(b[i])) return false;
+    }
+    return i == a.size() && b[i] == '\0';
 }
 
 void warn(std::vector<std::string>& w, const OptionMeta& m, const char* why) {
@@ -126,7 +140,7 @@ std::optional<std::string> ConfigStore::load(std::string_view jsonText) {
             if (j->is_string()) {
                 const std::string name = j->get<std::string>();
                 for (int k = 0; k < m.enumCount; ++k) {
-                    if (name == m.enumNames[k]) ordinal = k;
+                    if (enumNameEquals(name, m.enumNames[k])) ordinal = k;
                 }
             } else if (j->is_number_integer()) {
                 const long long v = j->get<long long>();
@@ -180,6 +194,21 @@ std::string ConfigStore::save() const {
             break;
         }
         }
+    }
+    // Sibling "<name>_doc" keys carry the option description into the file (ignored on load).
+    for (std::size_t i = 0; i < optionMetaCount(); ++i) {
+        const OptionMeta& m = table[i];
+        if (m.comment == nullptr || m.comment[0] == '\0') continue;
+        std::string doc = m.comment;
+        if (m.type == OptionType::Enum && m.enumCount > 0) {
+            doc += " Values: ";
+            for (int k = 0; k < m.enumCount; ++k) {
+                if (k > 0) doc += '|';
+                doc += m.enumNames[k];
+            }
+            doc += '.';
+        }
+        slotFor(root, (std::string(m.path) + "_doc").c_str()) = doc;
     }
     // dump() with replace error handler: never throws on invalid UTF-8 in user strings
     return root.dump(2, ' ', false, Json::error_handler_t::replace);
