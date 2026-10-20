@@ -180,6 +180,7 @@ bool CloudRenderer::update(Inputs const& in) {
     want.half         = static_cast<int>(std::ceil((radius + kMarginBlocks) / 256.0)) * 256;
     want.yBottom      = static_cast<int>(std::lround(in.cloudY - in.minY));
     tint_             = in.tint; // per draw, continuous (no rebuild)
+    cloudY_           = in.cloudY;
     const double snap = static_cast<double>(kCellBlocks) * 16.0;
     want.anchorX      = static_cast<long>(std::llround(camX / snap)) * static_cast<long>(snap);
     want.anchorZ      = static_cast<long>(std::llround(camZ / snap)) * static_cast<long>(snap);
@@ -276,8 +277,10 @@ std::size_t CloudRenderer::draw(
     g[1][3]                        = fogStart;
     g[2][3]                        = fogEnd;
     // cloud marker 3: unlit for the light helper (> 1.5) and, distinct from the terrain unlit-test flag 2, makes the
-    // VS decode [0][3] as the tint (> 2.5)
-    g[3][3]                        = 3.0f;
+    // VS decode [0][3] as the tint (> 2.5). Marker 4 (> 3.5) additionally drops back faces (Run 14): only when the VS
+    // positions are camera-relative (the test puts the camera at the origin) and the camera is outside the slab;
+    // inside it every face stays, as vanilla shows the clouds around a camera inside the layer.
+    g[3][3]                        = cullsBackFaces(camera.y, cameraRelative) ? 4.0f : 3.0f;
     cam.worldMatrixStack->getTop() = m;
 
     std::size_t calls = 0;
@@ -292,6 +295,23 @@ std::size_t CloudRenderer::draw(
 } // namespace dh::render
 
 namespace dh::render {
+
+namespace {
+bool gBackFaceCull = true; // Numpad 6; render thread only
+} // namespace
+
+bool CloudRenderer::backFaceCullEnabled() { return gBackFaceCull; }
+
+void CloudRenderer::toggleBackFaceCull() {
+    gBackFaceCull = !gBackFaceCull;
+    DH_LOG_I("clouds: back-face cull -> %s (Numpad 6)", gBackFaceCull ? "on" : "off");
+}
+
+bool CloudRenderer::cullsBackFaces(double cameraY, bool cameraRelative) const {
+    if (!gBackFaceCull || !cameraRelative) return false;
+    const double bottom = static_cast<double>(cloudY_);
+    return cameraY <= bottom || cameraY >= bottom + static_cast<double>(kThickness);
+}
 
 std::size_t CloudRenderer::liveBytes() const {
     if (!haveCur_) return 0;

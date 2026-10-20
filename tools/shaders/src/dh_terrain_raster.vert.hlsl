@@ -64,6 +64,12 @@ VSOut main(VSIn i) {
         o.color.rgb *= float3(tr, tg, tb) / 255.0;
         fadeEnd = 0.0;
         clipStart = 0.0;
+        // marker 4: camera-relative and outside the cloud slab -> drop back faces (dh_terrain_light.hlsli). The
+        // whole quad is moved outside the clip volume (x > w), so it is clipped before rasterisation.
+        if (M[3][3] > 3.5 && dhCloudBackFace(i.texCoords, world.xyz)) {
+            o.pos = float4(2.0, 2.0, 2.0, 1.0);
+            o.clipPosition = o.pos;
+        }
     }
     o.light = float4(clipStart, M[3][1], M[3][2], fadeEnd);
     // [3][3] selects the lighting path (see dh_terrain_light.hlsli and LodRenderer).
