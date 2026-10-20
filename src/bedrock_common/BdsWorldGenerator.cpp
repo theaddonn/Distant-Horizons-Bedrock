@@ -24,6 +24,9 @@
 #include "mc/world/level/dimension/Dimension.h"
 #include "mc/world/level/levelgen/WorldGenerator.h"
 #include "mc/world/level/levelgen/structure/BoundingBox.h"
+#include "mc/world/level/levelgen/structure/StructureFeature.h"
+#include "mc/world/level/levelgen/structure/StructureFeatureRegistry.h"
+#include "mc/world/level/levelgen/structure/StructureStart.h"
 
 #include "ll/api/thread/ServerThreadExecutor.h"
 
@@ -828,6 +831,7 @@ std::uint32_t vanillaChunkSeed(std::uint32_t levelSeed, std::int32_t x, std::int
 /// missing neighbours are simply absent). Never sees the live world's chunks.
 struct BdsWorldGenerator::CellView {
     ScratchRegionSource src;
+    int                 present = 0; ///< chunks of the 3x3 that exist (9 = the full view vanilla waits for)
     ::BlockSource       bs;
     CellView(::Dimension& dim, ::Level& level, const std::shared_ptr<Batch>& batch, std::int32_t x, std::int32_t z)
     : src(dim, level),
@@ -845,7 +849,10 @@ private:
     void fill(const std::shared_ptr<Batch>& batch, std::int32_t x, std::int32_t z) {
         for (int dz = -1; dz <= 1; ++dz)
             for (int dx = -1; dx <= 1; ++dx)
-                if (auto n = batch->existing(x + dx, z + dz)) src.add(n, x + dx, z + dz);
+                if (auto n = batch->existing(x + dx, z + dz)) {
+                    src.add(n, x + dx, z + dz);
+                    ++present;
+                }
     }
 };
 
@@ -865,12 +872,46 @@ bool BdsWorldGenerator::structureCell(const std::shared_ptr<Batch>& batch, std::
     // Both only READ the blueprints/instances that loadChunk (prepareStructureFeatureBlueprints 0x231b5e0,
     // preProcessStructures 0x231b7a0) created in the live generator's shared caches; nothing is created here.
     // The tail loop that records structure references in the chunk (saved-data only) is not reproduced.
+    //
+    // Run 15: the starts are the LIVE generator's shared objects, so a piece that mutates itself while placing changes
+    // what the real chunk gets later. Excluded per cell (static RE, PORTING.md "Run 15"):
+    //   * mineshaft, always: MineshaftCorridor::postProcess 0x6a51c90 sets hasPlacedSpider ([this+0x5a], 0x6a528ba)
+    //     when it places the cave-spider spawner -> the real mineshaft would lose that spawner;
+    //   * pillager_outpost, when the cell's 3x3 is incomplete (ring-2 cells): the piece (0x6a8cc00) fixes its height
+    //     once ([this+0x1ba]) from five heightmap samples, falling back to a default where the BlockSource has no
+    //     chunk -> a missing scratch neighbour would bake a wrong height into the real outpost.
+    // Cells with no excluded start take the engine's own loop; otherwise the loop is reproduced for the other features:
+    // per feature a Random reseeded with `seed`, StructureStart::postProcess for every start overlapping the chunk
+    // (foreachIntersectingStructureStart, the feature's cache lock). Its tail (only for starts whose
+    // requiresNeighborAwareBlockUpgrade() is true: upgrade bookkeeping) is skipped there.
     const std::uint32_t levelSeed = level.getSeed();
     const std::uint32_t seed      = vanillaChunkSeed(levelSeed, x, z);
     ::Random            rnd(levelSeed, true);
     (void)rnd.nextInt();
     (void)rnd.nextInt();
-    gen->postProcessStructureFeatures(view.bs, rnd, seed, x, z);
+    const ::BoundingBox chunkBB(*lc->mMin, *lc->mMax);
+    const bool          fullView = view.present == 9;
+    auto excluded = [fullView](const ::StructureFeature& f) {
+        std::string_view t = f.mStructureFeatureType->getString();
+        if (t.starts_with("minecraft:")) t.remove_prefix(10);
+        return t == "mineshaft" || (!fullView && t == "pillager_outpost");
+    };
+    auto& features = gen->mStructureFeatureRegistry->mStructureFeatures.get();
+    bool  hit      = false;
+    for (auto& f : features)
+        if (f && excluded(*f)) f->foreachIntersectingStructureStart(chunkBB, [&hit](::StructureStart&) { hit = true; });
+    if (!hit) {
+        gen->postProcessStructureFeatures(view.bs, rnd, seed, x, z);
+    } else {
+        excludedCells_.fetch_add(1);
+        for (auto& f : features) {
+            if (!f || excluded(*f) || view.bs.getChunk(x, z) == nullptr) continue;
+            ::Random fr(seed, true);
+            f->foreachIntersectingStructureStart(chunkBB, [&](::StructureStart& st) {
+                (void)st.postProcess(view.bs, fr, chunkBB);
+            });
+        }
+    }
     gen->postProcessStructures(view.bs, rnd, x, z);
     return true;
 }
@@ -964,6 +1005,7 @@ void BdsWorldGenerator::decorateAndDeliver(const std::shared_ptr<Batch>& batch) 
     const ::WorldGenerator* wg = dimension_.mWorldGenerator;
     const bool noRegistry = wg == nullptr || wg->mStructureFeatureRegistry.get() == nullptr;
     int        structured = 0, structMissing = 0, structThrew = 0;
+    const long long excl0 = excludedCells_.load();
     if (!structuresDisabled_ && !noRegistry)
         for (const auto& c : plan.structures) {
             if (aborted()) return;
@@ -976,6 +1018,7 @@ void BdsWorldGenerator::decorateAndDeliver(const std::shared_ptr<Batch>& batch) 
         }
     const long long structMs =
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - s0).count();
+    const long long structExcl = excludedCells_.load() - excl0; // approximate: other batches may run concurrently
     if (structThrew > 0)
         DH_LOG_W("world gen: structure pass threw in %d chunk(s) of batch (%d,%d)", structThrew, x0, z0);
     for (std::size_t i = 0; i < nDeliver; ++i)
@@ -1040,7 +1083,7 @@ void BdsWorldGenerator::decorateAndDeliver(const std::shared_ptr<Batch>& batch) 
     if (logIt)
         DH_LOG_I(
             "world gen features batch (%d,%d) %dx%d: %lld ms total (base %lld ms summed over tasks), structures %d of "
-            "%zu cells (%d without base, %d threw%s) in %lld ms, decorated %d of %zu cells (%d without base, %d threw) "
+            "%zu cells (%d without base, %d threw, %lld with a mineshaft/outpost excluded%s) in %lld ms, decorated %d of %zu cells (%d without base, %d threw) "
             "in %lld ms, delivered %d, placedBlocks=%lld (structures %lld)",
             x0,
             z0,
@@ -1055,6 +1098,7 @@ void BdsWorldGenerator::decorateAndDeliver(const std::shared_ptr<Batch>& batch) 
             plan.structures.size(),
             structMissing,
             structThrew,
+            structExcl,
             structuresDisabled_ ? ", DISABLED" : (noRegistry ? ", no structure registry" : ""),
             structMs,
             decorated,
