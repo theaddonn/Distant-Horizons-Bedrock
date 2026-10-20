@@ -53,6 +53,19 @@ The `propagate` replay skips its slow cases (all `*_k8_*` and a few others, ~60 
 
 Header-only dependencies of `dh_core` live in `src/core/third_party/` (see `THIRD_PARTY.md` there) and are a public include dir of `dh_core`, so both the Windows and host builds use the same headers.
 
+## Packaging and release
+
+```
+scripts/check-version.sh                 # xmake.lua, tooth.json, Version.h, core Version.cpp, CHANGELOG agree
+scripts/package.sh client|server <out>   # DistantHorizons-<client|server>-<version>.zip from bin/ + dist/ + data/
+```
+
+The version lives in `xmake.lua` (`DH_VERSION`); change it there and in `tooth.json`, `src/client/Version.h` (fallback) and
+`src/core/dh/Version.cpp`, then add a CHANGELOG heading. `package.sh` needs `zip` and a prior `scripts/build.sh` of the
+target. The LOD shader `dist/materials/DH_Terrain.material.bin` is prebuilt and committed because CI cannot build it; rebuild
+it when `tools/shaders/src/` changes (`dist/README.md`). CI (`.github/workflows/build.yml`) builds both DLLs, runs the host tests
+and uploads the packaged zips; pushing a tag `vX.Y.Z` (`release.yml`) attaches both zips to the GitHub release.
+
 ## Artifacts
 
 - `bin/DistantHorizons/` and `bin/DistantHorizonsServer/` (mod DLL, PDB, manifest).
