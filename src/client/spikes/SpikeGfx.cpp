@@ -277,6 +277,13 @@ mce::MaterialPtr const& dhLateMaterial() {
     return *mat;
 }
 
+mce::MaterialPtr const& dhWaterMaterial() {
+    static std::optional<mce::MaterialPtr> mat;
+    if (!mat || !materialValid(*mat))
+        mat.emplace(mce::RenderMaterialGroup::switchable(), HashedString{"DH_TerrainWater"});
+    return *mat;
+}
+
 void resetMeshes() {
     for (auto& [k, v] : gMeshes) (void)v.release(); // leak on purpose: the buffer service may already be gone
     gMeshes.clear();

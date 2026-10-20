@@ -62,8 +62,13 @@ inline constexpr int kDrawHookCount = 4;
 /// every draw by material pass kind and runs Opaque -> AlphaTest -> Transparent; Stars / SunMoon are Transparent-only,
 /// so they are drawn after (and depth-test in front of) opaque LODs whatever the hook. `Late` draws the opaque layer
 /// with DH_TerrainLate (Blending flag, One/Zero factors, depth write) so it lands in the Transparent pass after the
-/// sky inserts; `Overdraw` keeps the opaque draw and repeats it with DH_TerrainLate (2x draw calls; covers the case
-/// where the Transparent pass cannot write depth); `Opaque` is the pre-Run-13 behaviour.
+/// sky inserts; `Overdraw` keeps the opaque draw and repeats it with DH_TerrainLate (2x draw calls); `Opaque` is the
+/// pre-Run-13 behaviour (stars show through LODs).
+/// Run 14: the Transparent pass sorts its draws back to front by an unstable per-draw distance key with no submission
+/// tie-break (static RE, docs/PORTING.md Run 14), so in `Late` a section's opaque draw can land after its own ice or
+/// water and overwrite it (black flicker). `Overdraw` is therefore the default: the sea floor is already in the depth
+/// buffer from the Opaque pass, and the translucent layer is drawn with DH_TerrainWater (blend + depth write), so a
+/// late repeat ordered after the water fails the depth test. `Late` keeps DH_TerrainTransparent (A/B repro only).
 enum class SkyOrder : int { Late = 0, Overdraw = 1, Opaque = 2 };
 inline constexpr int kSkyOrderCount = 3;
 
@@ -79,7 +84,7 @@ struct ViewSnapshot {
 
 struct LodRendererConfig {
     DrawHook drawHook = DrawHook::CameraAfter;
-    SkyOrder skyOrder = SkyOrder::Late;
+    SkyOrder skyOrder = SkyOrder::Overdraw; // Run 14 (was Late)
     /// selectionOpaqueMaterial drops the green channel (magenta terrain, 2026-10-19); the fogged fallback is the
     /// Stage-A default, F6 cycles back for comparison.
     MaterialChoice material   = MaterialChoice::Dh; // -> MeshFallback (fogged) -> selection, whichever resolves
