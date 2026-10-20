@@ -23,12 +23,12 @@
         {
           "type": "zip",
           "urls": [
-            "https://{{tooth}}/releases/download/v{{version}}/Distant-Horizons-Bedrock-client-windows-x64.zip"
+            "https://{{tooth}}/releases/download/v{{version}}/DistantHorizons-client-{{version}}.zip"
           ],
           "placements": [
             {
               "type": "dir",
-              "src": "DistantHorizons/",
+              "src": "mods/DistantHorizons/",
               "dest": "mods/DistantHorizons/"
             }
           ]
@@ -57,12 +57,12 @@
         {
           "type": "zip",
           "urls": [
-            "https://{{tooth}}/releases/download/v{{version}}/Distant-Horizons-Bedrock-server-windows-x64.zip"
+            "https://{{tooth}}/releases/download/v{{version}}/DistantHorizons-server-{{version}}.zip"
           ],
           "placements": [
             {
               "type": "dir",
-              "src": "DistantHorizonsServer/",
+              "src": "plugins/DistantHorizonsServer/",
               "dest": "plugins/DistantHorizonsServer/"
             }
           ]
