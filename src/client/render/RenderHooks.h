@@ -2,16 +2,11 @@
 
 // Stage-A renderer wiring: hooks LevelRendererCamera::$render (draw after the vanilla world) and
 // LevelRendererPlayer::setupCamera (only active in far-plane mode "zfar-override"), plus the key handler. The hooks
-// are installed on enable but are passthrough until F5 turns the renderer on (off at start).
+// are installed on enable but are passthrough until the LOD pipeline is on (client.enableRendering starts it with the
+// world).
 //
-//   F5 whole pipeline on/off    Shift+F5 test feed on/off    Ctrl+F5 core frustum cull on/off
-//   Shift+F7 chunk ingestion on/off (HUD toggle is plain F7)
-//   F4 primitive/winding cycle  Shift+F4 far-plane mode cycle   Ctrl+F4 near cut-off on/off
-//   F6 material cycle           Shift+F6 origin mode            Ctrl+F6 transparent pass on/off
-//   Numpad 1 vanilla fog mode   Numpad 2 DH clouds on/off
-//
-// Coexistence with the render spikes (src/client/spikes): both hook the same functions; the hook chain runs both, they
-// do not interfere as long as the spike toggles (F10-F12) are off. Leave them off while testing Stage A.
+// Keys (config.json): client.keys.toggleRendering switches the pipeline on/off; with client.debug.enabled the numpad
+// debug map is active (docs/DEBUG.md). Shift+F5 is the synthetic test feed, only with DH_TEST_FEED=1.
 
 namespace dh::render {
 
@@ -24,7 +19,7 @@ void uninstall();
 LodRenderer& renderer();
 
 bool enabled();
-/// Renderer draw on/off (the world driver sets it with the pipeline; F5 goes through ClientWorldDriver::setPipeline).
+/// Renderer draw on/off (the world driver sets it with the pipeline; the toggle key goes through ClientWorldDriver::setPipeline).
 void setEnabled(bool on);
 
 } // namespace dh::render

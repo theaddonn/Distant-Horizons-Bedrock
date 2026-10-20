@@ -5,7 +5,8 @@
 
 namespace dh::hud {
 
-/// Generic key/value registry shown in the debug HUD and dumped by F8 (`hud-dump: {...}` in dh.log).
+/// Generic key/value registry shown in the debug overlay and dumped by Numpad . (`hud-dump: {...}` in dh.log).
+/// The registry works regardless of the overlay.
 void set(std::string const& key, std::string const& value);
 void set(std::string const& key, double value);
 void set(std::string const& key, std::int64_t value);
@@ -15,9 +16,10 @@ inline void set(std::string const& key, char const* value) { set(key, std::strin
 /// JSON object of all registry entries.
 std::string dumpJson();
 
-/// Smoothed frame time in ms (EMA over HUD frames).
+/// Smoothed frame time in ms (EMA over overlay frames; 0 while the overlay is not installed).
 double frameMs();
 
+/// Installs the overlay draw listener, only when client.debug.enabled (ConfigBridge must be initialised).
 void install();
 void uninstall();
 

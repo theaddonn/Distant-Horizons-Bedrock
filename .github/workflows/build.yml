@@ -2,7 +2,7 @@ on:
   pull_request:
   push:
   workflow_dispatch:
-  
+
 jobs:
   build:
     runs-on: windows-latest
@@ -17,7 +17,7 @@ jobs:
       - uses: xmake-io/github-action-setup-xmake@v1
         # with:
         #   xmake-version: branch@master
-      
+
       - uses: actions/cache@v6
         with:
           path: |
@@ -42,9 +42,33 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: ${{ github.event.repository.name }}-${{ github.sha }}-${{ matrix.target_type }}-windows-x64
+          name: dll-${{ matrix.target_type }}
           path: |
             bin/
+
+  package:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target_type:
+          - client
+          - server
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: dll-${{ matrix.target_type }}
+          path: bin
+
+      - name: Package
+        run: scripts/package.sh ${{ matrix.target_type }} out
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ github.event.repository.name }}-${{ github.sha }}-${{ matrix.target_type }}-package
+          path: out/*.zip
 
   host-tests:
     runs-on: ubuntu-latest
@@ -53,11 +77,15 @@ jobs:
 
       - uses: xmake-io/github-action-setup-xmake@v1
 
+      - name: Version consistency (xmake.lua, tooth.json, Version.h, core Version.cpp)
+        run: scripts/check-version.sh
+
       - name: Install clang-22
         run: |
           wget https://apt.llvm.org/llvm.sh
           chmod +x llvm.sh
           sudo ./llvm.sh 22
-          sudo apt-get install -y clang-22
+          # sanitizer runtimes (the tests build with ASan + UBSan) and the C++ standard library headers
+          sudo apt-get install -y clang-22 libclang-rt-22-dev libstdc++-14-dev
 
       - run: scripts/test-host.sh

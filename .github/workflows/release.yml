@@ -1,8 +1,13 @@
+# Release: push a tag vX.Y.Z (X.Y.Z must equal the version in xmake.lua / tooth.json / Version.h).
+# Builds both DLLs on Windows, packages them on Linux with scripts/package.sh and attaches
+# DistantHorizons-client-<ver>.zip and DistantHorizons-server-<ver>.zip to the GitHub release.
+# DH_Terrain.material.bin is NOT built here (needs dxc + vanilla materials); it is taken from dist/materials/
+# and its checksum is verified.
 on:
-  release:
-    types:
-      - published
-  
+  push:
+    tags:
+      - "v*"
+
 jobs:
   build:
     runs-on: windows-latest
@@ -15,8 +20,6 @@ jobs:
       - uses: actions/checkout@v7
 
       - uses: xmake-io/github-action-setup-xmake@v1
-        # with:
-        #   xmake-version: branch@master
 
       - uses: actions/cache@v6
         with:
@@ -42,53 +45,63 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: ${{ github.event.repository.name }}-${{ github.sha }}-${{ matrix.target_type }}-windows-x64
+          name: dll-${{ matrix.target_type }}
           path: |
             bin/
 
-  update-release-notes:
+  release:
+    needs: build
     permissions:
       contents: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
-      - id: extract-release-notes
-        uses: ffurrer2/extract-release-notes@v3
+      - name: Tag matches the source version
+        run: |
+          ver=$(scripts/check-version.sh)
+          if [ "v$ver" != "${GITHUB_REF_NAME}" ]; then
+            echo "tag ${GITHUB_REF_NAME} != source version v$ver" >&2
+            exit 1
+          fi
+          echo "VERSION=$ver" >> "$GITHUB_ENV"
 
-      - uses: softprops/action-gh-release@v3
-        with:
-          body: |
-            ${{ steps.extract-release-notes.outputs.release_notes }}
-
-  upload-to-release:
-    needs:
-      - build
-      - update-release-notes
-    permissions:
-      contents: write
-    strategy:
-      matrix:
-        target_type:
-          - client
-          - server
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
+      - name: Verify the shipped material checksum
+        run: |
+          cd dist/materials
+          sha256sum -c DH_Terrain.material.bin.sha256
 
       - uses: actions/download-artifact@v8
         with:
-          name: ${{ github.event.repository.name }}-${{ github.sha }}-${{ matrix.target_type }}-windows-x64
-          path: artifact
+          name: dll-client
+          path: bin
 
-      - run: |
-          cp CHANGELOG.md LICENSE LICENSE.LESSER README.md artifact/
+      - uses: actions/download-artifact@v8
+        with:
+          name: dll-server
+          path: bin
 
-      - run: |
-          zip -r ../${{ github.event.repository.name }}-${{ matrix.target_type }}-windows-x64.zip *
-        working-directory: artifact
+      - name: Package
+        run: |
+          scripts/package.sh client out
+          scripts/package.sh server out
+          unzip -l "out/DistantHorizons-client-${VERSION}.zip"
+          unzip -l "out/DistantHorizons-server-${VERSION}.zip"
+
+      - name: Release notes from CHANGELOG.md
+        run: |
+          awk -v v="$VERSION" '
+            /^## \[/ { on = index($0, "## [" v "]") == 1; next }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          if [ ! -s notes.md ]; then
+            awk '/^## \[/ { on = index($0, "## [Unreleased]") == 1; next } on { print }' CHANGELOG.md > notes.md
+          fi
+          cat notes.md
 
       - uses: softprops/action-gh-release@v3
         with:
+          body_path: notes.md
           files: |
-            ${{ github.event.repository.name }}-${{ matrix.target_type }}-windows-x64.zip
+            out/DistantHorizons-client-${{ env.VERSION }}.zip
+            out/DistantHorizons-server-${{ env.VERSION }}.zip

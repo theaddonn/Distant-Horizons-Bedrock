@@ -1,12 +1,13 @@
 #include "client/DistantHorizons.h"
 
+#include "bedrock_common/ConfigBridge.h"
 #include "bedrock_common/FileLogger.h"
 #include "bedrock_common/LeviLogger.h"
+#include "bedrock_common/Platform.h"
 #include "client/Version.h"
 #include "client/hud/DebugHud.h"
 #include "client/render/MaterialInjector.h"
 #include "client/render/RenderHooks.h"
-#include "client/spikes/Spikes.h"
 #include "client/world/ClientWorldDriver.h"
 
 #include "dh/Version.h"
@@ -38,11 +39,13 @@ bool DistantHorizons::load() {
 }
 
 bool DistantHorizons::enable() {
+    // The render / HUD install code reads the options, so load config.json first (idempotent: the world driver calls
+    // init again later).
+    dh::bedrock::ConfigBridge::instance().init(dh::bedrock::ModPaths::fromCurrentMod().configDir);
     auto& bus    = ll::event::EventBus::getInstance();
     joinListener = bus.emplaceListener<ll::event::ClientJoinLevelEvent>([](auto&) { DH_LOG_I("level: join"); });
     exitListener = bus.emplaceListener<ll::event::ClientExitLevelEvent>([](auto&) { DH_LOG_I("level: exit"); });
     dh::hud::install();
-    dh::spikes::install();
     dh::render::installMaterialInjector(); // no-op if load() already installed it
     dh::render::install();
     dh::bedrock::ClientWorldDriver::instance().install();
@@ -54,7 +57,6 @@ bool DistantHorizons::disable() {
     dh::bedrock::ClientWorldDriver::instance().uninstall();
     dh::render::uninstall();
     dh::render::uninstallMaterialInjector();
-    dh::spikes::uninstall();
     dh::hud::uninstall();
     auto& bus = ll::event::EventBus::getInstance();
     if (joinListener) bus.removeListener(joinListener);

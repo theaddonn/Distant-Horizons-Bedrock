@@ -1,3 +1,7 @@
+-- Single source of truth for the mod version (scripts/check-version.sh verifies tooth.json, Version.h, core Version.cpp).
+local DH_VERSION = "0.1.0"
+set_version(DH_VERSION)
+
 add_rules("mode.debug", "mode.release")
 
 add_repositories("levimc-repo https://github.com/LiteLDev/xmake-repo.git")
@@ -50,8 +54,9 @@ local mod_dir  = is_config("target_type", "server") and "src/server" or "src/cli
 target(mod_name)
     add_rules("dh.cxx")
     add_rules("@levibuildscript/linkrule")
-    add_rules("@levibuildscript/modpacker", {modName = mod_name, modVersion = "0.1.0", modPlatform = get_config("target_type")})
+    add_rules("@levibuildscript/modpacker", {modName = mod_name, modVersion = DH_VERSION, modPlatform = get_config("target_type")})
     add_deps("dh_core")
+    add_defines("DH_MOD_VERSION=\"" .. DH_VERSION .. "\"") -- description scope: on_load runs sandboxed and cannot see locals
     on_load(function (target)
         local sha = try { function() return os.iorun("git rev-parse --short HEAD"):trim() end } or "unknown"
         target:add("defines", "DH_GIT_SHA=\"" .. sha .. "\"")
