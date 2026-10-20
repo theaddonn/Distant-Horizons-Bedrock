@@ -55,4 +55,30 @@ constexpr bool isSupported(DataCompressionMode m) {
 /// EDhApiDistantGeneratorProgressDisplayLocation.
 enum class ProgressDisplayLocation : std::uint8_t { Overlay, Chat, Log, Disabled };
 
+//--------------------------------------------------------------------------------------------------------------
+// Bedrock-port options (no Java counterpart). Ordinal 0 is always the default; value names are lowercase-hyphen
+// (see the name tables in Options.cpp). The client maps these onto its render enums.
+//--------------------------------------------------------------------------------------------------------------
+
+/// How the vanilla fog is pushed out to the LOD distance (client.graphics.fog.vanillaFog).
+enum class VanillaFogMode : std::uint8_t { All, Off, Distance, FogControl };
+
+/// Which frame-graph pass the opaque LOD layer is drawn in (client.advanced.skyOrder).
+enum class SkyOrderMode : std::uint8_t { Overdraw, Late, Opaque };
+
+/// Coverage of the Overdraw late repeat (client.advanced.lateScope).
+enum class LateScopeMode : std::uint8_t { BeyondVanilla, Full };
+
+/// LOD lighting source (client.advanced.lightmapMode).
+enum class LightmapSource : std::uint8_t { Dynamic, Shader, DynamicSwapped, UnlitTest, LightDebug };
+
+/// How the LOD far plane is extended (client.advanced.farPlane).
+enum class FarPlaneMode : std::uint8_t { LocalProjPush, ZFarOverride, Off };
+
+/// LOD material (client.advanced.material).
+enum class MaterialMode : std::uint8_t { Dh, MeshFallback, Selection };
+
+/// Where the LOD draw is hooked (client.advanced.drawHook).
+enum class DrawHookMode : std::uint8_t { CameraAfter, LevelRenderBefore, LevelRenderAfter, PostLevelRender };
+
 } // namespace dh

@@ -2,6 +2,9 @@
 
 #include "dh/platform/ILogger.h"
 
+#include <cstdlib>
+
+#pragma clang diagnostic ignored "-Wdeprecated-declarations" // std::getenv
 #include <span>
 #include <string>
 
@@ -53,6 +56,12 @@ void ConfigBridge::init(const std::filesystem::path& configDir) {
                 );
                 plan = GeneratorPlan::Disabled;
             }
+        }
+        // compareMode: the generator reads the env switch until it takes the option directly. Set before anything
+        // can start a generator; an explicit env value wins.
+        if (store_.options().common.worldGenerator.compareMode && std::getenv("DH_BEDROCK_GEN_COMPARE") == nullptr) {
+            _putenv_s("DH_BEDROCK_GEN_COMPARE", "1");
+            log::info("config: common.worldGenerator.compareMode=true -> DH_BEDROCK_GEN_COMPARE=1");
         }
         store_.onChange([this](const Options&) { (void)save(); });
     }

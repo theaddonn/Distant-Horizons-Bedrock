@@ -29,6 +29,15 @@ constexpr const char* kProgressNames[]          = {"OVERLAY", "CHAT", "LOG", "DI
 constexpr const char* kDataCompressionNames[]   = {"UNCOMPRESSED", "LZ4", "Z_STD_BLOCK", "Z_STD_STREAM", "LZMA2"};
 constexpr const char* kWorldCompressionNames[]  = {"MERGE_SAME_BLOCKS", "VISUALLY_EQUAL"};
 
+// Bedrock-port enums: lowercase-hyphen names (ordinal 0 = default).
+constexpr const char* kVanillaFogNames[]   = {"all", "off", "distance", "fog-control"};
+constexpr const char* kSkyOrderNames[]     = {"overdraw", "late", "opaque"};
+constexpr const char* kLateScopeNames[]    = {"beyond-vanilla", "full"};
+constexpr const char* kLightmapNames[]     = {"dynamic", "shader", "dynamic-swapped", "unlit-test", "light-debug"};
+constexpr const char* kFarPlaneNames[]     = {"local-proj-push", "zfar-override", "off"};
+constexpr const char* kMaterialNames[]     = {"dh", "mesh-fallback", "selection"};
+constexpr const char* kDrawHookNames[]     = {"camera-after", "level-render-before", "level-render-after", "post-level-render"};
+
 #define DH_PTRS(expr)                                                                                                  \
     +[](Options& o) -> void* { return &o.expr; }, +[](const Options& o) -> const void* { return &o.expr; }
 
@@ -59,7 +68,19 @@ struct Table {
 Table table() {
     static const OptionMeta kTable[] = {
         //---------- client ----------
-        DH_BOOL("client.enableRendering", client.enableRendering, true, "Master switch for LOD rendering."),
+        DH_BOOL(
+            "client.enableRendering",
+            client.enableRendering,
+            true,
+            "Master switch: when true the LOD pipeline starts with the world, when false it stays off."
+        ),
+        DH_STRING(
+            "client.keys.toggleRendering",
+            client.keys.toggleRendering,
+            "none",
+            "Optional key that switches the LOD pipeline on/off while playing, e.g. \"numpad-add\" or \"f9\". "
+            "\"none\" = no key. Avoid F1, F2, F3, F5, F11 (used by Minecraft)."
+        ),
 
         DH_INT(
             "client.graphics.quality.lodChunkRenderDistanceRadius",
@@ -195,11 +216,13 @@ Table table() {
             false,
             "Should Minecraft's fog render."
         ),
-        DH_BOOL(
-            "client.graphics.fog.disableVanillaFog",
-            client.graphics.fog.disableVanillaFog,
-            true,
-            "Push Bedrock's vanilla distance fog out to the LOD far distance so DH applies the only fog."
+        DH_ENUM(
+            "client.graphics.fog.vanillaFog",
+            client.graphics.fog.vanillaFog,
+            static_cast<int>(VanillaFogMode::All),
+            kVanillaFogNames,
+            "How Minecraft's own distance fog is pushed out to the LOD distance so DH's fog is the only one: all = "
+            "both fog values, distance / fog-control = one of them, off = leave Minecraft's fog alone."
         ),
         DH_BOOL(
             "client.graphics.clouds.renderDhClouds",
@@ -208,10 +231,16 @@ Table table() {
             "Draw Distant Horizons' own cloud layer out to the LOD far distance."
         ),
         DH_BOOL(
+            "client.graphics.clouds.backFaceCull",
+            client.graphics.clouds.backFaceCull,
+            true,
+            "Cull the back faces of the DH cloud layer (turn off if clouds look see-through from inside)."
+        ),
+        DH_BOOL(
             "client.graphics.clouds.hideVanillaClouds",
             client.graphics.clouds.hideVanillaClouds,
             true,
-            "Hide the vanilla clouds while the LOD pipeline is rendering."
+            "Hide Minecraft's own clouds while the DH cloud layer is drawn (otherwise both overlap)."
         ),
 
         DH_FLOAT(
@@ -298,6 +327,96 @@ Table table() {
             "Blocks below avoided blocks gain the avoided block's color."
         ),
 
+        //---------- advanced / debug (Bedrock) ----------
+        DH_ENUM(
+            "client.advanced.skyOrder",
+            client.advanced.skyOrder,
+            static_cast<int>(SkyOrderMode::Overdraw),
+            kSkyOrderNames,
+            "Render pass the opaque LODs are drawn in. overdraw keeps stars/sun/moon behind LODs; opaque is the "
+            "plain pass (stars can show through LODs); late is for troubleshooting only."
+        ),
+        DH_ENUM(
+            "client.advanced.lateScope",
+            client.advanced.lateScope,
+            static_cast<int>(LateScopeMode::BeyondVanilla),
+            kLateScopeNames,
+            "Where the overdraw repeat is applied: beyond-vanilla = only past the vanilla render distance (cheaper), "
+            "full = everywhere."
+        ),
+        DH_ENUM(
+            "client.advanced.lightmapMode",
+            client.advanced.lightmapMode,
+            static_cast<int>(LightmapSource::Dynamic),
+            kLightmapNames,
+            "LOD lighting source: dynamic = Minecraft's lightmap, shader = built-in approximation. The rest are "
+            "diagnostics."
+        ),
+        DH_BOOL(
+            "client.advanced.nearClip",
+            client.advanced.nearClip,
+            true,
+            "Skip LODs inside the vanilla render distance (they would only overdraw real chunks)."
+        ),
+        DH_ENUM(
+            "client.advanced.farPlane",
+            client.advanced.farPlane,
+            static_cast<int>(FarPlaneMode::LocalProjPush),
+            kFarPlaneNames,
+            "How the camera far plane is extended so distant LODs are not clipped. zfar-override also hides "
+            "the vanilla clouds; off = LODs are clipped at the vanilla far plane."
+        ),
+        DH_ENUM(
+            "client.advanced.material",
+            client.advanced.material,
+            static_cast<int>(MaterialMode::Dh),
+            kMaterialNames,
+            "LOD material. dh = the mod's own shader (falls back automatically if it is missing)."
+        ),
+        DH_ENUM(
+            "client.advanced.drawHook",
+            client.advanced.drawHook,
+            static_cast<int>(DrawHookMode::CameraAfter),
+            kDrawHookNames,
+            "Where in the frame the LODs are drawn. Leave on camera-after unless troubleshooting."
+        ),
+        DH_BOOL(
+            "client.advanced.coreFrustum",
+            client.advanced.coreFrustum,
+            true,
+            "Frustum-cull sections while building the render list (cheaper draws)."
+        ),
+        DH_BOOL(
+            "client.advanced.drawTransparent",
+            client.advanced.drawTransparent,
+            true,
+            "Draw the translucent LOD layer (water, ice)."
+        ),
+        DH_BOOL(
+            "client.debug.enabled",
+            client.debug.enabled,
+            false,
+            "Turns on the debug overlay and the numpad debug keys (see docs/DEBUG.md). Leave off for normal play."
+        ),
+        DH_STRING(
+            "client.debug.hudKey",
+            client.debug.hudKey,
+            "numpad0",
+            "Key that shows/hides the debug overlay (only used when debug.enabled is true)."
+        ),
+        DH_BOOL(
+            "client.debug.logRenderPerf",
+            client.debug.logRenderPerf,
+            true,
+            "Write a 'render: perf' summary line to dh.log every 10 s while LODs are drawn."
+        ),
+        DH_BOOL(
+            "client.debug.logLightingDiag",
+            client.debug.logLightingDiag,
+            false,
+            "Write a lighting diagnostics line to dh.log every 10 s (always on while debug.enabled)."
+        ),
+
         //---------- common ----------
         DH_ENUM(
             "common.worldGenerator.generatorPlan",
@@ -309,9 +428,14 @@ Table table() {
         DH_BOOL(
             "common.worldGenerator.allowUnvalidatedGenerator",
             common.worldGenerator.allowUnvalidatedGenerator,
+            true,
+            "Safety switch: set to false to force distant generation off regardless of generatorPlan."
+        ),
+        DH_BOOL(
+            "common.worldGenerator.compareMode",
+            common.worldGenerator.compareMode,
             false,
-            "Bedrock port: allow distant generation (generatorPlan) although scratch chunk generation is not yet "
-            "validated in game."
+            "Debug: compare generated chunks with the real ones and log the differences."
         ),
         DH_INT(
             "common.worldGenerator.scratchThreads",
@@ -319,7 +443,7 @@ Table table() {
             0,
             -1,
             64,
-            "Bedrock port: worker threads for distant chunk generation. 0 = auto (max(2, cores - 2)); -1 = legacy "
+            "Worker threads for distant chunk generation. 0 = auto (max(2, cores - 2)); -1 = legacy "
             "single-threaded generation on the server thread."
         ),
         DH_ENUM(
@@ -327,7 +451,7 @@ Table table() {
             common.worldGenerator.chunkGeneratorMode,
             static_cast<int>(DistantGeneratorMode::Features),
             kGenModeNames,
-            "How detailed distant generation is."
+            "How detailed distant generation is: FEATURES = decorated terrain (trees, ores), SURFACE = base terrain only (faster)."
         ),
         DH_BOOL(
             "common.worldGenerator.limitIfServerUnhealthy",

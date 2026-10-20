@@ -87,8 +87,8 @@ struct FogOptions {
     bool enableDhFog = true;
     /// false
     bool enableVanillaFog = false;
-    /// Bedrock: push the vanilla distance fog out to the LOD far distance (Java disableVanillaFog). true
-    bool disableVanillaFog = true;
+    /// Bedrock: how the vanilla distance fog is pushed out to the LOD far distance (replaces Java disableVanillaFog). ALL
+    VanillaFogMode vanillaFog = VanillaFogMode::All;
 };
 
 struct CloudOptions {
@@ -96,6 +96,8 @@ struct CloudOptions {
     bool renderDhClouds = true;
     /// Bedrock: hide the vanilla clouds while the LOD pipeline renders (restored when it is off). true
     bool hideVanillaClouds = true;
+    /// Bedrock: cull the back faces of the DH cloud layer. true
+    bool backFaceCull = true;
 };
 
 struct GraphicsOptions {
@@ -111,10 +113,53 @@ struct GraphicsOptions {
     bool overrideVanillaGraphicsSettings = true;
 };
 
+/// Bedrock: optional runtime key bindings (Windows key names, see KeyNames.h).
+struct KeyOptions {
+    /// Key that toggles the LOD pipeline on/off at runtime. "none"
+    std::string toggleRendering = "none";
+};
+
+/// Bedrock: render tuning. The defaults are the verified ones; change only for troubleshooting.
+struct AdvancedOptions {
+    /// OVERDRAW
+    SkyOrderMode skyOrder = SkyOrderMode::Overdraw;
+    /// BEYOND_VANILLA
+    LateScopeMode lateScope = LateScopeMode::BeyondVanilla;
+    /// DYNAMIC
+    LightmapSource lightmapMode = LightmapSource::Dynamic;
+    /// true
+    bool nearClip = true;
+    /// LOCAL_PROJ_PUSH
+    FarPlaneMode farPlane = FarPlaneMode::LocalProjPush;
+    /// DH
+    MaterialMode material = MaterialMode::Dh;
+    /// CAMERA_AFTER
+    DrawHookMode drawHook = DrawHookMode::CameraAfter;
+    /// true
+    bool coreFrustum = true;
+    /// true
+    bool drawTransparent = true;
+};
+
+/// Bedrock: debug overlay, debug keys and extra log lines.
+struct DebugOptions {
+    /// false
+    bool enabled = false;
+    /// Key that shows/hides the overlay (only with debug.enabled). "numpad0"
+    std::string hudKey = "numpad0";
+    /// true
+    bool logRenderPerf = true;
+    /// false
+    bool logLightingDiag = false;
+};
+
 struct ClientOptions {
     /// Java Client.quickEnableRendering. true
     bool            enableRendering = true;
+    KeyOptions      keys;
     GraphicsOptions graphics;
+    AdvancedOptions advanced;
+    DebugOptions    debug;
 };
 
 //========//
@@ -124,9 +169,8 @@ struct ClientOptions {
 struct WorldGeneratorOptions {
     /// Java Common.WorldGenerator. SURFACE_THEN_CHUNKS
     GeneratorPlan generatorPlan = GeneratorPlan::SurfaceThenChunks;
-    /// Bedrock port safety switch: distant generation stays Disabled until scratch generation is validated in game.
-    /// false
-    bool allowUnvalidatedGenerator = false;
+    /// Bedrock port safety switch for distant generation (validated in game, so on by default). true
+    bool allowUnvalidatedGenerator = true;
     /// Bedrock port: worker threads for scratch (distant) chunk generation. 0 = auto (max(2, cores - 2)),
     /// -1 = legacy single-thread server-thread generation. 0 / [-1, 64]
     int scratchThreads = 0;
@@ -152,6 +196,8 @@ struct WorldGeneratorOptions {
     std::int32_t generationCenterChunkZ = 0;
     /// 0 disables generation bounds. 0 / [0, INT_MAX]
     std::int32_t generationMaxChunkRadius = 0;
+    /// Bedrock debug: compare generated chunks with the real ones. false
+    bool compareMode = false;
 };
 
 struct LodBuildingOptions {
