@@ -29,7 +29,7 @@
 // -> world destroyed (network state detaches the transport listener) -> transport shut down -> thread pools shut
 // down and joined -> handles/serializer destroyed.
 //
-// Keys (render hooks): F5 whole pipeline on/off, Shift+F5 synthetic test feed, Shift+F7 chunk ingestion on/off.
+// Keys: client.keys.toggleRendering (optional) pipeline on/off; debug mode Numpad - chunk ingestion; Shift+F5 test feed only with DH_TEST_FEED=1.
 
 #include "dh/render/RenderList.h"
 
@@ -60,11 +60,11 @@ public:
     /// Stops the session and removes everything.
     void uninstall();
 
-    /// F5. Turning it on starts a session as soon as a local player exists; off tears the session down.
+    /// Pipeline switch (config / toggle key). Turning it on starts a session as soon as a local player exists; off tears the session down.
     void setPipeline(bool on);
     bool pipeline() const;
 
-    /// Shift+F7.
+    /// Debug Numpad -.
     void setIngestion(bool on);
     bool ingestion() const;
 
