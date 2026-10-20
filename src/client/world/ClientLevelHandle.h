@@ -60,6 +60,10 @@ public:
     void setLevelKey(const std::string& levelKey);
     /// Called by the driver once the level is loaded: the identifier never changes afterwards.
     void lockIdentity() { locked_.store(true); }
+    /// A (late) LevelInit key that arrived while locked is parked here; the driver applies it between unload and reload.
+    bool hasPendingKey() const;
+    /// Unlocks and applies the parked key. Only call with the level unloaded.
+    bool applyPendingKey();
 
     Dimension*           dimension() const { return dimension_; }
     int                  dimensionId() const { return dimensionId_; }
@@ -78,6 +82,7 @@ private:
     std::deque<std::string>         identifiers_; ///< append-only; back() is current
     std::atomic<const std::string*> current_{nullptr};
     std::string                     levelKey_;
+    std::string                     pendingKey_;
     std::atomic<bool>               keyed_{false};
     std::atomic<bool>               locked_{false};
 };

@@ -58,6 +58,14 @@ private:
 
 enum class ServerSupport : std::uint8_t { None, LevelsOnly, Full };
 
+/// What the connected server turned out to be (decided by the client, never negotiated).
+///   Pending     we sent our config and wait for any DH frame (SessionConfig or LevelInit).
+///   Server      the server answered: requests, sync-on-load and level keys are in play.
+///   ClientOnly  no answer within kServerReplyTimeoutMs: the server has no DH. Levels load with a locally derived key,
+///               no request traffic. A later answer (late reply) switches to Server again: Java has no latch either,
+///               ClientPluginChannelApi simply handles LevelInit/SessionConfig whenever they arrive.
+enum class DhMode : std::uint8_t { Pending, Server, ClientOnly };
+
 /// What a tracked request resolves to.
 struct NetResponse {
     enum class Kind : std::uint8_t {
@@ -109,6 +117,23 @@ public:
     /// A frame with a different protocol version or an unknown id arrived.
     bool sawIncompatibleFrame() const { return incompatible_.load(); }
 
+    /// Java has no explicit timeout; the reply window before we call the server DH-less. The level-load delay
+    /// (DhClientWorld::kFirstLevelLoadDelayMs, 1 s) is shorter on purpose: levels load with the local key first.
+    static constexpr std::int64_t kServerReplyTimeoutMs = 5000;
+    /// Evaluates (and latches) the mode; the timeout is checked here, so poll it from a tick.
+    DhMode dhMode();
+    /// Milliseconds from the start of the reply window (connect) to the latest mode change.
+    std::int64_t modeDecisionMs() const;
+    /// What decided the mode: "session config received", "level init received", "no DH reply".
+    std::string modeReason() const;
+
+    /// Response bookkeeping for the log/HUD: `pos` and the payload byte size of a received section.
+    /// Logs the first 20 sections, then every 100th.
+    void          noteSectionReceived(std::uint64_t pos, std::size_t bytes);
+    std::uint64_t sectionsReceived() const { return sections_.load(); }
+    /// decodePayload() that also reports the encoded byte size of the payload.
+    Result<FullDataSource> decodePayload(const net::FullDataPayload& payload, std::size_t* bytes);
+
     /// Sends our config. `blocking` clears isReady until the answer arrives. With adaptive transfer speed
     /// the playerBandwidthLimit sent is the congestion control's desired rate.
     void sendConfigMessage(bool blocking = true);
@@ -152,6 +177,7 @@ public:
     bool                     adaptiveTransferSpeed() const { return adaptive_.load(); }
 
 private:
+    void noteReplyLocked(const char* reason);
     void failAllPending();
     void handleResponse(std::uint32_t wireId, NetResponse response);
     bool send(const net::Message& message);
@@ -171,6 +197,11 @@ private:
     SessionId                                         session_ = 0;
     IExecutor*                                        work_    = nullptr;
     std::string                                       closeReason_;
+    DhMode                                            mode_             = DhMode::Pending;
+    std::int64_t                                      windowStartMs_    = 0;
+    std::int64_t                                      modeChangedMs_    = 0;
+    std::string                                       modeReason_;
+    std::atomic<std::uint64_t>                        sections_{0};
     bool                                              connected_        = false;
     bool                                              configReceived_   = false;
     ServerSupport                                     support_          = ServerSupport::None;
