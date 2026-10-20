@@ -502,3 +502,43 @@ In game:
 
 Send back: the four `render: perf` lines from step 1 (with the sky order / scope in each), PASS/FAIL for steps 2-4 and
 6-7 with screenshots for 2-4, the `clouds: first tiles live` line, and all `cloud probe:` lines from step 8.
+## Run 15: structures in generated LODs, decoration order
+
+Background: PORTING.md "Run 15 (generator: structures, spill, parity order)". LODs already in the store keep their
+old content: look at a **new world** or terrain **never seen before**. Needs Features mode
+(`common.worldGenerator.allowUnvalidatedGenerator=true`).
+
+1. Log on the first world-gen work: `world gen: Features mode: base terrain of the batch + 2-chunk ring, vanilla
+   structure pass (postProcessStructureFeatures + postProcessStructures, vanilla seed) of the batch + 2-chunk ring,
+   vanilla decoration ...; only the batch is delivered`. First 10 batches: `world gen features batch (x,z) 4x4: ...
+   structures 64 of 64 cells (0 without base, 0 threw, E with a mineshaft/outpost excluded) in S ms, decorated 36 of 36 cells (...) in D ms, delivered
+   16, placedBlocks=P (structures Q)`. `threw > 0`, a crash, or junk blocks: set env `DH_BEDROCK_NO_STRUCTURES=1`
+   (structures off, decoration stays) and send the log. Also expected once: `world gen: structure features of this
+   dimension: <names>`; it must NOT end in `legacy structure pass DISABLED` (then mineshafts were not identified
+   by name and only jigsaw structures are generated; send the line); `DH_BEDROCK_NO_FEATURES=1` still turns everything off.
+2. Fly over new terrain with villages / outposts / ruined portals / shipwrecks / ocean ruins / desert or jungle
+   temples / igloos / swamp huts / ocean monuments / mansions in range (a known seed helps; `/locate` works). The
+   distant LODs should show the structure (village houses and paths, outpost tower, monument block, portal frame
+   and netherrack patch, shipwreck hull) where it later appears in the real chunks. Underground structures
+   (strongholds, ancient cities, trial chambers) are not visible in LODs; only compare mode shows them. Mineshafts
+   are deliberately never generated (also not the surface ones in badlands), see PORTING Run 15.
+3. Walk into an area that was only ever LOD: the real structure must pop in at the same place and in the same shape
+   as the LOD one. Trees next to structures should match too (decoration runs after the structure pass now).
+4. No mobs appear anywhere from the generator (only blocks are generated; the real chunks get their mobs as usual).
+   Real-world side effects to check once: a mineshaft found in terrain that was LOD first still has its cave-spider
+   spawner where vanilla puts one (the exclusion protects it); a pillager outpost that was LOD first stands on the
+   ground in the real world (not floating or buried); desert/jungle temples, igloos and swamp huts sit at a normal
+   height.
+5. Compare mode (optional, costs CPU): start the game with env `DH_BEDROCK_GEN_COMPARE=1`, fly into new terrain,
+   ideally through a village, for ~1-2 minutes. Each line now ends with `; structure blocks gen S same s, decoration
+   blocks gen D same d, real-only changes R; differing: structure a, decoration b, untouched c`. Expect
+   `same/gen` close to 1 for structure blocks wherever S > 0, decoration as in Run 13 (tree IoU > ~0.8), and few
+   real-only changes (blocks vanilla placed that we did not: missed structures or spill from neighbours that were
+   finished first). Compare batches are 1x1, the worst case for the ring effects in PORTING Run 15 (4).
+6. Performance: report the 10 s line `world gen: N chunks in the last 10 s (... features avg F ms (structures T
+   ms) ... structureBlocks B)`. Before this build: ~240 chunks / 10 s, features ~18 ms per chunk. Expected: T a few
+   ms per chunk (64 structure calls per 16-chunk batch), total throughput within ~20% of before.
+
+Send back: the first `world gen: Features mode` line, two or three `world gen features batch` lines, a few 10 s
+`world gen:` lines, the `gen compare TOTAL` lines if compare mode ran, and a screenshot of a distant village or
+other structure next to the same place after the real chunks loaded.
