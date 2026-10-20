@@ -39,7 +39,7 @@ Options new in 0.1.0 (Bedrock specific) are marked **new**. Full list with range
 | `client.enableRendering` | `true` | Master switch; the pipeline starts with the world. |
 | `client.keys.toggleRendering` **new** | `"none"` | Optional key that toggles the LOD pipeline while playing (see below). |
 | `client.graphics.fog.vanillaFog` **new** | `all` | Push Minecraft's distance fog out to the LOD distance: `off` / `distance` / `fog-control` / `all`. Replaces `disableVanillaFog`. |
-| `client.graphics.fog.enableDhFog` | `true` | Fog on the LODs. |
+| `client.graphics.fog.enableDhFog` | `true` | Fog on the LODs (not wired yet: the DH_Terrain shader always applies its far fog). |
 | `client.graphics.clouds.renderDhClouds` | `true` | Draw the DH cloud layer out to the LOD distance. |
 | `client.graphics.clouds.hideVanillaClouds` | `true` | Hide Minecraft's clouds while DH clouds are drawn. |
 | `client.graphics.clouds.backFaceCull` **new** | `true` | Cull back faces of the DH clouds. |
