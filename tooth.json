@@ -68,7 +68,9 @@
           ]
         }
       ],
-      "preserve_files": [],
+      "preserve_files": [
+        "plugins/DistantHorizonsServer/config/config.json"
+      ],
       "remove_files": [],
       "scripts": {
         "pre_install": [],

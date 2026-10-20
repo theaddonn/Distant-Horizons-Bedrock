@@ -87,6 +87,8 @@ public:
 
     /// Hook entry (any thread): remembers that `chunk` was loaded / saved.
     void noteChunk(LevelChunk& chunk);
+    /// Server thread: notes every loaded chunk of every dimension again (the `/dh sweep` command; same sweep as at start).
+    void sweepAll();
 
     ServerDriverStats stats() const;
     std::string       statusText() const;

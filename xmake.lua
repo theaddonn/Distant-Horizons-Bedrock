@@ -62,6 +62,15 @@ target(mod_name)
     add_headerfiles("src/bedrock_common/**.h", mod_dir .. "/**.h")
     add_files("src/bedrock_common/**.cpp", mod_dir .. "/**.cpp")
     add_includedirs("src")
+    -- The drivers read data/block_table.json + biome_table.json from <modDir>/data at runtime; ship them in the
+    -- packed mod directory (tooth.json places bin/<mod>/ as a whole), same files scripts/deploy.sh copies.
+    after_build(function (target)
+        local dest = path.join(os.projectdir(), "bin", target:name(), "data")
+        os.mkdir(dest)
+        for _, f in ipairs(os.files(path.join(os.projectdir(), "data", "*.json"))) do
+            os.cp(f, dest)
+        end
+    end)
 
 -- Optional: ILodStore conformance suite against LevelDbLodStore (Windows console exe, wine/Windows).
 --   xmake f ... --store_test=y
