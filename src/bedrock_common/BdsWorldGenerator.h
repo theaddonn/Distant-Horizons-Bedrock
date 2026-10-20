@@ -178,6 +178,7 @@ private:
     std::atomic<long long>            statChunks_{0}, statFailed_{0}, statMs_{0}, lastStatMs_{0};
     std::atomic<long long>            statFeatChunks_{0}, statFeatMs_{0}, statPlaced_{0};
     std::atomic<long long>            statStructMs_{0}, statStructPlaced_{0};
+    std::atomic<long long>            excludedCells_{0}; ///< structure cells that took the exclusion path (Run 15)
 
     // compare mode (compareWithReal)
     std::atomic<int>       compareInFlight_{0};
