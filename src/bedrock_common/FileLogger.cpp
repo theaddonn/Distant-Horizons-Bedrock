@@ -16,7 +16,7 @@ namespace dh::bedrock {
 
 namespace {
 
-constexpr long kMaxBytes = 5 * 1024 * 1024;
+constexpr long kMaxBytes = 8 * 1024 * 1024; // per file; dh.log + dh.log.1 + dh.log.2 <= 24 MB
 
 std::mutex            gMutex;
 FILE*                 gFile = nullptr;
@@ -32,6 +32,8 @@ char const* levelName(LogLevel l) {
     }
 }
 
+void rotateLocked();
+
 void openLocked() {
     if (gFile) return;
     if (gPath.empty()) {
@@ -46,17 +48,36 @@ void openLocked() {
     if (gFile) {
         fseek(gFile, 0, SEEK_END);
         gSize = ftell(gFile);
+        // First open in this process: start a fresh dh.log, the previous session becomes dh.log.1.
+        static bool sessionStarted = false;
+        if (!sessionStarted) {
+            sessionStarted = true;
+            if (gSize > 0) rotateLocked();
+        }
     }
 }
 
+std::filesystem::path backupPath(int n) {
+    auto p = gPath;
+    p += "." + std::to_string(n);
+    return p;
+}
+
+/// dh.log -> dh.log.1 -> dh.log.2 (the oldest is dropped). Never fails the caller: if the rename does not work
+/// (file locked by a viewer) the current file is truncated instead, so the size stays bounded.
 void rotateLocked() {
     if (gFile) fclose(gFile);
     gFile = nullptr;
+    gSize = 0;
     std::error_code ec;
-    auto            bak = gPath;
-    bak += ".1";
-    std::filesystem::remove(bak, ec);
-    std::filesystem::rename(gPath, bak, ec);
+    std::filesystem::remove(backupPath(2), ec);
+    std::filesystem::rename(backupPath(1), backupPath(2), ec);
+    std::filesystem::rename(gPath, backupPath(1), ec);
+    if (ec) {
+        std::filesystem::remove(gPath, ec);
+        if (_wfopen_s(&gFile, gPath.c_str(), L"wb") != 0) gFile = nullptr; // truncate in place as a last resort
+        return;
+    }
     openLocked();
 }
 

@@ -6,7 +6,8 @@ namespace dh::bedrock {
 
 enum class LogLevel { Debug, Info, Warn, Error };
 
-/// Opens `<modDir>/logs/dh.log` (rotating at 5 MB, one backup). Safe to call repeatedly.
+/// Opens `<modDir>/logs/dh.log`. A new session starts a fresh file (the previous one becomes dh.log.1, then
+/// dh.log.2); a file also rotates at 8 MB. Safe to call repeatedly.
 void initLog();
 
 /// printf-style logging: thread-safe, flushed on every call, also forwarded to the LeviLamina logger.

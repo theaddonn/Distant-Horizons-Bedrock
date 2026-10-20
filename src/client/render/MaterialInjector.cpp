@@ -86,6 +86,10 @@ bool splice(std::string& json, std::string const& entry) {
     return true;
 }
 
+// File-redirect logging is bounded: the material files are re-opened on every resource reload.
+std::atomic<int> gRedirectLogBudget{16};
+bool             redirectLog() { return gRedirectLogBudget.fetch_sub(1) > 0; }
+
 void trace(char const* tag, std::string const& p) {
     if (p.find("renderer/materials") == std::string::npos) return;
     if (gTraceBudget.fetch_sub(1) > 0) DH_LOG_I("materials: %s %s", tag, p.c_str());
@@ -579,8 +583,12 @@ void reportStuck(int site, DWORD tid, ULONGLONG ms) {
         nullptr
     );
     if (f != INVALID_HANDLE_VALUE) {
-        DWORD wr = 0;
-        WriteFile(f, line, static_cast<DWORD>(n), &wr, nullptr);
+        // bounded: a stuck-forever hook is reported once per episode, but never let the file grow past 256 KB
+        LARGE_INTEGER sz{};
+        if (GetFileSizeEx(f, &sz) && sz.QuadPart < 256 * 1024) {
+            DWORD wr = 0;
+            WriteFile(f, line, static_cast<DWORD>(n), &wr, nullptr);
+        }
         CloseHandle(f);
     }
 }
@@ -739,12 +747,13 @@ LL_STATIC_HOOK(
             FileHookGuard g;
             WatchGuard    wg(kWsCreateFile);
             traceLoader("CreateFileW", n);
-            if (endsWith(lowerSlashes(n), ".material.bin")) logBacktrace(n.c_str());
+            if (endsWith(lowerSlashes(n), ".material.bin") && gRedirectLogBudget.load() > 0) logBacktrace(n.c_str());
             std::wstring r = redirectFor(n);
             if (!r.empty()) {
-                DH_LOG_I("materials: CreateFileW redirect %s -> %s", n.c_str(), narrow(r.c_str()).c_str());
+                const bool logIt = redirectLog();
+                if (logIt) DH_LOG_I("materials: CreateFileW redirect %s -> %s", n.c_str(), narrow(r.c_str()).c_str());
                 HANDLE h = origin(r.c_str(), access, share, sa, disposition, flags, templ);
-                {
+                if (logIt) {
                     const DWORD e = GetLastError(); // breadcrumb (2026-10-19 freeze right after this line)
                     DH_LOG_I("materials: CreateFileW redirect -> handle %s", h == INVALID_HANDLE_VALUE ? "INVALID" : "ok");
                     SetLastError(e);
@@ -774,7 +783,7 @@ LL_STATIC_HOOK(
             traceLoader("CreateFile2", n);
             std::wstring r = redirectFor(n);
             if (!r.empty()) {
-                DH_LOG_I("materials: CreateFile2 redirect %s -> %s", n.c_str(), narrow(r.c_str()).c_str());
+                if (redirectLog()) DH_LOG_I("materials: CreateFile2 redirect %s -> %s", n.c_str(), narrow(r.c_str()).c_str());
                 return origin(r.c_str(), access, share, disposition, params);
             }
         }
@@ -955,8 +964,8 @@ LL_STATIC_HOOK(
             // Binding struct: dragon material impl @+0x80, `bool valid` @+0x88 (RE 2026-10-19). An invalid binding
             // means the draw is skipped silently - the difference between "drawn with DH_Terrain" and "nothing".
             // Run 15: bindings resolve at ~10k/s (2026-10-20 log, apparently once per draw), so the old `n % 600`
-            // sample filled the log with ~17 lines/s. Now: the first 4, then only invalid bindings (sampled); the count goes
-            // to the 10 s `render: perf` line instead.
+            // sample filled the log with ~17 lines/s. Now: the first 4, then only invalid bindings (sampled); the count is
+            // only kept (dhBindingResolves), not logged.
             gDhResolves[kindOf(info)].fetch_add(1, std::memory_order_relaxed);
             static std::atomic<int> logged{0}, invalidSeen{0};
             const bool              valid = sret && *(reinterpret_cast<uint8_t*>(sret) + 0x88) != 0;
