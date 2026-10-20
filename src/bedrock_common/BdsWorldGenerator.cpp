@@ -565,7 +565,9 @@ void BdsWorldGenerator::runChunk(const std::shared_ptr<Batch>& batch, std::int32
         }
         taskMs =
             std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - taskT0).count();
-        if (chunk && !batch->cancelled.load() && batch->onChunk) {
+        if (chunk && !batch->cancelled.load() && batch->onStaged) {
+            batch->onStaged(nullptr, nullptr, std::move(chunk)); // compare mode with DH_BEDROCK_NO_FEATURES: unstaged
+        } else if (chunk && !batch->cancelled.load() && batch->onChunk) {
             ++generated_;
             noteChunkDone(taskMs, true, featMs, placed);
             batch->onChunk(std::move(chunk));
@@ -958,8 +960,11 @@ void BdsWorldGenerator::decorateAndDeliver(const std::shared_ptr<Batch>& batch) 
 
     // 1. structure pass over the batch + 2 rings (every decorated chunk's neighbours); order-free: each cell's pieces
     //    are clipped to the cell itself
-    int structured = 0, structMissing = 0, structThrew = 0;
-    if (!structuresDisabled_)
+    const auto            s0  = std::chrono::steady_clock::now();
+    const ::WorldGenerator* wg = dimension_.mWorldGenerator;
+    const bool noRegistry = wg == nullptr || wg->mStructureFeatureRegistry.get() == nullptr;
+    int        structured = 0, structMissing = 0, structThrew = 0;
+    if (!structuresDisabled_ && !noRegistry)
         for (const auto& c : plan.structures) {
             if (aborted()) return;
             try {
@@ -970,7 +975,7 @@ void BdsWorldGenerator::decorateAndDeliver(const std::shared_ptr<Batch>& batch) 
             }
         }
     const long long structMs =
-        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - f0).count();
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - s0).count();
     if (structThrew > 0)
         DH_LOG_W("world gen: structure pass threw in %d chunk(s) of batch (%d,%d)", structThrew, x0, z0);
     for (std::size_t i = 0; i < nDeliver; ++i)
@@ -980,7 +985,8 @@ void BdsWorldGenerator::decorateAndDeliver(const std::shared_ptr<Batch>& batch) 
         }
 
     // 2. decoration of the batch + 1 ring in DecorationParity order
-    int decorated = 0, missing = 0, threw = 0;
+    const auto d0        = std::chrono::steady_clock::now();
+    int        decorated = 0, missing = 0, threw = 0;
     for (const auto& c : plan.decorate) {
         if (aborted()) return;
         try {
@@ -990,7 +996,9 @@ void BdsWorldGenerator::decorateAndDeliver(const std::shared_ptr<Batch>& batch) 
             ++threw;
         }
     }
-    const long long featMs =
+    const long long decoMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - d0).count();
+    const long long featMs = // structure pass + decoration + the stats snapshots
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - f0).count();
     if (threw > 0) DH_LOG_W("world gen: decoration threw in %d chunk(s) of batch (%d,%d)", threw, x0, z0);
 
@@ -1047,13 +1055,13 @@ void BdsWorldGenerator::decorateAndDeliver(const std::shared_ptr<Batch>& batch) 
             plan.structures.size(),
             structMissing,
             structThrew,
-            structuresDisabled_ ? ", DISABLED" : "",
+            structuresDisabled_ ? ", DISABLED" : (noRegistry ? ", no structure registry" : ""),
             structMs,
             decorated,
             plan.decorate.size(),
             missing,
             threw,
-            featMs - structMs,
+            decoMs,
             okCount,
             placedT,
             structPlacedT

@@ -7,7 +7,8 @@
 // the chunk's 3x3 is Generated (-> 4); decoration once all eight neighbours are at >= 4 plus the DecorationParity
 // rule (-> 6); a chunk is final once its whole 3x3 is at >= 6. A delivered chunk must therefore have every chunk
 // of its 3x3 decorated, and every decorated chunk needs its 3x3 structure-processed, so for a batch:
-//   base terrain   : batch + `ring` 2 (+ the structure pass's own view ring, see makeFeaturesBatchPlan)
+//   base terrain   : batch + 2 rings (+ `structureViewRing`; the generator uses 0: a structure pass writes only its
+//                    own chunk, so ring-2 cells run it over a view without their ring-3 neighbours)
 //   structure pass : batch + 2 rings
 //   decoration     : batch + 1 ring, ascending decorationParityClass, row-major (z, then x) within a class
 //   delivery       : the batch only, after ALL decoration (ring chunks are never delivered: their 3x3 is not
