@@ -446,33 +446,44 @@ TlsFlag gInFileHook; // our own std::ifstream/ofstream must not be redirected
 // site S at tick X"; a low-rate watchdog thread reports any site that has been in flight for > 3 s ONCE, with the stuck
 // thread's RIP / RSP and the module+RVA of every code pointer in the top of its stack, so the next occurrence names
 // the blocking call (symbolise with ~/.cache/dh-re). Cost on the hot paths: two relaxed atomic stores per hook call;
-// nothing is logged unless a hook is actually stuck. The watchdog logs only after ResumeThread (the suspended thread
+// nothing is logged unless a hook is stuck (3 s; 10 s for enqueueAsync/getMaterial). Report goes to logs/dh-freeze.log via WriteFile (not the logger); the suspended thread
 // might hold the logger mutex).
 //---------------------------------------------------------------------------------------------------------------------
 enum WatchSite { kWsResolve, kWsEnqueue, kWsGetMaterial, kWsCreateFile, kWsPatchIndex, kWsCount };
 constexpr char const* kWatchNames[kWsCount] = {
     "resolveDragonMaterial", "enqueueAsync", "getMaterial", "CreateFileW redirect", "patched index"
 };
+// enqueueAsync / getMaterial legitimately run long during asset compiles: higher threshold there.
+constexpr ULONGLONG kWatchLimitMs[kWsCount] = {3000, 10000, 10000, 3000, 3000};
+
+/// One slot per site: tid in the high 32 bits, (entry tick - gWatchEpoch) in the low 32 bits, stored and loaded as a
+/// unit (0 = idle) so the watchdog never pairs a stale tick with another thread's id. A second thread entering a site
+/// that is already occupied is simply not tracked (CAS 0 -> packed fails; its destructor then does nothing).
 struct WatchSlot {
-    std::atomic<ULONGLONG> since{0};
-    std::atomic<DWORD>     tid{0};
-    ULONGLONG              reported = 0; // watchdog-only
+    std::atomic<std::uint64_t> packed{0};
+    std::uint64_t              reported = 0; // watchdog-only
 };
 WatchSlot         gWatch[kWsCount];
+ULONGLONG         gWatchEpoch = GetTickCount64();
 std::atomic<bool> gWatchStop{false};
+std::atomic<bool> gWatchDone{true};
 std::thread       gWatchThread;
+std::wstring      gFreezeLogPath; // <modDir>/logs/dh-freeze.log, set before the watchdog starts
 
 struct WatchGuard {
-    WatchSite site;
-    DWORD     me;
-    explicit WatchGuard(WatchSite s) : site(s), me(GetCurrentThreadId()) {
-        gWatch[s].tid.store(me, std::memory_order_relaxed);
-        gWatch[s].since.store(GetTickCount64(), std::memory_order_relaxed);
+    WatchSite     site;
+    std::uint64_t mine = 0;
+    explicit WatchGuard(WatchSite s) : site(s) {
+        const std::uint64_t p =
+            (static_cast<std::uint64_t>(GetCurrentThreadId()) << 32) | static_cast<std::uint32_t>(GetTickCount64() - gWatchEpoch);
+        std::uint64_t expect = 0;
+        if (gWatch[s].packed.compare_exchange_strong(expect, p, std::memory_order_relaxed)) mine = p;
     }
     ~WatchGuard() {
-        // Only clear our own entry (another thread may have entered the same site meanwhile).
-        DWORD expect = me;
-        if (gWatch[site].tid.compare_exchange_strong(expect, 0)) gWatch[site].since.store(0, std::memory_order_relaxed);
+        if (mine) {
+            std::uint64_t expect = mine;
+            gWatch[site].packed.compare_exchange_strong(expect, 0, std::memory_order_relaxed);
+        }
     }
 };
 
@@ -506,51 +517,88 @@ std::string modRva(void* p) {
     return name + b;
 }
 
+/// While the target is suspended ONLY the context and the raw stack words are copied into fixed stack buffers: no
+/// allocation, no module lookup (the target may hold the loader or heap lock). Everything else happens after
+/// ResumeThread. The report goes straight to a side file with Win32 WriteFile, never through the logger (the target
+/// may hold the logger lock).
 void reportStuck(int site, DWORD tid, ULONGLONG ms) {
-    std::string out;
-    HANDLE      h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, tid);
+    uintptr_t rip = 0, buf[96]{};
+    SIZE_T    rd = 0;
+    bool      got = false;
+    HANDLE    h  = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, tid);
     if (h) {
         CONTEXT ctx{};
         ctx.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
         if (SuspendThread(h) != static_cast<DWORD>(-1)) {
             if (GetThreadContext(h, &ctx)) {
-                out          = "rip=" + modRva(reinterpret_cast<void*>(ctx.Rip));
-                uintptr_t buf[96]{};
-                SIZE_T    rd = 0;
-                if (ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(ctx.Rsp), buf, sizeof(buf), &rd)) {
-                    int shown = 0;
-                    for (SIZE_T i = 0; i < rd / sizeof(uintptr_t) && shown < 14; ++i) {
-                        std::string m = modRva(reinterpret_cast<void*>(buf[i]));
-                        if (m.empty()) continue;
-                        out += (shown++ ? " < " : " stack: ") + m;
-                    }
-                }
+                got = true;
+                rip = ctx.Rip;
+                if (!ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(ctx.Rsp), buf, sizeof(buf), &rd))
+                    rd = 0;
             }
             ResumeThread(h);
         }
         CloseHandle(h);
     }
-    DH_LOG_W(
-        "materials: freeze watch: thread %lx stuck in %s for %llu ms %s",
+    std::string out;
+    if (got) {
+        out = "rip=" + modRva(reinterpret_cast<void*>(rip));
+        int shown = 0;
+        for (SIZE_T i = 0; i < rd / sizeof(uintptr_t) && shown < 14; ++i) {
+            std::string m = modRva(reinterpret_cast<void*>(buf[i]));
+            if (m.empty()) continue;
+            out += (shown++ ? " < " : " stack: ") + m;
+        }
+    }
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    char line[1024];
+    int  n = snprintf(
+        line,
+        sizeof(line),
+        "[%02d:%02d:%02d.%03d] materials: freeze watch: thread %lx stuck in %s for %llu ms %s\r\n",
+        st.wHour,
+        st.wMinute,
+        st.wSecond,
+        st.wMilliseconds,
         (unsigned long)tid,
         kWatchNames[site],
         (unsigned long long)ms,
         out.empty() ? "(context unavailable)" : out.c_str()
     );
+    if (n < 0) return;
+    if (n >= static_cast<int>(sizeof(line))) n = static_cast<int>(sizeof(line)) - 1;
+    if (gFreezeLogPath.empty()) return;
+    HANDLE f = CreateFileW(
+        gFreezeLogPath.c_str(),
+        FILE_APPEND_DATA,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr,
+        OPEN_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        nullptr
+    );
+    if (f != INVALID_HANDLE_VALUE) {
+        DWORD wr = 0;
+        WriteFile(f, line, static_cast<DWORD>(n), &wr, nullptr);
+        CloseHandle(f);
+    }
 }
 
 void watchdogMain() {
     while (!gWatchStop.load()) {
         for (int i = 0; i < 20 && !gWatchStop.load(); ++i) Sleep(50);
-        const ULONGLONG now = GetTickCount64();
+        const ULONGLONG now32 = static_cast<std::uint32_t>(GetTickCount64() - gWatchEpoch);
         for (int s = 0; s < kWsCount; ++s) {
-            const ULONGLONG since = gWatch[s].since.load(std::memory_order_relaxed);
-            const DWORD     tid   = gWatch[s].tid.load(std::memory_order_relaxed);
-            if (!since || !tid || now - since < 3000 || gWatch[s].reported == since) continue;
-            gWatch[s].reported = since;
-            reportStuck(s, tid, now - since);
+            const std::uint64_t p = gWatch[s].packed.load(std::memory_order_relaxed);
+            if (!p || gWatch[s].reported == p) continue;
+            const ULONGLONG age = static_cast<std::uint32_t>(now32 - (p & 0xffffffffu));
+            if (age < kWatchLimitMs[s]) continue;
+            gWatch[s].reported = p;
+            reportStuck(s, static_cast<DWORD>(p >> 32), age);
         }
     }
+    gWatchDone.store(true);
 }
 
 std::string narrow(wchar_t const* w) {
@@ -592,6 +640,7 @@ bool preparePatchedIndex(std::string const& originalPath) {
     bool   added  = splice(json, kEntry);
     std::error_code ec; // non-throwing: an exception here would leave gInFileHook set on this thread
     std::filesystem::create_directories(gModMaterialsDir, ec);
+    if (ec) DH_LOG_W("materials: create_directories(%s) failed: %s", gModMaterialsDir.string().c_str(), ec.message().c_str());
     {
         std::ofstream out(gPatchedIndex, std::ios::binary | std::ios::trunc);
         out << json;
@@ -1039,7 +1088,9 @@ void installMaterialInjector() {
         return;
     }
     gActive.store(true);
+    gFreezeLogPath = (mod->getModDir() / "logs" / "dh-freeze.log").wstring();
     gWatchStop.store(false);
+    gWatchDone.store(false);
     gWatchThread = std::thread(watchdogMain);
     gModMaterialsDir = mod->getModDir() / "materials";
     gPatchedIndex    = gModMaterialsDir / "materials.index.json";
@@ -1317,7 +1368,12 @@ void uninstallMaterialInjector() {
         HookCreateFile2::unhook();
         HookCreateFileW::unhook();
         gWatchStop.store(true);
-        if (gWatchThread.joinable()) gWatchThread.join();
+        // Bounded: the watchdog can be inside a (suspended-target) report; never hang the shutdown on it.
+        for (int i = 0; i < 40 && !gWatchDone.load(); ++i) Sleep(50);
+        if (gWatchThread.joinable()) {
+            if (gWatchDone.load()) gWatchThread.join();
+            else gWatchThread.detach();
+        }
         TraceSfsReadFileDataExt::unhook();
         TraceSfsOpenFile::unhook();
         TraceSfsReadFileData::unhook();
