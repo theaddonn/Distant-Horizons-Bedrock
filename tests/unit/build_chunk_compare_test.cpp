@@ -89,3 +89,49 @@ TEST_CASE("compareChunks: trees, snow and ice") {
     CHECK(sum.treeBoth == 2);
     CHECK(sum.summary().find("IoU 0.33") != std::string::npos);
 }
+
+TEST_CASE("compareChunksStaged: structure vs decoration attribution (Run 15)") {
+    BlockTable& t      = table();
+    auto*       cobble = t.resolveBlock("minecraft:cobblestone");
+    auto*       planks = t.resolveBlock("minecraft:oak_planks");
+    auto*       log    = t.resolveBlock("minecraft:spruce_log");
+    auto*       snow   = t.resolveBlock("minecraft:snow_layer");
+    REQUIRE((cobble && planks && log && snow));
+
+    TestChunk base   = ground();
+    TestChunk afterS = ground();
+    // our structure pass: 3 blocks
+    afterS.setBlock(0, 63, 0, cobble);
+    afterS.setBlock(1, 63, 0, cobble);
+    afterS.setBlock(2, 63, 0, planks);
+    TestChunk gen = afterS;
+    // our decoration: a log at (5,63,5), snow on (6,63,6), and it overwrote the structure block at (2,63,0)
+    gen.setBlock(5, 63, 5, log);
+    gen.setBlock(6, 63, 6, snow);
+    gen.setBlock(2, 63, 0, log);
+
+    TestChunk real = gen;
+    real.setBlock(1, 63, 0, planks);  // structure block differs
+    real.setBlock(6, 63, 6, t.air()); // decoration block differs
+    real.setBlock(9, 63, 9, log);     // real-only (a block no pass of ours placed)
+
+    ChunkDiff d = compareChunksStaged(real, base, afterS, gen);
+    CHECK(d.staged);
+    CHECK(d.structGen == 2); // (0,63,0) (1,63,0); (2,63,0) was last changed by decoration
+    CHECK(d.structSame == 1);
+    CHECK(d.decoGen == 3);
+    CHECK(d.decoSame == 2);
+    CHECK(d.realOnly == 1);
+    CHECK(d.diffStruct == 1);
+    CHECK(d.diffDeco == 1);
+    CHECK(d.diffUntouched == 1);
+    CHECK(d.diffBlocks == d.diffStruct + d.diffDeco + d.diffUntouched);
+
+    ChunkDiff sum;
+    sum.add(d);
+    sum.add(d);
+    CHECK(sum.staged);
+    CHECK(sum.structGen == 4);
+    CHECK(sum.summary().find("structure blocks gen 4 same 2") != std::string::npos);
+    CHECK(compareChunks(real, gen).summary().find("structure blocks") == std::string::npos);
+}

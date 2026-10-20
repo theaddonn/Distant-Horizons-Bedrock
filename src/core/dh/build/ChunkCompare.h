@@ -23,6 +23,19 @@ struct ChunkDiff {
     /// block positions (whole build range) whose block state differs
     std::int64_t diffBlocks = 0;
 
+    // Staged attribution (compareChunksStaged only; `staged` false = not filled). Every block position is attributed
+    // to the LAST generator pass of ours that changed it: structure pass (base -> afterStructures) or decoration pass
+    // (afterStructures -> gen, which includes the freeze/snow pass). "Same" = our final block equals the real one.
+    bool         staged       = false;
+    std::int64_t structGen    = 0; ///< positions our structure pass changed (and decoration did not change again)
+    std::int64_t structSame   = 0; ///< ... whose final block equals the real chunk's
+    std::int64_t decoGen      = 0; ///< positions our decoration pass changed
+    std::int64_t decoSame     = 0; ///< ... whose final block equals the real chunk's
+    std::int64_t realOnly     = 0; ///< positions the real chunk changed vs our base terrain that no pass of ours touched
+    std::int64_t diffStruct   = 0; ///< differing blocks attributed to our structure pass
+    std::int64_t diffDeco     = 0; ///< differing blocks attributed to our decoration pass
+    std::int64_t diffUntouched = 0; ///< differing blocks no pass of ours touched (base terrain or real-only blocks)
+
     /// Tree-column intersection over union, 1 when neither chunk has tree columns.
     double treeIoU() const;
     void   add(const ChunkDiff& o);
@@ -32,5 +45,10 @@ struct ChunkDiff {
 
 /// Compares two chunks of the same position and height range (`real` = the game's chunk, `gen` = ours).
 ChunkDiff compareChunks(const IChunk& real, const IChunk& gen);
+
+/// compareChunks plus the structure / decoration split (Run 15). `base` = our chunk after base terrain only,
+/// `afterStructures` = after our structure pass, `gen` = final (after decoration + freeze/snow). All four must be the
+/// same position and height range.
+ChunkDiff compareChunksStaged(const IChunk& real, const IChunk& base, const IChunk& afterStructures, const IChunk& gen);
 
 } // namespace dh
