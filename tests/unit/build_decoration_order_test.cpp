@@ -33,7 +33,8 @@ TEST_CASE("decoration parity order satisfies the DecorationParity neighbour tabl
     // neighbour index order: row-major 3x3 without the centre
     constexpr int dxs[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
     constexpr int dzs[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
-    // required neighbour state per table: 4 = structure-post-processed, 6 = decorated (RE @0xe840350..68)
+    // required neighbour state per table: 4 = structure-post-processed, 6 = decorated (RE @0xe840350..68), indexed
+    // by class: (e,e) T0, (o,e) T1, (o,o) T2, (e,o) T3 (selection traced at 0x29debe3, Run 15)
     constexpr int tables[4][8] = {
         {4, 4, 4, 4, 4, 4, 4, 4},
         {4, 4, 4, 6, 6, 4, 4, 4},
@@ -43,7 +44,8 @@ TEST_CASE("decoration parity order satisfies the DecorationParity neighbour tabl
     for (int z = -3; z <= 3; ++z)
         for (int x = -3; x <= 3; ++x) {
             const int cls = decorationParityClass(x, z);
-            CHECK(cls == (x & 1) + 2 * (z & 1));
+            const int ox = x & 1, oz = z & 1;
+            CHECK(cls == (ox == 0 && oz == 0 ? 0 : ox == 1 && oz == 0 ? 1 : ox == 1 ? 2 : 3));
             for (int i = 0; i < 8; ++i) {
                 const int ncls = decorationParityClass(x + dxs[i], z + dzs[i]);
                 // a neighbour that must be decorated first is always of a lower class ...
