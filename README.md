@@ -71,6 +71,8 @@ Options new in 0.1.0 (Bedrock specific) are marked **new**. Full list with range
 | `common.worldGenerator.compareMode` **new** | `false` | Debug: compare generated chunks with real ones. |
 | `common.lodBuilding.*`, `common.multiThreading.*` | see file | Compression and thread settings. |
 
+Upgrading from a development build: an old `config.json` keeps the values it was written with (for example `allowUnvalidatedGenerator: false`, which turns distant generation off; the removed `disableVanillaFog` is ignored). Delete the file to get the new defaults.
+
 `server.*` options configure the experimental multiplayer side.
 
 ### Optional key
@@ -81,7 +83,7 @@ Options new in 0.1.0 (Bedrock specific) are marked **new**. Full list with range
 
 Logs are in `<game>/mods/DistantHorizons/logs/`:
 
-- `dh.log` (rotates to `dh.log.1` at 5 MB): the mod log. Includes `render: perf` lines every 10 s and `world gen:` lines.
+- `dh.log`: the mod log of the current session (the previous two sessions are in `dh.log.1` and `dh.log.2`; a log also rotates at 8 MB). Includes `render: perf` lines every 10 s and `world gen:` lines.
 - `dh-freeze.log`: written only if an engine-facing hook hangs (freeze watch).
 - LeviLamina's own `logs/` folder and, after a crash, its crash dump / crash log.
 

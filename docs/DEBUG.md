@@ -66,4 +66,4 @@ is logged and treated as `none`.
 - **`materials: freeze watch`** reports go to `dh-freeze.log` only when an engine-facing hook is stuck for 3 s (10 s for the
   async material request).
 
-Logs live in `<mod dir>/logs/` (`dh.log`, rotated to `dh.log.1` at 5 MB; `dh-freeze.log`).
+Logs live in `<mod dir>/logs/` (`dh.log`; each game start moves the previous log to `dh.log.1` and `dh.log.2`, and a log also rotates at 8 MB; `dh-freeze.log`, capped at 256 KB).
