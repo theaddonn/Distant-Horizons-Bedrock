@@ -844,6 +844,15 @@ void ServerWorldDriver::noteChunk(LevelChunk& chunk) {
     impl_->pending.emplace(k, 0);
 }
 
+void ServerWorldDriver::sweepAll() {
+    if (!running_.load()) return;
+    try {
+        for (auto& d : impl_->dims) impl_->sweepDim(*d);
+    } catch (...) {
+        DH_LOG_E("server driver: exception swallowed in sweepAll");
+    }
+}
+
 ServerDriverStats ServerWorldDriver::stats() const {
     ServerDriverStats s;
     const Impl&       m = *impl_;

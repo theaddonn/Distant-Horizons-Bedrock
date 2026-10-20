@@ -29,6 +29,9 @@ private:
     dh::StdFileSystem     fs_;
     std::filesystem::path path_;
     bool                  initialised_ = false;
+    dh::GeneratorPlan     userPlan_    = dh::GeneratorPlan::SurfaceThenChunks; ///< plan as loaded from the file
+    dh::GeneratorPlan     forcedPlan_  = dh::GeneratorPlan::SurfaceThenChunks; ///< plan after the safety overrides
+    bool                  planForced_  = false;
 };
 
 } // namespace dh::bedrock

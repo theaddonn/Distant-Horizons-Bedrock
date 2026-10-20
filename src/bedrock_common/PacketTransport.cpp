@@ -27,6 +27,12 @@ constexpr const char* kSideName = "client";
 
 std::atomic<PacketTransport*> gActive{nullptr};
 
+} // namespace
+
+// Named (not anonymous) namespace: the packet id is hash(type name), so the text must be stable and identical in
+// the client and the server DLL.
+namespace wire {
+
 // The packet type. LeviLamina registers it in PacketRegistrar under hash(type name) at static-init time
 // (PacketBase::sRegistered), identically in the client and the server DLL (same source -> same name).
 // The wire payload is one length-prefixed byte string (varint length + raw bytes; writeString is
@@ -77,7 +83,9 @@ public:
     }
 };
 
-} // namespace
+} // namespace wire
+
+using wire::DhFramePacket;
 
 PacketTransport::PacketTransport() : dispatch_(std::make_unique<dh::SingleThreadExecutor>("DH Net Dispatch")) {
     gActive.store(this);
