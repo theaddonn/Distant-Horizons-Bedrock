@@ -8,7 +8,9 @@
 //                 non-null and !isClientSide()). One DhClientServerWorld; the SERVER dimension is the authoritative
 //                 source of chunks and of world generation (BdsWorldGenerator over the server Dimension); the client
 //                 dimension only renders.
-//   remote        otherwise. One DhClientWorld over a PacketTransport session ("dh:frame" packets); chunks come from
+//   remote        otherwise (HUD mode: "pending" -> "server" when the DH server answers, "client-only" when it stays silent
+//                 for ClientNetworkState::kServerReplyTimeoutMs = 5000 ms; a late reply switches to "server" and the loaded
+//                 level is reloaded under the LevelInit key; store folder worlds/mp_<host>_<port>). One DhClientWorld over a PacketTransport session ("dh:frame" packets); chunks come from
 //                 the ClientLevel (sub-chunk events) and from the DH server (LevelInit / full-data responses).
 //
 // Threads:

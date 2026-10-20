@@ -6,6 +6,9 @@
 #include "ll/api/event/EventBus.h"
 #include "ll/api/event/player/PlayerDisconnectEvent.h"
 #include "ll/api/event/player/PlayerJoinEvent.h"
+#include "ll/api/service/Bedrock.h"
+#include "mc/world/actor/player/Player.h"
+#include "mc/world/level/Level.h"
 #include "mc/server/ServerPlayer.h"
 
 #include <algorithm>
@@ -108,6 +111,54 @@ void NetServer::start() {
     std::shared_ptr<std::atomic<bool>> flag = configDirty_;
     config_.onChange([flag](const dh::Options&) { flag->store(true); });
     DH_LOG_I("net: server network started (max frame %zu bytes)", transport_.maxFrameBytes());
+    logEffectiveSettings();
+
+    // Players already online (hot enable, late start): they never produce a PlayerJoinEvent for us.
+    try {
+        if (auto level = ll::service::getLevel()) {
+            level->forEachPlayer([this](Player& p) -> bool {
+                if (p.isSimulated()) return true;
+                const auto id = transport_.openSession(p.getNetworkIdentifier(), p.getClientSubId(), p.getRealName());
+                DH_LOG_I(
+                    "net: player '%s' already online, session %llu",
+                    p.getRealName().c_str(),
+                    (unsigned long long)id
+                );
+                return true;
+            });
+        }
+    } catch (...) {
+        DH_LOG_E("net: exception swallowed while opening sessions for online players");
+    }
+}
+
+void NetServer::logEffectiveSettings() const {
+    const auto& v = players_.settings.values;
+    // Bytes per 50 ms tick for one sender alone (Payload.cpp: rate*1000/20 + 1, 0 = unlimited).
+    auto perTick = [](int kbps) -> long long { return kbps <= 0 ? 0LL : (long long)kbps * 1000 / 20 + 1; };
+    DH_LOG_I(
+        "net: effective server settings: playerBandwidthLimit=%d KB/s (%lld B/tick) globalBandwidthLimit=%d KB/s "
+        "(%lld B/tick) generationRequestRateLimit=%d syncOnLoadRateLimit=%d maxGenerationRequestDistance=%d "
+        "maxSyncOnLoadRequestDistance=%d generatorPlan=%d chunkGeneratorMode=%d enableRealTimeUpdates=%d "
+        "sendLevelKeys=%d frameBytes=%zu (0 B/tick = unlimited)",
+        v.playerBandwidthLimit,
+        perTick(v.playerBandwidthLimit),
+        players_.settings.globalBandwidthLimit,
+        perTick(players_.settings.globalBandwidthLimit),
+        v.generationRequestRateLimit,
+        v.syncOnLoadRateLimit,
+        v.maxGenerationRequestDistance,
+        v.maxSyncOnLoadRequestDistance,
+        (int)v.generatorPlan,
+        (int)config_.options().common.worldGenerator.chunkGeneratorMode,
+        v.enableRealTimeUpdates ? 1 : 0,
+        players_.settings.sendLevelKeys ? 1 : 0,
+        transport_.maxFrameBytes()
+    );
+}
+
+void NetServer::onPlayerLevelChanged(dh::SessionId session) {
+    transport_.runOnDispatch([this, session] { network_.resendConfig(session); });
 }
 
 void NetServer::stop() {
@@ -131,6 +182,7 @@ void NetServer::applyPendingConfig() {
         transport_.runOnDispatch([this, next = std::move(next)]() mutable {
             players_.settings = std::move(next);
             network_.broadcastConfig();
+            logEffectiveSettings();
             DH_LOG_I("net: config changed, session config re-sent to %zu player(s)", players_.readyPlayers().size());
         });
     } catch (...) {
