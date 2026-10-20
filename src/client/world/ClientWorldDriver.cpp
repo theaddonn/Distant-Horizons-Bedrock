@@ -22,6 +22,7 @@
 #include "ll/api/service/Bedrock.h"
 #include "ll/api/service/TargetedBedrock.h"
 #include "mc/client/game/ClientInstance.h"
+#include "mc/network/GameConnectionInfo.h"
 #include "mc/client/multiplayer/ClientLevel.h"
 #include "mc/client/player/LocalPlayer.h"
 #include "mc/world/Minecraft.h"
@@ -61,10 +62,33 @@ std::int64_t nowMs() {
 }
 
 std::filesystem::path levelDir(Session& s, dh::ILevelHandle& h) {
-    // "sp_<name>_<level id>": the level id (world folder) keeps two worlds with the same display name apart; "remote"
-    // can never equal an "sp_..." folder.
-    return s.paths.worldDataDir(s.singleplayer ? "sp_" + s.worldName : std::string("remote"))
+    // "sp_<name>_<level id>": the level id (world folder) keeps two worlds with the same display name apart.
+    // "mp_<address>_<port>" (fallback "mp_<level name>_<level id>"): one folder per server, like Java's per-server
+    // folder; the prefixes keep the two kinds from ever colliding. worldName already carries the "mp_" prefix.
+    return s.paths.worldDataDir(s.singleplayer ? "sp_" + s.worldName : s.worldName)
          / sanitizePathComponent(std::string(h.dhIdentifier()));
+}
+
+/// "mp_<host>_<port>" of the server this client is connected to; falls back to "mp_<level name>_<level id>" when the
+/// connection info has no address (Realms / friend join / LAN signaling, or the lookup failed).
+std::string remoteWorldName(ClientInstance& ci, ::Level& level, std::string& how) {
+    try {
+        if (auto info = ci.getGameConnectionInfo()) {
+            std::string host = info->mHostIpAddress.get();
+            if (host.empty()) host = info->mUnresolvedUrl.get();
+            if (!host.empty()) {
+                const int port = info->mPort;
+                how            = "connection info (host '" + host + "', port " + std::to_string(port) + ")";
+                return "mp_" + sanitizePathComponent(host) + "_" + std::to_string(port);
+            }
+        }
+    } catch (...) {
+        DH_LOG_W("client driver: getGameConnectionInfo threw, using the level identity");
+    }
+    std::string name = level.getLevelData().mLevelName.get();
+    std::string id   = level.getLevelId();
+    how              = "level identity (name '" + name + "', id '" + id + "')";
+    return "mp_" + sanitizePathComponent(name.empty() ? std::string("world") : name) + "_" + sanitizePathComponent(id);
 }
 
 /// Waits (bounded) until no pool executor runs or holds a task. Per-level close uses this instead of shutting the
@@ -258,6 +282,10 @@ bool ClientWorldDriver::Impl::startSession() {
         if (name.empty()) name = "world";
         std::string id = server->getLevelId();
         s->worldName   = id.empty() ? name : name + "_" + id;
+    } else {
+        std::string how;
+        s->worldName = remoteWorldName(*ci, *cl, how);
+        DH_LOG_I("client driver: remote world folder '%s' from %s", s->worldName.c_str(), how.c_str());
     }
 
     // --- pools, serializer, transport ---------------------------------------------------------
@@ -351,7 +379,7 @@ bool ClientWorldDriver::Impl::startSession() {
 
     DH_LOG_I(
         "client driver: session started: %s, world '%s', %d worker threads, store root %s",
-        s->singleplayer ? "SINGLEPLAYER (DhClientServerWorld)" : "REMOTE (DhClientWorld over dh:frame)",
+        s->singleplayer ? "SINGLEPLAYER (DhClientServerWorld)" : "REMOTE (DhClientWorld over dh:frame; server or client-only)",
         s->worldName.c_str(),
         to.numberOfThreads,
         s->paths.dataDir.string().c_str()
@@ -362,7 +390,8 @@ bool ClientWorldDriver::Impl::startSession() {
         session = std::move(s);
     }
     if (ingestion.load()) gIngestTarget.store(this);
-    dh::hud::set("mode", session->singleplayer ? "singleplayer" : "remote");
+    dh::hud::set("mode", session->singleplayer ? "singleplayer" : "pending");
+    if (!session->singleplayer) DH_LOG_I("client driver: mode = pending (config sent, waiting for a DH reply)");
     return true;
 }
 
@@ -507,6 +536,7 @@ void ClientWorldDriver::Impl::onClientTick() {
         s.desiredDim.store(dim);
 
         if (s.transport) (void)s.transport->flushOutbound();
+        pollMode(s);
         if (ingestion.load()) scheduleIngest(s);
 
         if (!s.tickInFlight.exchange(true)) {
@@ -527,6 +557,35 @@ void ClientWorldDriver::Impl::onClientTick() {
     }
 }
 
+void ClientWorldDriver::Impl::pollMode(Session& s) {
+    if (s.singleplayer || !s.world) return;
+    auto* net = static_cast<dh::DhClientWorld*>(s.world.get())->networkState();
+    if (!net) return;
+    const dh::mp::DhMode m = net->dhMode();
+    if (static_cast<int>(m) != s.loggedMode) {
+        const int prev = s.loggedMode;
+        s.loggedMode   = static_cast<int>(m);
+        const auto ms  = static_cast<long long>(net->modeDecisionMs());
+        if (m == dh::mp::DhMode::Server) {
+            DH_LOG_I(
+                "client driver: mode = server (%s after %lld ms%s)",
+                net->modeReason().c_str(),
+                ms,
+                prev == static_cast<int>(dh::mp::DhMode::ClientOnly)
+                    ? "; LATE reply after the client-only fallback: levels re-key to the server's LevelInit key"
+                    : ""
+            );
+            dh::hud::set("mode", "server");
+        } else if (m == dh::mp::DhMode::ClientOnly) {
+            DH_LOG_I(
+                "client driver: mode = client-only (no DH reply within %lld ms)",
+                static_cast<long long>(dh::mp::ClientNetworkState::kServerReplyTimeoutMs)
+            );
+            dh::hud::set("mode", "client-only");
+        }
+    }
+}
+
 void ClientWorldDriver::Impl::onFrameFallback() {
     if (!pipeline.load()) return;
     if (nowMs() - lastEventTickMs.load() < 250) return; // the tick event is alive
@@ -544,6 +603,15 @@ void ClientWorldDriver::Impl::workerStep(Session& s) {
     int loaded = s.loadedDim.load();
     if (loaded != kNoDimension && loaded != dim) {
         unloadLevels(s, loaded);
+        loaded = kNoDimension;
+    }
+    // a late LevelInit key (reply after the client-only fallback / after the 1 s load delay): reload under that key
+    // (Java ClientPluginChannelApi.onLevelInitMessage loads the keyed level next to the unkeyed one)
+    if (loaded != kNoDimension && s.rekeyDim.load() == loaded) {
+        s.rekeyDim.store(kNoDimension);
+        unloadLevels(s, loaded);
+        if (auto* c = s.clientHandle(loaded); c && c->applyPendingKey())
+            DH_LOG_I("net: level of dimension %d re-keyed to '%s'", loaded, std::string(c->dhIdentifier()).c_str());
         loaded = kNoDimension;
     }
     if (loaded == kNoDimension && dim != kNoDimension && s.havePlayer.load()) {
@@ -625,9 +693,12 @@ void ClientWorldDriver::Impl::updateHud(Session& s) {
     if (s.transport) {
         dh::hud::set("net.rx", static_cast<std::int64_t>(s.transport->framesReceived()));
         dh::hud::set("net.tx", static_cast<std::int64_t>(s.transport->framesSent()));
+        if (auto* net = static_cast<dh::DhClientWorld*>(s.world.get())->networkState())
+            dh::hud::set("net.sections", static_cast<std::int64_t>(net->sectionsReceived()));
     } else {
         dh::hud::set("net.rx", 0);
         dh::hud::set("net.tx", 0);
+        dh::hud::set("net.sections", 0);
     }
 
     std::shared_lock lk(life, std::try_to_lock);
@@ -703,6 +774,7 @@ void ClientWorldDriver::onLevelKey(const std::string& dimensionResource, const s
         for (auto& [dim, hp] : s.handles) {
             if (hp.client && hp.client->dimensionResource() == dimensionResource) {
                 hp.client->setLevelKey(levelKey);
+                if (hp.client->hasPendingKey()) s.rekeyDim.store(dim);
                 DH_LOG_I("net: LevelInit for %s -> level key '%s'", dimensionResource.c_str(), levelKey.c_str());
             }
         }

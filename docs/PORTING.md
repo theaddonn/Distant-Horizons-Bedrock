@@ -290,3 +290,9 @@ chunk, which may differ from a vanilla chunk at the same stage (unverified); ice
 also have been changed by weather later (random ticks), which no generator reproduces. Rule-seed details
 (`rule+0xf0`), the Level `getSeed` slot and the pass list are engine internals reached through the real calls, so
 they need no reproduction (seed width: `Level::getSeed()` returns `uint` in the SDK and `Random(uint, bool)` is the ctor used). Cost: 64/36 = 1.8x base terrain per batch, plus 36 serial cell decorations and a pre-decoration snapshot of the 16 delivered chunks (placedBlocks stat).
+
+## Client modes (remote)
+
+- `singleplayer`: in-process server Level. Remote: `pending` until a DH frame arrives, then `server` (SessionConfig or LevelInit received; `ClientNetworkState::dhMode()`), or `client-only` after `kServerReplyTimeoutMs` (5000 ms, our value; Java has no timeout, it only delays the first level load by 1 s, `DhClientWorld.java:64`). Client-only: levels load with the locally derived key on the first attempt, no LevelInit request, no section requests (the request queues are gated by `isReady()`), received chunks keep being ingested from the client Level.
+- Late reply (Java-consistent, `ClientPluginChannelApi.onLevelInitMessage`): no latch; any SessionConfig/LevelInit switches to `server`. A LevelInit key arriving for an already loaded level re-keys it: the driver unloads the level and reloads it under the server key (Java loads a second, keyed level next to the unkeyed one).
+- Remote store folder: `worlds/mp_<host>_<port>` from `IClientInstance::getGameConnectionInfo()` (`mHostIpAddress`/`mUnresolvedUrl`, `mPort`), fallback `mp_<level name>_<level id>`; singleplayer stays `sp_...`.

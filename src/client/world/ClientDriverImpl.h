@@ -86,7 +86,9 @@ struct Session {
     std::atomic<std::int32_t> playerX{0}, playerY{64}, playerZ{0};
     std::atomic<int>          desiredDim{kNoDimension}; ///< dimension of the local player
     std::atomic<int>          loadedDim{kNoDimension};  ///< dimension whose level is loaded (worker writes)
+    std::atomic<int>          rekeyDim{kNoDimension}; ///< a late LevelInit key is parked on this dimension's handle
     std::atomic<bool>         tickInFlight{false};
+    int                       loggedMode = -1; ///< dh::mp::DhMode last logged (game thread)
     std::atomic<bool>         stopping{false};
     std::atomic<std::int64_t> loadAttempts{0};
     std::atomic<int>          activeMinY{-64}, activeMaxY{320};
@@ -142,6 +144,7 @@ struct ClientWorldDriver::Impl {
     bool loadLevels(Session& s, int dim);
     void unloadLevels(Session& s, int dim);
     void updateHud(Session& s);
+    void pollMode(Session& s);
 
     // ingestion (ClientIngest.cpp)
     void installHooks();
