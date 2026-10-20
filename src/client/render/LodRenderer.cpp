@@ -8,6 +8,7 @@
 #include "client/world/ClientWorldDriver.h"
 
 #include "bedrock_common/ConfigBridge.h"
+#include "dh/config/Options.h"
 #include "dh/render/RenderUtil.h"
 
 #include "dh/pos/SectionPos.h"
@@ -61,15 +62,54 @@ LodRenderer::LodRenderer() { applyMeshSettings(); }
 
 void LodRenderer::applyMeshSettings() {
     MeshSettings s;
-    auto const&  pc           = kPrimChoices[cfg_.primChoice % kPrimChoiceCount];
-    s.prim                    = pc.prim;
-    s.params.flipWinding      = pc.flip;
-    s.params.doubleSided      = pc.doubleSided;
+    s.prim                    = Primitive::QuadList; // fixed: the verified primitive / winding
+    s.params.flipWinding      = false;
+    s.params.doubleSided      = false;
     s.params.skyBrightness    = cfg_.skyBrightness;
     s.params.cpuLighting      = cpuLighting_;
     s.params.lightmapSwapAxes = lightSwapApplied_;
     s.yOffsetBlocks           = cfg_.minYBlocks;
     uploader_.setSettings(s);
+}
+
+void LodRenderer::applyOptions(dh::Options const& o) {
+    auto const& a = o.client.advanced;
+    switch (a.skyOrder) {
+    case dh::SkyOrderMode::Overdraw: cfg_.skyOrder = SkyOrder::Overdraw; break;
+    case dh::SkyOrderMode::Late:     cfg_.skyOrder = SkyOrder::Late; break;
+    case dh::SkyOrderMode::Opaque:   cfg_.skyOrder = SkyOrder::Opaque; break;
+    }
+    cfg_.lateScope = a.lateScope == dh::LateScopeMode::Full ? LateScope::Full : LateScope::BeyondVanilla;
+    switch (a.lightmapMode) {
+    case dh::LightmapSource::Dynamic:        cfg_.lightmapMode = LightmapMode::Dynamic; break;
+    case dh::LightmapSource::Shader:         cfg_.lightmapMode = LightmapMode::Shader; break;
+    case dh::LightmapSource::DynamicSwapped: cfg_.lightmapMode = LightmapMode::DynamicSwapped; break;
+    case dh::LightmapSource::UnlitTest:      cfg_.lightmapMode = LightmapMode::UnlitTest; break;
+    case dh::LightmapSource::LightDebug:     cfg_.lightmapMode = LightmapMode::LightDebug; break;
+    }
+    cfg_.nearCutoff = a.nearClip;
+    switch (a.farPlane) {
+    case dh::FarPlaneMode::LocalProjPush: cfg_.farMode = FarMode::LocalProjPush; break;
+    case dh::FarPlaneMode::ZFarOverride:  cfg_.farMode = FarMode::ZFarOverride; break;
+    case dh::FarPlaneMode::Off:           cfg_.farMode = FarMode::Off; break;
+    }
+    switch (a.material) {
+    case dh::MaterialMode::Dh:           cfg_.material = MaterialChoice::Dh; break;
+    case dh::MaterialMode::MeshFallback: cfg_.material = MaterialChoice::MeshFallback; break;
+    case dh::MaterialMode::Selection:    cfg_.material = MaterialChoice::Selection; break;
+    }
+    switch (a.drawHook) {
+    case dh::DrawHookMode::CameraAfter:       cfg_.drawHook = DrawHook::CameraAfter; break;
+    case dh::DrawHookMode::LevelRenderBefore: cfg_.drawHook = DrawHook::LevelRenderBefore; break;
+    case dh::DrawHookMode::LevelRenderAfter:  cfg_.drawHook = DrawHook::LevelRenderAfter; break;
+    case dh::DrawHookMode::PostLevelRender:   cfg_.drawHook = DrawHook::PostLevelRender; break;
+    }
+    cfg_.coreFrustum     = a.coreFrustum;
+    cfg_.drawTransparent = a.drawTransparent;
+    logPerf_             = o.client.debug.logRenderPerf;
+    logLightingDiag_     = o.client.debug.logLightingDiag || o.client.debug.enabled;
+    CloudRenderer::setBackFaceCull(o.client.graphics.clouds.backFaceCull);
+    applyMeshSettings();
 }
 
 bool LodRenderer::lastCameraPos(glm::dvec3& out) const {
@@ -138,17 +178,6 @@ void LodRenderer::cycleMaterial() {
     DH_LOG_I("render: material -> %s", materialName());
 }
 
-void LodRenderer::cycleOrigin() {
-    cfg_.origin = cfg_.origin == OriginMode::CameraRelative ? OriginMode::Absolute : OriginMode::CameraRelative;
-    DH_LOG_I("render: origin mode -> %s", cfg_.origin == OriginMode::CameraRelative ? "camera-relative" : "absolute");
-}
-
-void LodRenderer::cyclePrimitive() {
-    cfg_.primChoice = (cfg_.primChoice + 1) % kPrimChoiceCount;
-    applyMeshSettings();
-    DH_LOG_I("render: primitive -> %s (live sections are re-converted)", kPrimChoices[cfg_.primChoice].name);
-}
-
 void LodRenderer::cycleFarMode() {
     cfg_.farMode = static_cast<FarMode>((static_cast<int>(cfg_.farMode) + 1) % 3);
     DH_LOG_I("render: far-plane mode -> %s (far=%.0f)", farModeName(), cfg_.farBlocks);
@@ -162,12 +191,7 @@ void LodRenderer::toggleNearCutoff() {
 
 void LodRenderer::cycleLightmapMode() {
     cfg_.lightmapMode = static_cast<LightmapMode>((static_cast<int>(cfg_.lightmapMode) + 1) % kLightmapModeCount);
-    DH_LOG_I("render: lightmap mode -> %s (Numpad 3)", kLightmapModeNames[static_cast<int>(cfg_.lightmapMode)]);
-}
-
-void LodRenderer::toggleTransparent() {
-    cfg_.drawTransparent = !cfg_.drawTransparent;
-    DH_LOG_I("render: transparent pass -> %s", cfg_.drawTransparent ? "on" : "off");
+    DH_LOG_I("render: lightmap mode -> %s", kLightmapModeNames[static_cast<int>(cfg_.lightmapMode)]);
 }
 
 char const* LodRenderer::skyOrderName() const {
@@ -185,7 +209,7 @@ char const* LodRenderer::skyOrderName() const {
 void LodRenderer::cycleSkyOrder() {
     cfg_.skyOrder = static_cast<SkyOrder>((static_cast<int>(cfg_.skyOrder) + 1) % kSkyOrderCount);
     loggedSkyOrder_ = false; // log which material the next frame really uses
-    DH_LOG_I("render: sky order -> %s (Numpad 4 / Ctrl+F7)", skyOrderName());
+    DH_LOG_I("render: sky order -> %s", skyOrderName());
 }
 
 char const* LodRenderer::lateScopeName() const {
@@ -194,7 +218,7 @@ char const* LodRenderer::lateScopeName() const {
 
 void LodRenderer::toggleLateScope() {
     cfg_.lateScope = cfg_.lateScope == LateScope::BeyondVanilla ? LateScope::Full : LateScope::BeyondVanilla;
-    DH_LOG_I("render: late repeat scope -> %s (Numpad 7)", lateScopeName());
+    DH_LOG_I("render: late repeat scope -> %s", lateScopeName());
 }
 
 bool LodRenderer::cloudsWanted() const {
@@ -203,7 +227,7 @@ bool LodRenderer::cloudsWanted() const {
 
 void LodRenderer::toggleClouds() {
     cloudsToggle_ = !cloudsToggle_;
-    DH_LOG_I("render: DH clouds -> %s (Numpad 2)", cloudsToggle_ ? "on" : "off");
+    DH_LOG_I("render: DH clouds -> %s", cloudsToggle_ ? "on" : "off");
 }
 
 namespace {
@@ -313,7 +337,7 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
         }
     }
 
-    // DH_Terrain lighting (LightmapMode, Numpad 3). Default: the procedural Java lightmap in the FS (no texture).
+    // DH_Terrain lighting (LightmapMode, client.advanced.lightmapMode). Default: the procedural Java lightmap in the FS (no texture).
     // Dynamic*: the live RenderDragon lightmap, dynamic texture BrightnessTexture<subClientId> in
     // MinecraftGameplayGraphicsResources::mDynamicTextures (read-only lookup, never creates the entry; see
     // docs/spikes/lightmap-texture.md), bound at slot 0. Without it the draw falls back to the procedural path.
@@ -333,8 +357,7 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
             if (tex && static_cast<bool>(*tex)) {
                 if (!loggedLightmapSize_) {
                     DH_LOG_I(
-                        "render: lightmap source = dynamic texture BrightnessTexture%u (Numpad 3 cycles the lighting "
-                        "path)",
+                        "render: lightmap source = dynamic texture BrightnessTexture%u",
                         static_cast<unsigned>(key)
                     );
                     loggedLightmapSize_ = true;
@@ -365,24 +388,22 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
         lightmapOk
             ? 1.0f
             : (lmode == LightmapMode::UnlitTest ? 2.0f : (lmode == LightmapMode::LightDebug ? -3.0f : -daylight));
-    if (const auto tnow = std::chrono::steady_clock::now(); tnow - lastLightDiag_ > std::chrono::seconds(10)) {
-        lastLightDiag_ = tnow;
-        auto const ls  = uploader_.lightStats();
-        DH_LOG_I(
-            "render: lighting diag mode=%s lightmapOk=%d src=%s flag=%.2f skyDarken=%.2f scalar=%.2f cpuLighting=%d "
-            "convertedV[min=%.3f max=%.3f zero=%.0f%% valid=%d]",
-            kLightmapModeNames[static_cast<int>(lmode)],
-            (int)lightmapOk,
-            lightSrc,
-            static_cast<double>(lightFlag),
-            static_cast<double>(daylight),
-            static_cast<double>(vs.skyBrightness),
-            (int)cpuLighting_,
-            static_cast<double>(ls.vMin),
-            static_cast<double>(ls.vMax),
-            static_cast<double>(ls.zeroFrac * 100.0f),
-            (int)ls.valid
-        );
+    if (logLightingDiag_) {
+        if (const auto tnow = std::chrono::steady_clock::now(); tnow - lastLightDiag_ > std::chrono::seconds(10)) {
+            lastLightDiag_ = tnow;
+            auto const ls  = uploader_.lightStats();
+            DH_LOG_I(
+                "render: lighting %s src=%s flag=%.2f skyDarken=%.2f cpu=%d v[%.2f..%.2f zero %.0f%%]",
+                kLightmapModeNames[static_cast<int>(lmode)],
+                lightSrc,
+                static_cast<double>(lightFlag),
+                static_cast<double>(daylight),
+                (int)cpuLighting_,
+                static_cast<double>(ls.vMin),
+                static_cast<double>(ls.vMax),
+                static_cast<double>(ls.zeroFrac * 100.0f)
+            );
+        }
     }
     // Lighting mode follows the material: DH_Terrain with a bound lightmap keeps the colours unlit and sends the light
     // in uv0.y; every other case (other materials, no lightmap) applies the CPU light factor. A change re-converts all
@@ -835,7 +856,7 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
                 drawCalls,
                 matName,
                 camRel ? "camera-relative" : "absolute",
-                kPrimChoices[cfg_.primChoice].name,
+                "QuadList",
                 farModeName(),
                 info.valid ? info.kind : "unrecognised"
             );
@@ -864,23 +885,18 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
 }
 
 void LodRenderer::logPerf(std::chrono::steady_clock::time_point now) {
-    const bool    first = lastPerf_ == std::chrono::steady_clock::time_point{};
-    const double  secs  = first ? 0.0 : std::chrono::duration<double>(now - lastPerf_).count();
-    std::uint64_t res[4];
-    dhBindingResolves(res);
-    if (secs > 0.0 && perfFrames_ > 0) {
+    const bool   first = lastPerf_ == std::chrono::steady_clock::time_point{};
+    const double secs  = first ? 0.0 : std::chrono::duration<double>(now - lastPerf_).count();
+    if (logPerf_ && secs > 0.0 && perfFrames_ > 0) {
         const double f = static_cast<double>(perfFrames_);
         auto         c = [&](int l) { return static_cast<double>(perf_[l].calls) / f; };
         auto         q = [&](int l) { return static_cast<double>(perf_[l].verts) / 4.0 / f / 1000.0; };
         auto         t = [&](int l) { return perf_[l].ms / f; };
-        auto         r = [&](int k) { return static_cast<double>(res[k] - perfResolves_[k]) / f; };
-        // per-frame averages over the window (frames = drawFrame calls); kquads assume the QuadList primitive
-        // (verts / 4); ms = CPU submit time on the render thread (the GPU cost is not measurable from here)
+        // per-frame averages over the window (frames = drawFrame calls); layers o = opaque, l = late repeat,
+        // w = water/translucent, c = clouds; ms = CPU submit time on the render thread (GPU cost is not measurable)
         DH_LOG_I(
-            "render: perf %.1f fps | calls/frame opaque %.0f late %.0f water %.0f clouds %.0f | kquads/frame opaque "
-            "%.0f late %.0f water %.0f clouds %.0f | ms/frame %.2f (max %.2f) opaque %.2f late %.2f water %.2f clouds "
-            "%.2f | sections %.0f, late skipped %.0f, clip skipped %.0f | cloud tiles %zu drawn / %zu live, %zu "
-            "kquads live | resolves/frame dh %.0f trans %.0f late %.0f water %.0f | sky %s, late scope %s",
+            "render: perf %.0f fps | calls o%.0f l%.0f w%.0f c%.0f | kquads o%.0f l%.0f w%.0f c%.0f | cpu ms %.2f "
+            "(max %.2f; o%.2f l%.2f w%.2f c%.2f) | sections %.0f, late skipped %.0f, clip skipped %.0f",
             f / secs,
             c(0),
             c(1),
@@ -898,23 +914,13 @@ void LodRenderer::logPerf(std::chrono::steady_clock::time_point now) {
             t(3),
             static_cast<double>(perfSections_) / f,
             static_cast<double>(perfLateSkipped_) / f,
-            static_cast<double>(perfClipSkipped_) / f,
-            clouds_.stats().tilesDrawn,
-            clouds_.stats().tiles,
-            clouds_.stats().quads / 1000,
-            r(0),
-            r(1),
-            r(2),
-            r(3),
-            skyOrderName(),
-            lateScopeName()
+            static_cast<double>(perfClipSkipped_) / f
         );
     }
     lastPerf_ = now;
     for (auto& l : perf_) l = PerfLayer{};
     perfFrames_ = perfSections_ = perfLateSkipped_ = perfClipSkipped_ = perfCloudQuads_ = 0;
     perfMsSum_ = perfMsMax_ = 0;
-    for (int k = 0; k < 4; ++k) perfResolves_[k] = res[k];
 }
 
 } // namespace dh::render

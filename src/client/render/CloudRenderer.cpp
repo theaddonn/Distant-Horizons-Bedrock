@@ -392,15 +392,17 @@ std::size_t CloudRenderer::draw(
 namespace dh::render {
 
 namespace {
-bool gBackFaceCull = true; // Numpad 6; render thread only
+bool gBackFaceCull = true; // client.graphics.clouds.backFaceCull; render thread only
 } // namespace
 
 bool CloudRenderer::backFaceCullEnabled() { return gBackFaceCull; }
 
 void CloudRenderer::toggleBackFaceCull() {
     gBackFaceCull = !gBackFaceCull;
-    DH_LOG_I("clouds: back-face cull -> %s (Numpad 6)", gBackFaceCull ? "on" : "off");
+    DH_LOG_I("clouds: back-face cull -> %s", gBackFaceCull ? "on" : "off");
 }
+
+void CloudRenderer::setBackFaceCull(bool on) { gBackFaceCull = on; }
 
 bool CloudRenderer::cullsBackFaces(double cameraY, bool cameraRelative) const {
     if (!gBackFaceCull || !cameraRelative) return false;

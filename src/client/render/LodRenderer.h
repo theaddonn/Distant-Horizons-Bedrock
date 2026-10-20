@@ -16,6 +16,9 @@
 #include <cstdint>
 #include <vector>
 
+namespace dh {
+struct Options;
+}
 class BaseActorRenderContext;
 class IClientInstance;
 class ScreenContext;
@@ -26,7 +29,7 @@ namespace dh::render {
 enum class MaterialChoice : int { Selection = 0, MeshFallback = 1, Dh = 2 };
 enum class OriginMode : int { CameraRelative = 0, Absolute = 1 };
 enum class FarMode : int { Off = 0, LocalProjPush = 1, ZFarOverride = 2 };
-/// DH_Terrain lighting path; Numpad 3 cycles. Run 13 (2026-10-19): the earlier "black" results (dynamic texture,
+/// DH_Terrain lighting path (client.advanced.lightmapMode). Run 13 (2026-10-19): the earlier "black" results (dynamic texture,
 /// procedural shader) are explained by the missing uv0 vertex field (MeshUploader); pending in-game confirmation.
 enum class LightmapMode : int {
     Shader  = 0, ///< no texture: procedural Java lightmap in the FS (packed light + skyDarken) [default]
@@ -39,27 +42,11 @@ inline constexpr int         kLightmapModeCount = 5;
 inline constexpr char const* kLightmapModeNames[] =
     {"shader", "dynamic", "dynamic-swapped", "unlit-test", "light-debug"};
 
-/// Primitive / winding choices cycled by F4.
-struct PrimChoice {
-    Primitive   prim;
-    bool        flip;
-    bool        doubleSided;
-    char const* name;
-};
-inline constexpr PrimChoice kPrimChoices[] = {
-    {Primitive::QuadList,     false, false, "QuadList"                 },
-    {Primitive::TriangleList, false, false, "TriangleList"             },
-    {Primitive::TriangleList, true,  false, "TriangleList-flipped"     },
-    {Primitive::TriangleList, false, true,  "TriangleList-double-sided"},
-    {Primitive::QuadList,     false, true,  "QuadList-double-sided"    },
-};
-inline constexpr int kPrimChoiceCount = static_cast<int>(sizeof(kPrimChoices) / sizeof(kPrimChoices[0]));
-
-/// Where the LOD draw is hooked (Ctrl+F8 cycles).
+/// Where the LOD draw is hooked (client.advanced.drawHook).
 enum class DrawHook : int { CameraAfter = 0, LevelRenderBefore = 1, LevelRenderAfter = 2, PostLevelRender = 3 };
 inline constexpr int kDrawHookCount = 4;
 
-/// Which dragon frame-graph pass the opaque LOD layer lands in (Numpad 4 / Ctrl+F7 cycle; Run 13). RenderDragon bins
+/// Which dragon frame-graph pass the opaque LOD layer lands in (client.advanced.skyOrder; Run 13). RenderDragon bins
 /// every draw by material pass kind and runs Opaque -> AlphaTest -> Transparent; Stars / SunMoon are Transparent-only,
 /// so they are drawn after (and depth-test in front of) opaque LODs whatever the hook. `Late` draws the opaque layer
 /// with DH_TerrainLate (Blending flag, One/Zero factors, depth write) so it lands in the Transparent pass after the
@@ -77,7 +64,7 @@ inline constexpr int kSkyOrderCount = 3;
 /// (default) hard-clips it at the vanilla render distance (fadeEnd) and skips sections lying entirely inside: there
 /// every LOD fragment is nearer than the star sphere, so the stars already fail the depth test, and the repeat would
 /// only paint the LOD seabed over vanilla translucent water in the 115..144 overlap band. `Full` is the Run 14
-/// behaviour (same near clip / dither as the Opaque draw). Numpad 7 toggles.
+/// behaviour (same near clip / dither as the Opaque draw). client.advanced.lateScope.
 enum class LateScope : int { BeyondVanilla = 0, Full = 1 };
 
 /// A section that passed the cull this frame (translate = draw-space min corner, dist2 = horizontal centre distance²,
@@ -102,20 +89,19 @@ struct ViewSnapshot {
 struct LodRendererConfig {
     DrawHook drawHook = DrawHook::CameraAfter;
     SkyOrder skyOrder = SkyOrder::Overdraw; // Run 14 (was Late)
-    LateScope lateScope = LateScope::BeyondVanilla; // Run 15 (Numpad 7)
+    LateScope lateScope = LateScope::BeyondVanilla; // Run 15
     /// selectionOpaqueMaterial drops the green channel (magenta terrain, 2026-10-19); the fogged fallback is the
-    /// Stage-A default, F6 cycles back for comparison.
+    /// Stage-A default (client.advanced.material).
     MaterialChoice material   = MaterialChoice::Dh; // -> MeshFallback (fogged) -> selection, whichever resolves
-    OriginMode     origin     = OriginMode::CameraRelative;
-    int            primChoice = 0;                      ///< index into kPrimChoices
+    OriginMode     origin     = OriginMode::CameraRelative; ///< fixed (not an option)
     FarMode        farMode    = FarMode::LocalProjPush; // R3 (2026-10-19): zfar-override makes the clouds vanish
     float          farBlocks  = 20000.0f;               ///< far plane used by LocalProjPush / ZFarOverride
 
     std::size_t maxUploadsPerFrame = 8;
     bool        frustumCull        = true;
     bool        drawTransparent    = true;
-    bool        coreFrustum        = true; ///< cull in the core RenderList (Ctrl+F5 toggles; off: only Frustum5)
-    /// Draw every uploaded section instead of the world pipeline's render list (set while the Shift+F5 test feed
+    bool        coreFrustum        = true; ///< cull in the core RenderList (client.advanced.coreFrustum; off: only Frustum5)
+    /// Draw every uploaded section instead of the world pipeline's render list (set while the DH_TEST_FEED test feed
     /// is active, whose sections are not part of any quad tree).
     bool drawAllUploaded = false;
 
@@ -130,7 +116,7 @@ struct LodRendererConfig {
 
     float        skyBrightness    = 1.0f;  ///< CPU light stand-in input (0 night .. 1 day); fallback materials only
     bool         lightmapSwapAxes = false; ///< DH_Terrain: swap the lightmap lookup axes (default u = block, v = sky)
-    LightmapMode lightmapMode     = LightmapMode::Dynamic; ///< vanilla lightmap (verified in game 2026-10-19), shader formula as fallback; Numpad 3 cycles
+    LightmapMode lightmapMode     = LightmapMode::Dynamic; ///< vanilla lightmap (verified in game 2026-10-19), shader formula as fallback
     float        minYBlocks       = -64.0f;               ///< DH y 0 maps to this Bedrock y
 };
 
@@ -165,26 +151,26 @@ public:
     /// placed around the player before anything has been rendered.
     void observeCamera(ViewRenderObject const& vro);
 
-    /// Cycle helpers used by the key handler (log the new value).
+    /// Fills the render config from the user options (call once at install; a restart applies changes).
+    void applyOptions(dh::Options const& o);
+
+    /// Debug-key helpers (client.debug.enabled; they log the new value, nothing is saved).
     void cycleMaterial();
-    void cycleOrigin();
-    void cyclePrimitive();
     void cycleFarMode();
     void toggleNearCutoff();
-    void toggleTransparent();
-    /// Numpad 4 / Ctrl+F7: cycle SkyOrder (which pass the opaque LOD layer is drawn in).
+    /// Cycle SkyOrder (which pass the opaque LOD layer is drawn in).
     void        cycleSkyOrder();
     char const* skyOrderName() const;
-    /// Numpad 7: toggle LateScope (Overdraw late-repeat coverage).
+    /// Toggle LateScope (Overdraw late-repeat coverage).
     void        toggleLateScope();
     char const* lateScopeName() const;
-    /// Numpad 3: cycle the lightmap source / binding path (LightmapMode).
+    /// Cycle the lightmap source / binding path (LightmapMode).
     void cycleLightmapMode();
-    /// Numpad 2: DH clouds on/off (the vanilla clouds come back while off).
+    /// DH clouds on/off (the vanilla clouds come back while off).
     void toggleClouds();
 
     // ---- clouds (CloudRenderer) ----
-    /// Effective switch: option client.graphics.clouds.renderDhClouds && the Numpad 2 toggle.
+    /// Effective switch: option client.graphics.clouds.renderDhClouds && the runtime debug toggle.
     bool cloudsWanted() const;
     /// Camera hook: the dimension's cloud height (LevelRendererCamera::mCloudHeight).
     void noteCloudHeight(float y) { cloudHeight_ = y; }
@@ -204,7 +190,9 @@ private:
     MeshUploader      uploader_;
     CloudRenderer     clouds_{uploader_};
 
-    bool                      cloudsToggle_ = true;
+    bool                      cloudsToggle_    = true;
+    bool                      logPerf_         = true;
+    bool                      logLightingDiag_ = false;
     std::atomic<float>        cloudHeight_{192.0f};
     std::atomic<std::int64_t> vanillaCloudsSeenNs_{0}; ///< steady_clock ns of the last mDrawClouds==true
     std::atomic<std::int64_t> cloudsDrawnNs_{0};
@@ -240,7 +228,6 @@ private:
     std::uint64_t                         perfFrames_ = 0, perfSections_ = 0, perfLateSkipped_ = 0,
                                           perfClipSkipped_ = 0, perfCloudQuads_ = 0;
     double                                perfMsSum_ = 0, perfMsMax_ = 0;
-    std::uint64_t                         perfResolves_[4]{};
     std::chrono::steady_clock::time_point lastPerf_{};
     void                                  logPerf(std::chrono::steady_clock::time_point now);
 };

@@ -1,7 +1,7 @@
 #pragma once
 
 // Synthetic MeshBuffers pushed through MeshUploader::upload so the full IVertexSink -> mce::Mesh -> draw path can be
-// seen in game before the real pipeline (G2) exists. Toggled with Shift+F5.
+// seen in game before the real pipeline (G2) exists. Toggled with Shift+F5 when DH_TEST_FEED=1.
 
 #include <glm/glm.hpp>
 
