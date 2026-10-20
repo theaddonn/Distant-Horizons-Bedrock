@@ -2,6 +2,7 @@
 
 #include "bedrock_common/FileLogger.h"
 #include "client/hud/DebugHud.h"
+#include "client/render/Frustum5.h"
 #include "client/spikes/SpikeGfx.h"
 #include "client/world/ClientWorldDriver.h"
 
@@ -52,40 +53,6 @@ namespace dh::render {
 namespace {
 
 using Texture = std::variant<std::monostate, mce::TexturePtr, mce::ClientTexture, mce::ServerTexture>;
-
-/// Visibility planes in the "draw space" the section translate lands in. Five planes only: left, right, bottom, top and
-/// "in front of the camera" (clip w > 0). Near/far depth planes are intentionally not used: their convention
-/// (reversed-Z, [0,1] vs [-1,1]) is unverified (R3) and LODs have no meaningful far plane.
-struct Frustum5 {
-    bool      valid = false;
-    glm::vec4 p[5]{};
-
-    /// `transposed` = row-vector layout as detected by spikes::analyzeProjection (clip = v * M); see the derivation in
-    /// docs/spikes/stage-a-render.md.
-    static Frustum5 build(glm::mat4 const& proj, glm::mat4 const& view, bool transposed) {
-        Frustum5  f;
-        glm::mat4 m   = transposed ? view * proj : proj * view;
-        auto      row = [&](int i) { return transposed ? m[i] : glm::row(m, i); };
-        glm::vec4 r0 = row(0), r1 = row(1), r3 = row(3);
-        f.p[0]  = r3 + r0;
-        f.p[1]  = r3 - r0;
-        f.p[2]  = r3 + r1;
-        f.p[3]  = r3 - r1;
-        f.p[4]  = r3;
-        f.valid = true;
-        for (auto const& pl : f.p)
-            if (!std::isfinite(pl.x + pl.y + pl.z + pl.w)) f.valid = false;
-        return f;
-    }
-
-    bool visible(glm::vec3 const& lo, glm::vec3 const& hi) const {
-        for (auto const& pl : p) {
-            glm::vec3 v{pl.x >= 0 ? hi.x : lo.x, pl.y >= 0 ? hi.y : lo.y, pl.z >= 0 ? hi.z : lo.z};
-            if (pl.x * v.x + pl.y * v.y + pl.z * v.z + pl.w < 0) return false;
-        }
-        return true;
-    }
-};
 
 struct Visible {
     MeshUploader::Section const* sec;
@@ -456,7 +423,7 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
         // the cloud section is not terrain: keep it out of the section/byte statistics
         const std::size_t cb = clouds_.liveBytes();
         if (cb) {
-            stats.liveSections -= std::min<std::size_t>(stats.liveSections, 1);
+            stats.liveSections -= std::min(stats.liveSections, clouds_.liveSectionCount());
             stats.liveBytes    -= std::min(stats.liveBytes, cb);
         }
     }
@@ -620,6 +587,7 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
             ci_.enable ? (cloudsReady ? "on" : "building") : (cloudsWanted() ? "waiting" : "off")
         );
         dh::hud::set("render.cloudQuads", static_cast<std::int64_t>(clouds_.stats().quads));
+        dh::hud::set("render.cloudDrawn", static_cast<std::int64_t>(clouds_.stats().quadsDrawn));
     }
     if (dhShader) {
         dh::hud::set("render.clip", static_cast<double>(clipRadius));
@@ -772,8 +740,9 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
         if (lateMaterial) drawLayer(false, lateMaterial, cfg_.skyOrder != SkyOrder::Overdraw);
         if (cfg_.drawTransparent) drawLayer(true, material, true);
         if (cloudsReady && transMaterial != material) {
-            cloudCalls = clouds_.draw(mctx, *transMaterial, camPos, camRel, fogStart, fogEnd);
-            if (cloudCalls) cloudsDrawnNs_ = nowNs();
+            cloudCalls = clouds_.draw(mctx, *transMaterial, camPos, camRel, fogStart, fogEnd, fr);
+            // live tiles that are all culled (looking away) still count: vanilla's clouds must stay hidden
+            if (cloudCalls || clouds_.stats().tiles) cloudsDrawnNs_ = nowNs();
         }
     };
 
