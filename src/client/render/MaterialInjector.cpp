@@ -1096,7 +1096,15 @@ mce::RenderMaterialInfo* cloneDhInto(
 } // namespace
 
 bool ensureDhMceMaterial(mce::MaterialPtr const& fallback, char const* sourceName) {
-    static bool done = false, transDone = false, lateDone = false, waterDone = false;
+    // No once-only flags: a clean reload of the switchable group (world exit / re-join, video settings) replaces its
+    // RenderMaterialInfo entries with fresh ones whose mPtr is empty, so the clones have to be made again (2026-10-20:
+    // after re-joining a world the LODs fell back to selectionOpaqueMaterial, magenta, for the rest of the session).
+    auto live = [](char const* name) {
+        auto info = mce::RenderMaterialGroup::switchable().getMaterialInfo(HashedString{name});
+        return info && info->mPtr.get() != nullptr;
+    };
+    const bool done = live("DH_Terrain"), transDone = live("DH_TerrainTransparent"), lateDone = live("DH_TerrainLate"),
+               waterDone = live("DH_TerrainWater");
     if (done && transDone && lateDone && waterDone) return true;
     if (!gBinderInstalled.load() || !fallback.mRenderMaterialInfoPtr) return false;
     mce::RenderMaterial* src = fallback.mRenderMaterialInfoPtr->mPtr.get();
@@ -1130,7 +1138,6 @@ bool ensureDhMceMaterial(mce::MaterialPtr const& fallback, char const* sourceNam
     if (!done) {
         if (!cloneDhInto(dhInfo, "DH_Terrain", src, CloneKind::Opaque)) return false;
         gDhInfo = dhInfo.get();
-        done    = true;
         DH_LOG_I(
             "materials: DH_Terrain mce material cloned (source info=%p, info=%p material=%p)",
             (void*)fallback.mRenderMaterialInfoPtr.get(),
@@ -1141,7 +1148,6 @@ bool ensureDhMceMaterial(mce::MaterialPtr const& fallback, char const* sourceNam
     if (!transDone) {
         if (auto* ti = cloneDhInto(dhTransInfo, "DH_TerrainTransparent", src, CloneKind::Blended)) {
             gDhTransInfo = ti;
-            transDone    = true;
             DH_LOG_I(
                 "materials: DH_TerrainTransparent mce material cloned (info=%p material=%p)",
                 (void*)ti,
@@ -1152,7 +1158,6 @@ bool ensureDhMceMaterial(mce::MaterialPtr const& fallback, char const* sourceNam
     if (!lateDone) {
         if (auto* li = cloneDhInto(dhLateInfo, "DH_TerrainLate", src, CloneKind::Late)) {
             gDhLateInfo = li;
-            lateDone    = true;
             DH_LOG_I(
                 "materials: DH_TerrainLate mce material cloned (info=%p material=%p)",
                 (void*)li,
@@ -1163,7 +1168,6 @@ bool ensureDhMceMaterial(mce::MaterialPtr const& fallback, char const* sourceNam
     if (!waterDone) {
         if (auto* wi = cloneDhInto(dhWaterInfo, "DH_TerrainWater", src, CloneKind::Water)) {
             gDhWaterInfo = wi;
-            waterDone    = true;
             DH_LOG_I(
                 "materials: DH_TerrainWater mce material cloned (info=%p material=%p)",
                 (void*)wi,

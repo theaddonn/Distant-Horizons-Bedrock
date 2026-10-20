@@ -813,8 +813,10 @@ bool BdsWorldGenerator::decorateCell(const std::shared_ptr<Batch>& batch, std::i
 
     // Freeze/snow pass (decorationPostProcessChunk @0xc595fd9..0xc59619c), right after the features: per column of
     // this chunk, ice on freezable water below the rain-top block, a snow layer on it where it snows.
-    static const ::Block* ice  = ::Block::tryGetFromRegistry(::HashedString("minecraft:ice")).as_ptr();
-    static const ::Block* snow = ::Block::tryGetFromRegistry(::HashedString("minecraft:snow_layer")).as_ptr();
+    // Looked up per cell, never cached in a static: the block registry is rebuilt on every world join, so a cached
+    // Block* dangles after leaving and re-entering a world (crash in BlockSource::setBlock, 2026-10-20).
+    const ::Block* ice  = ::Block::tryGetFromRegistry(::HashedString("minecraft:ice")).as_ptr();
+    const ::Block* snow = ::Block::tryGetFromRegistry(::HashedString("minecraft:snow_layer")).as_ptr();
     const short           y0   = static_cast<short>(-minY); // vanilla passes local y = -minY (world y 0)
     for (int bx = 0; bx < 16; ++bx)
         for (int bz = 0; bz < 16; ++bz) {

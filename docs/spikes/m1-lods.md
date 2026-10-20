@@ -416,3 +416,19 @@ draws all cloud faces, as before). F5 on, DH clouds on (Numpad 2), video setting
 
 Send back: the `cloud probe:` lines (both runs), the Numpad 6 lines, and a screenshot from above with the cull on
 and one with it off at the same spot; say whether the cells still look like solid boxes.
+
+## Run 14: leave a world and re-join (crash in the generator, magenta LODs)
+
+Background: PORTING.md "Run 14 (crash + magenta LODs after leaving and re-joining a world)".
+
+1. Join a world, let LODs show with DH_Terrain (log `render: material DH_Terrain resolved`). Leave to the main menu,
+   join the same or another world. **PASS:** LODs come back in normal colours within a few seconds; the log shows a
+   new set of `materials: DH_Terrain mce material cloned` / `DH_TerrainTransparent` / `DH_TerrainLate` /
+   `DH_TerrainWater` lines after the second join and no `invalid; drawing with selectionOpaqueMaterial` line.
+2. Fly into new terrain in the second world for at least two minutes with Features generation running (10 s
+   `world gen:` lines with `features avg`). **PASS:** no crash; the freeze/snow pass still produces white frozen
+   oceans and snow cover on new LODs.
+3. F5 off and on a few times in the same world: the LODs must keep DH_Terrain (no magenta) each time.
+
+Send back: the second-join `mce material cloned` lines, any `invalid; drawing with` line, and whether a crash trace
+appeared in `logs/crash/`.
