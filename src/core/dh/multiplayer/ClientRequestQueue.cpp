@@ -273,11 +273,13 @@ void NetworkRequestQueue::handleResponse(
         return;
 
     case NetResponse::Kind::Payload: {
-        auto decoded = net_.decodePayload(response.payload);
+        std::size_t payloadBytes = 0;
+        auto        decoded      = net_.decodePayload(response.payload, &payloadBytes);
         if (!decoded) {
             retryOrFail(task, decoded.error().message);
             return;
         }
+        net_.noteSectionReceived(task->pos, payloadBytes);
         FullDataSource source = std::move(*decoded);
         if (source.pos != task->pos) {
             retryOrFail(task, "response position does not match the request");
