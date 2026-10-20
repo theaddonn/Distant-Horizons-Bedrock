@@ -15,13 +15,15 @@ Changes need a game restart. Toggles made with the keys below are runtime-only a
 
 ## Debug keys (only with `client.debug.enabled = true`)
 
+The numpad keys need NumLock on (with NumLock off Windows reports them as arrow/navigation keys).
+
 | Key | Action | Persistent option |
 |---|---|---|
 | `client.debug.hudKey` (Numpad 0) | overlay on/off | - |
 | Numpad . | dump the HUD registry as JSON to `dh.log` (`hud-dump: {...}`) | - |
 | Numpad 1 | cycle vanilla fog mode (`off`, `distance`, `fog-control`, `all`) | `client.graphics.fog.vanillaFog` |
 | Numpad 2 | DH clouds on/off | `client.graphics.clouds.renderDhClouds` |
-| Numpad 3 | cycle lightmap mode (`dynamic`, `shader`, `dynamic-swapped`, `unlit-test`, `light-debug`) | `client.advanced.lightmapMode` |
+| Numpad 3 | cycle lightmap mode (order: `shader`, `dynamic`, `dynamic-swapped`, `unlit-test`, `light-debug`; the first press from the default `dynamic` goes to `dynamic-swapped`) | `client.advanced.lightmapMode` |
 | Numpad 4 | cycle sky order (`overdraw`, `late`, `opaque`) | `client.advanced.skyOrder` |
 | Numpad 5 | cloud probe (one log line: cloud mesh/pattern state) | - |
 | Numpad 6 | cloud back-face cull on/off | `client.graphics.clouds.backFaceCull` |
@@ -59,8 +61,7 @@ is logged and treated as `none`.
   `hud-dump:` line.
 - **`render: perf` (every 10 s, per-frame averages over the window):** fps; draw calls and kquads per layer (opaque, late,
   water, clouds); CPU submit ms per layer plus total `render.ms` average and max (GPU time is not measurable from the
-  mod); sections visible / late-skipped / clip-skipped; cloud tiles drawn and live; DH binding resolves per frame per
-  clone.
+  mod); sections visible / late-skipped / clip-skipped.
 - **`world gen:` lines:** distant-generation worker threads, mode and errors (for example `world gen: Features mode disabled
   by DH_BEDROCK_NO_FEATURES`).
 - **`materials: freeze watch`** reports go to `dh-freeze.log` only when an engine-facing hook is stuck for 3 s (10 s for the
