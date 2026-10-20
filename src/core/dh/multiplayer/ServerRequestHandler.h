@@ -280,6 +280,9 @@ public:
     /// Re-sends the constrained SessionConfig to every ready player. Call after mutating ServerPlayers::settings
     /// (Java ServerPlayerState.configAnyChangeListener).
     void broadcastConfig();
+    /// Re-sends the constrained SessionConfig to one ready player (his level / dimension coordinate scale changed:
+    /// ServerPlayerState.sendConfigMessage derives the generation centre from the player's current level).
+    void resendConfig(SessionId session);
 
     /// handlers' tick(), then every player's sender tick. Call at 20 Hz.
     void tick();

@@ -84,6 +84,10 @@ void DistantHorizonsServer::registerCommand() {
         cmd.overload().text("status").execute([this](CommandOrigin const&, CommandOutput& output) {
             output.success("{}", statusText());
         });
+        cmd.overload().text("sweep").execute([this](CommandOrigin const&, CommandOutput& output) {
+            if (mDriver) mDriver->sweepAll();
+            output.success("Distant Horizons: loaded chunks re-queued (see the log for the counts)");
+        });
         mCommandRegistered = true;
     } catch (...) {
         DH_LOG_W("server: could not register /dh status");

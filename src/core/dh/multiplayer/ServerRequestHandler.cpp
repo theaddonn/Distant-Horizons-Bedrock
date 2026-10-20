@@ -995,6 +995,10 @@ void ServerNetwork::broadcastConfig() {
     for (const auto& p : players_.readyPlayers()) sendConfig(*p);
 }
 
+void ServerNetwork::resendConfig(SessionId session) {
+    if (auto p = players_.find(session); p && p->isReady()) sendConfig(*p);
+}
+
 void ServerNetwork::tick() {
     std::vector<ServerRequestHandler*> levels;
     {
