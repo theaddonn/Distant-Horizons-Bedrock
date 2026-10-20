@@ -74,8 +74,11 @@ std::filesystem::path levelDir(Session& s, dh::ILevelHandle& h) {
 std::string remoteWorldName(ClientInstance& ci, ::Level& level, std::string& how) {
     try {
         if (auto info = ci.getGameConnectionInfo()) {
-            std::string host = info->mHostIpAddress.get();
-            if (host.empty()) host = info->mUnresolvedUrl.get();
+            // The address as typed (hostname) first: stable when the server's IP changes or DNS has several records.
+            // GameConnectionInfo's SDK layout has no destructor (TypedStorage members), so its strings leak once per
+            // session start; harmless, and the object is never copied or moved.
+            std::string host = info->mUnresolvedUrl.get();
+            if (host.empty()) host = info->mHostIpAddress.get();
             if (!host.empty()) {
                 const int port = info->mPort;
                 how            = "connection info (host '" + host + "', port " + std::to_string(port) + ")";
@@ -607,7 +610,12 @@ void ClientWorldDriver::Impl::workerStep(Session& s) {
     }
     // a late LevelInit key (reply after the client-only fallback / after the 1 s load delay): reload under that key
     // (Java ClientPluginChannelApi.onLevelInitMessage loads the keyed level next to the unkeyed one)
-    if (loaded != kNoDimension && s.rekeyDim.load() == loaded) {
+    // The handle itself is asked (not only rekeyDim): two dimensions can park keys before the worker runs, and a
+    // single atomic would forget one of them.
+    if (loaded != kNoDimension && (s.rekeyDim.load() == loaded || [&] {
+            auto* c = s.clientHandle(loaded);
+            return c && c->hasPendingKey();
+        }())) {
         s.rekeyDim.store(kNoDimension);
         unloadLevels(s, loaded);
         if (auto* c = s.clientHandle(loaded); c && c->applyPendingKey())

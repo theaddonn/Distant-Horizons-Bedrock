@@ -30,6 +30,7 @@
 #include "mc/world/level/storage/LevelData.h"
 
 #include <algorithm>
+#include <set>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
@@ -378,6 +379,8 @@ ServerWorldDriver::Dim* ServerWorldDriver::Impl::createDim(int id) {
 
 // P2: chunks that were loaded before our hooks existed (spawn chunks at ServerStarted, a dimension first seen
 // later) never fire onChunkLoaded for us: note every loaded chunk of the dimension's chunk map once.
+// Server thread only (ensureDim from the tick / join path, `/dh sweep`): MainChunkSource::mChunkMap has no lock of its
+// own and is mutated by the server thread.
 void ServerWorldDriver::Impl::sweepDim(Dim& d) {
     std::size_t seen = 0, queued = 0;
     try {
@@ -423,7 +426,19 @@ void ServerWorldDriver::Impl::drainForStop() {
             std::lock_guard lock(pendingMutex);
             if (pending.empty()) break;
         }
+        std::size_t was;
+        {
+            std::lock_guard lock(pendingMutex);
+            was = pending.size();
+        }
         ingestPending();
+        std::size_t now;
+        {
+            std::lock_guard lock(pendingMutex);
+            now = pending.size();
+        }
+        // no progress (chunks that are not loaded yet re-queue): do not spin the server thread
+        if (now >= was) std::this_thread::sleep_for(std::chrono::milliseconds(20));
     }
     const auto waitEnd = Clock::now() + std::chrono::seconds(3);
     for (;;) {
@@ -619,10 +634,12 @@ void ServerWorldDriver::Impl::ingestPending() {
 }
 
 void ServerWorldDriver::Impl::updatePlayers() {
-    dh::mp::ServerPlayers& players = net->players();
+    dh::mp::ServerPlayers&  players = net->players();
+    std::set<dh::SessionId> seen;
     self.level_.forEachPlayer([&](Player& p) -> bool {
         const dh::SessionId sid = transport.sessionOf(p.getNetworkIdentifier());
         if (sid == 0) return true;
+        seen.insert(sid);
         Dim* d = ensureDim(static_cast<int>(p.getDimensionId()));
         if (!d) return true;
         const auto& pos = p.getPosition();
@@ -643,6 +660,7 @@ void ServerWorldDriver::Impl::updatePlayers() {
         }
         return true;
     });
+    std::erase_if(lastLevel, [&](const auto& e) { return !seen.contains(e.first); }); // players who left
 }
 
 void ServerWorldDriver::Impl::tickDims() {

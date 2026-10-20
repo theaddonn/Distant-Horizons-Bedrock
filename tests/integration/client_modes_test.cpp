@@ -190,7 +190,7 @@ TEST_CASE("client modes: an answering server -> server mode, the LevelInit key i
     CHECK(fx.net().dhMode() == mp::DhMode::Server);
 }
 
-TEST_CASE("client modes: a late reply after the fallback switches to server mode, the loaded level stays") {
+TEST_CASE("client modes: a late reply after the fallback switches to server mode, the core keeps the loaded level (driver re-key not covered)") {
     ModeFx fx;
     fx.rounds(mp::ClientNetworkState::kServerReplyTimeoutMs + 500);
     REQUIRE(fx.net().dhMode() == mp::DhMode::ClientOnly);
