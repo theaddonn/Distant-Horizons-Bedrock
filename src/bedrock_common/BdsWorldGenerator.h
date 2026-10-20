@@ -22,7 +22,9 @@
 //        in vanilla's DecorationParity order, and delivers every chunk of the batch. The BlockSource is backed by a
 //        private ChunkSource that serves ONLY the scratch chunks (never the live world's chunk map). A real
 //        `ChunkViewSource` cannot be constructed from the SDK, so `decorationPostProcessChunk` itself is not called.
-//        Structures (villages ...) are out of scope.
+//        Run 15: before decoration, the vanilla structure pass (OverworldGenerator::structurePostProcessChunk's body:
+//        postProcessStructureFeatures + postProcessStructures) runs over the batch + 2-chunk ring, so structures
+//        whose blueprints loadChunk prepared appear in the LODs (dh/build/FeaturesBatchPlan.h for the plan).
 //   PreExistingOnly: only chunks that are currently loaded (ChunkSource::getAvailableChunk), snapshotted on
 //        the server thread; missing chunks are skipped (no error).
 //   InternalServer: let the real ChunkSource generate and load the chunk (getOrLoadChunk on the server
@@ -103,10 +105,33 @@ public:
 private:
     struct Batch;
     struct TaskGuard;
+    struct CellView;
+    /// Compare mode: the delivered chunk after base terrain, after the structure pass, and final.
+    using StagedCallback = std::function<void(
+        std::shared_ptr<dh::IChunk> base,
+        std::shared_ptr<dh::IChunk> afterStructures,
+        std::shared_ptr<dh::IChunk> gen
+    )>;
+    void queueBatch(
+        std::int32_t       minChunkX,
+        std::int32_t       minChunkZ,
+        std::int32_t       widthChunks,
+        dh::GenerationMode mode,
+        ChunkCallback      onChunk,
+        DoneCallback       done,
+        StagedCallback     onStaged
+    );
     void                        runChunk(const std::shared_ptr<Batch>& batch, std::int32_t cx, std::int32_t cz);
     void                        workerLoop();
     void                        stopWorkers();
-    void                        noteChunkDone(long long ms, bool okChunk, long long featMs = -1, long long placed = 0);
+    void                        noteChunkDone(
+        long long ms,
+        bool      okChunk,
+        long long featMs       = -1,
+        long long placed       = 0,
+        long long structMs     = 0,
+        long long structPlaced = 0
+    );
     void                        startWorkersLocked();
     static long long            nowMs();
     void                        finishChunk(const std::shared_ptr<Batch>& batch, bool ok);
@@ -115,8 +140,12 @@ private:
     /// get here runs decorateAndDeliver. False when the chunk's own base terrain failed.
     bool                        runFeatures(const std::shared_ptr<Batch>& batch, std::int32_t cx, std::int32_t cz);
     std::shared_ptr<LevelChunk> baseCell(const std::shared_ptr<Batch>& batch, std::int32_t x, std::int32_t z);
-    /// Vanilla decoration of the batch + 1-chunk ring in DecorationParity order, then snapshot + onChunk per chunk.
+    /// dh::makeFeaturesBatchPlan: vanilla structure pass over the batch + 2-chunk ring, then vanilla decoration of the
+    /// batch + 1-chunk ring in DecorationParity order, then snapshot + onChunk per batch chunk (never a ring chunk).
     void                        decorateAndDeliver(const std::shared_ptr<Batch>& batch);
+    /// OverworldGenerator::structurePostProcessChunk minus the structure-reference bookkeeping: the vanilla chunk seed,
+    /// postProcessStructureFeatures + postProcessStructures over the cell's 3x3 (pieces clipped to the cell).
+    bool                        structureCell(const std::shared_ptr<Batch>& batch, std::int32_t x, std::int32_t z);
     /// OverworldGenerator::decorationPostProcessChunk minus the legacy/tick parts: decorateWorldGenPostProcess with
     /// the vanilla chunk seed, then the freeze/snow pass. The 3x3 around (x, z) is the BlockSource's world.
     bool                        decorateCell(const std::shared_ptr<Batch>& batch, std::int32_t x, std::int32_t z);
@@ -135,6 +164,7 @@ private:
     std::shared_ptr<std::atomic<bool>> closing_ = std::make_shared<std::atomic<bool>>(false);
     std::atomic<bool>                  warnedFeatures_{false};
     bool                               featuresDisabled_ = false; // env DH_BEDROCK_NO_FEATURES: Features -> Surface
+    bool                               structuresDisabled_ = false; // env DH_BEDROCK_NO_STRUCTURES: skip the structure pass
 
     // Own FIFO worker threads (the shared DH picker pool is sized for CPU-only work and cannot be oversubscribed
     // by tasks that wait on the server thread).
@@ -147,6 +177,7 @@ private:
     std::vector<std::thread>          workers_;
     std::atomic<long long>            statChunks_{0}, statFailed_{0}, statMs_{0}, lastStatMs_{0};
     std::atomic<long long>            statFeatChunks_{0}, statFeatMs_{0}, statPlaced_{0};
+    std::atomic<long long>            statStructMs_{0}, statStructPlaced_{0};
 
     // compare mode (compareWithReal)
     std::atomic<int>       compareInFlight_{0};

@@ -3,6 +3,7 @@
 #include "bedrock_common/FileLogger.h"
 
 #include "dh/build/DecorationOrder.h"
+#include "dh/build/FeaturesBatchPlan.h"
 #include "dh/build/LightingEngine.h"
 
 #include "mc/util/Random.h"
@@ -22,6 +23,7 @@
 #include "mc/world/level/chunk/LevelChunk.h"
 #include "mc/world/level/dimension/Dimension.h"
 #include "mc/world/level/levelgen/WorldGenerator.h"
+#include "mc/world/level/levelgen/structure/BoundingBox.h"
 
 #include "ll/api/thread/ServerThreadExecutor.h"
 
@@ -264,6 +266,9 @@ struct BdsWorldGenerator::Batch {
     }
     ChunkCallback     onChunk;
     DoneCallback      done;
+    /// Compare mode only: called instead of onChunk with the delivered chunk after base terrain, after the structure
+    /// pass and final (compareChunksStaged).
+    StagedCallback    onStaged;
 };
 
 int BdsWorldGenerator::defaultScratchThreads() {
@@ -287,6 +292,10 @@ BdsWorldGenerator::BdsWorldGenerator(
     lastStatMs_.store(nowMs());
     featuresDisabled_ = [] {
         const char* e = std::getenv("DH_BEDROCK_NO_FEATURES");
+        return e != nullptr && std::string(e) == "1";
+    }();
+    structuresDisabled_ = [] {
+        const char* e = std::getenv("DH_BEDROCK_NO_STRUCTURES");
         return e != nullptr && std::string(e) == "1";
     }();
     DH_LOG_I(
@@ -401,6 +410,18 @@ void BdsWorldGenerator::queue(
     ChunkCallback onChunk,
     DoneCallback  done
 ) {
+    queueBatch(minChunkX, minChunkZ, widthChunks, mode, std::move(onChunk), std::move(done), nullptr);
+}
+
+void BdsWorldGenerator::queueBatch(
+    std::int32_t       minChunkX,
+    std::int32_t       minChunkZ,
+    std::int32_t       widthChunks,
+    dh::GenerationMode mode,
+    ChunkCallback      onChunk,
+    DoneCallback       done,
+    StagedCallback     onStaged
+) {
     if (widthChunks <= 0 || closing_->load()) {
         if (done) done(false);
         return;
@@ -410,9 +431,11 @@ void BdsWorldGenerator::queue(
             DH_LOG_W("world gen: Features mode disabled by DH_BEDROCK_NO_FEATURES, generating Surface (base terrain)");
         else
             DH_LOG_I(
-                "world gen: Features mode: base terrain of the batch + 2-chunk ring, vanilla decoration "
-                "(decorateWorldGenPostProcess + freeze/snow pass, vanilla seed) of the batch + 1-chunk ring in "
-                "DecorationParity order (no structures); slower than Surface"
+                "world gen: Features mode: base terrain of the batch + 2-chunk ring, vanilla structure pass "
+                "(postProcessStructureFeatures + postProcessStructures, vanilla seed) of the batch + 2-chunk ring%s, "
+                "vanilla decoration (decorateWorldGenPostProcess + freeze/snow pass, vanilla seed) of the batch + "
+                "1-chunk ring in DecorationParity order; only the batch is delivered; slower than Surface",
+                structuresDisabled_ ? " DISABLED by DH_BEDROCK_NO_STRUCTURES" : ""
             );
     }
 
@@ -421,6 +444,7 @@ void BdsWorldGenerator::queue(
     batch->mode      = mode;
     batch->onChunk   = std::move(onChunk);
     batch->done      = std::move(done);
+    batch->onStaged  = std::move(onStaged);
     batch->remaining = widthChunks * widthChunks;
     batch->minX           = minChunkX;
     batch->minZ           = minChunkZ;
@@ -452,13 +476,22 @@ void BdsWorldGenerator::queue(
     workCv_.notify_all();
 }
 
-void BdsWorldGenerator::noteChunkDone(long long ms, bool okChunk, long long featMs, long long placed) {
+void BdsWorldGenerator::noteChunkDone(
+    long long ms,
+    bool      okChunk,
+    long long featMs,
+    long long placed,
+    long long structMs,
+    long long structPlaced
+) {
     (okChunk ? statChunks_ : statFailed_).fetch_add(1);
     statMs_.fetch_add(ms);
     if (featMs >= 0) {
         statFeatChunks_.fetch_add(1);
         statFeatMs_.fetch_add(featMs);
         statPlaced_.fetch_add(placed);
+        statStructMs_.fetch_add(structMs);
+        statStructPlaced_.fetch_add(structPlaced);
     }
     const long long now  = nowMs();
     long long       last = lastStatMs_.load();
@@ -470,6 +503,8 @@ void BdsWorldGenerator::noteChunkDone(long long ms, bool okChunk, long long feat
     const long long fn  = statFeatChunks_.exchange(0);
     const long long fms = statFeatMs_.exchange(0);
     const long long pl  = statPlaced_.exchange(0);
+    const long long sms = statStructMs_.exchange(0);
+    const long long spl = statStructPlaced_.exchange(0);
     if (tot > 0)
         DH_LOG_I(
             "world gen: %lld chunks in the last 10 s (avg %lld ms%s, in flight %d, threads %d; ok %lld, failed %lld)"
@@ -481,8 +516,9 @@ void BdsWorldGenerator::noteChunkDone(long long ms, bool okChunk, long long feat
             threads_,
             n,
             nf,
-            fn > 0 ? (std::string(", features avg ") + std::to_string(fms / fn) + " ms, placedBlocks "
-                      + std::to_string(pl) + " (" + std::to_string(pl / fn) + "/chunk)")
+            fn > 0 ? (std::string(", features avg ") + std::to_string(fms / fn) + " ms (structures "
+                      + std::to_string(sms / fn) + " ms), placedBlocks " + std::to_string(pl) + " ("
+                      + std::to_string(pl / fn) + "/chunk), structureBlocks " + std::to_string(spl))
                          .c_str()
                    : ""
         );
@@ -772,38 +808,85 @@ long long countNonAir(dh::IChunk& w) {
 
 } // namespace
 
+namespace {
+
+/// The 32-bit per-chunk seed vanilla derives for both post-process passes (structurePostProcessChunk @0xc594440 and
+/// decorationPostProcessChunk @0xc594e80 compute it identically): r.setSeed(levelSeed); xs = r.nextInt()/2*2+1;
+/// zs = r.nextInt()/2*2+1; seed = levelSeed ^ (cx*xs + cz*zs).
+std::uint32_t vanillaChunkSeed(std::uint32_t levelSeed, std::int32_t x, std::int32_t z) {
+    ::Random            seedRng(levelSeed, true);
+    const std::uint32_t xs = dh::decorationSeedMultiplier(seedRng.nextInt());
+    const std::uint32_t zs = dh::decorationSeedMultiplier(seedRng.nextInt());
+    return dh::decorationChunkSeed(levelSeed, xs, zs, x, z);
+}
+
+} // namespace
+
+/// The 3x3 scratch view around one cell as a BlockSource (vanilla: a BlockSource over the cell's ChunkViewSource;
+/// missing neighbours are simply absent). Never sees the live world's chunks.
+struct BdsWorldGenerator::CellView {
+    ScratchRegionSource src;
+    ::BlockSource       bs;
+    CellView(::Dimension& dim, ::Level& level, const std::shared_ptr<Batch>& batch, std::int32_t x, std::int32_t z)
+    : src(dim, level),
+      bs(level,
+         dim,
+         (fill(batch, x, z), src),
+         /*publicSource=*/false,
+         /*allowUnpopulatedChunks=*/true,
+         // vanilla passes allowClientTickingChanges=true for both passes; false is kept here (proven in game for
+         // decoration, nothing ticks on scratch chunks)
+         /*allowClientTickingChanges=*/false,
+         /*markChangedBlocksForSaving=*/false) {}
+
+private:
+    void fill(const std::shared_ptr<Batch>& batch, std::int32_t x, std::int32_t z) {
+        for (int dz = -1; dz <= 1; ++dz)
+            for (int dx = -1; dx <= 1; ++dx)
+                if (auto n = batch->existing(x + dx, z + dz)) src.add(n, x + dx, z + dz);
+    }
+};
+
+bool BdsWorldGenerator::structureCell(const std::shared_ptr<Batch>& batch, std::int32_t x, std::int32_t z) {
+    ::WorldGenerator* gen = dimension_.mWorldGenerator;
+    auto              lc  = batch->existing(x, z);
+    if (gen == nullptr || !lc || gen->mStructureFeatureRegistry.get() == nullptr) return false;
+    ::Level& level = static_cast<::Level&>(dimension_.mLevel);
+    CellView view(dimension_, level, batch, x, z);
+
+    // OverworldGenerator::structurePostProcessChunk @0xc594440 (shared by every overworld generator vtable, vslot 9):
+    // per-thread Random seeded with the level seed, the chunk seed above, then
+    //   postProcessStructureFeatures(bs, random, seed, cx, cz)  (0x231b2b0: legacy StructureFeature starts, each
+    //       feature reseeds the Random with `seed`; pieces are clipped to the centre chunk's bounding box)
+    //   postProcessStructures(bs, random, cx, cz)              (0x231c5e0: v2 StructureInstances of the
+    //       StructureCache, own Xoroshiro seeded from the 64-bit level seed; the Random is unused)
+    // Both only READ the blueprints/instances that loadChunk (prepareStructureFeatureBlueprints 0x231b5e0,
+    // preProcessStructures 0x231b7a0) created in the live generator's shared caches; nothing is created here.
+    // The tail loop that records structure references in the chunk (saved-data only) is not reproduced.
+    const std::uint32_t levelSeed = level.getSeed();
+    const std::uint32_t seed      = vanillaChunkSeed(levelSeed, x, z);
+    ::Random            rnd(levelSeed, true);
+    (void)rnd.nextInt();
+    (void)rnd.nextInt();
+    gen->postProcessStructureFeatures(view.bs, rnd, seed, x, z);
+    gen->postProcessStructures(view.bs, rnd, x, z);
+    return true;
+}
+
 bool BdsWorldGenerator::decorateCell(const std::shared_ptr<Batch>& batch, std::int32_t x, std::int32_t z) {
     ::WorldGenerator* gen = dimension_.mWorldGenerator;
     auto              lc  = batch->existing(x, z);
     if (gen == nullptr || !lc) return false;
     ::Level& level = static_cast<::Level&>(dimension_.mLevel);
 
-    // Vanilla: BlockSource over the 3x3 view (missing neighbours are simply absent; vanilla also prunes neighbours
-    // that are already past CheckingForReplacementData, so their spill is dropped there too).
-    ScratchRegionSource src(dimension_, level);
-    for (int dz = -1; dz <= 1; ++dz)
-        for (int dx = -1; dx <= 1; ++dx)
-            if (auto n = batch->existing(x + dx, z + dz)) src.add(n, x + dx, z + dz);
-    // vanilla passes allowClientTickingChanges=true; false is kept here (proven in game, nothing ticks on scratch
-    // chunks)
-    ::BlockSource bs(
-        level,
-        dimension_,
-        src,
-        /*publicSource=*/false,
-        /*allowUnpopulatedChunks=*/true,
-        /*allowClientTickingChanges=*/false,
-        /*markChangedBlocksForSaving=*/false
-    );
+    // Vanilla: BlockSource over the 3x3 view (vanilla also prunes neighbours that are already past
+    // CheckingForReplacementData; within freshly generated terrain none can be, see PORTING.md "Run 15").
+    CellView      view(dimension_, level, batch, x, z);
+    ::BlockSource& bs = view.bs;
 
-    // Vanilla chunk seed (decorationPostProcessChunk @0xc59536c..0xc5954e5, all 32-bit):
-    //   r.setSeed(levelSeed); xs = r.nextInt()/2*2+1; zs = r.nextInt()/2*2+1; seed = levelSeed ^ (cx*xs + cz*zs)
+    // Vanilla chunk seed (decorationPostProcessChunk @0xc59536c..0xc5954e5, all 32-bit).
     // BiomeDecorationSystem derives every feature rule's own seed from this one (hash_combine with the rule id).
-    const std::uint32_t levelSeed = level.getSeed();
-    ::Random            seedRng(levelSeed, true);
-    const std::uint32_t xs  = dh::decorationSeedMultiplier(seedRng.nextInt());
-    const std::uint32_t zs  = dh::decorationSeedMultiplier(seedRng.nextInt());
-    ::Random            rnd(dh::decorationChunkSeed(levelSeed, xs, zs, x, z), true);
+    ::Random rnd(vanillaChunkSeed(level.getSeed(), x, z), true);
 
     // The Multinoise override ignores the biome argument (it decorates per unique biome of the chunk).
     const int      minY  = dimension_.mHeightRange->mMin;
@@ -842,73 +925,115 @@ void BdsWorldGenerator::decorateAndDeliver(const std::shared_ptr<Batch>& batch) 
     const auto              f0    = std::chrono::steady_clock::now();
     const std::int32_t      w = batch->width, x0 = batch->minX, z0 = batch->minZ;
     std::lock_guard         deco(batch->decoMutex);
+    // Run 15 (docs/PORTING.md): vanilla's state machine runs the structure pass of a chunk once its 3x3 has base
+    // terrain, decorates it once all eight neighbours are structure-processed (plus DecorationParity), and a chunk is
+    // final once its whole 3x3 is decorated. The plan reproduces that for the batch; only batch chunks are delivered,
+    // after the last decoration, so no decoration ever spills into a chunk that was already delivered.
+    const dh::FeaturesBatchPlan plan   = dh::makeFeaturesBatchPlan(x0, z0, w);
+    const bool                  staged = static_cast<bool>(batch->onStaged);
 
-    // non-air count of the delivered chunks before decoration (placedBlocks no-op detector)
-    std::vector<long long> before(static_cast<std::size_t>(w) * w, 0);
-    for (int dz = 0; dz < w; ++dz)
-        for (int dx = 0; dx < w; ++dx)
-            if (auto lc = batch->existing(x0 + dx, z0 + dz)) {
-                ScratchChunk pre(lc, serializer_);
-                (void)pre.freeze();
-                before[static_cast<std::size_t>(dz) * w + dx] = countNonAir(pre);
+    auto snap = [&](std::int32_t x, std::int32_t z) -> std::shared_ptr<ScratchChunk> {
+        auto lc = batch->existing(x, z);
+        if (!lc) return nullptr;
+        auto s = std::make_shared<ScratchChunk>(lc, serializer_);
+        (void)s->freeze(); // the batch keeps the LevelChunk alive
+        return s;
+    };
+    // non-air count of the delivered chunks before the structure pass / before decoration (placedBlocks stats and
+    // no-op detector); compare mode keeps the staged snapshots themselves
+    const std::size_t                          nDeliver = plan.deliver.size();
+    std::vector<long long>                     before(nDeliver, 0), afterStruct(nDeliver, 0);
+    std::vector<std::shared_ptr<ScratchChunk>> baseSnap(staged ? nDeliver : 0), structSnap(staged ? nDeliver : 0);
+    for (std::size_t i = 0; i < nDeliver; ++i)
+        if (auto s = snap(plan.deliver[i].x, plan.deliver[i].z)) {
+            before[i] = countNonAir(*s);
+            if (staged) baseSnap[i] = std::move(s);
+        }
+
+    auto aborted = [&] {
+        if (!batch->cancelled.load() && !closing_->load()) return false;
+        batch->ok.store(false);
+        return true;
+    };
+
+    // 1. structure pass over the batch + 2 rings (every decorated chunk's neighbours); order-free: each cell's pieces
+    //    are clipped to the cell itself
+    int structured = 0, structMissing = 0, structThrew = 0;
+    if (!structuresDisabled_)
+        for (const auto& c : plan.structures) {
+            if (aborted()) return;
+            try {
+                if (structureCell(batch, c.x, c.z)) ++structured;
+                else ++structMissing;
+            } catch (...) {
+                ++structThrew;
             }
+        }
+    const long long structMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - f0).count();
+    if (structThrew > 0)
+        DH_LOG_W("world gen: structure pass threw in %d chunk(s) of batch (%d,%d)", structThrew, x0, z0);
+    for (std::size_t i = 0; i < nDeliver; ++i)
+        if (auto s = snap(plan.deliver[i].x, plan.deliver[i].z)) {
+            afterStruct[i] = countNonAir(*s);
+            if (staged) structSnap[i] = std::move(s);
+        }
 
-    // DecorationParity order over the batch + 1 ring
+    // 2. decoration of the batch + 1 ring in DecorationParity order
     int decorated = 0, missing = 0, threw = 0;
-    for (int parity = 0; parity < 4; ++parity)
-        for (std::int32_t z = z0 - 1; z <= z0 + w; ++z)
-            for (std::int32_t x = x0 - 1; x <= x0 + w; ++x) {
-                if (dh::decorationParityClass(x, z) != parity) continue;
-                if (batch->cancelled.load() || closing_->load()) {
-                    batch->ok.store(false);
-                    return;
-                }
-                try {
-                    if (decorateCell(batch, x, z)) ++decorated;
-                    else ++missing;
-                } catch (...) {
-                    ++threw;
-                }
-            }
-    const long long featMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                 std::chrono::steady_clock::now() - f0
-    )
-                                 .count();
+    for (const auto& c : plan.decorate) {
+        if (aborted()) return;
+        try {
+            if (decorateCell(batch, c.x, c.z)) ++decorated;
+            else ++missing;
+        } catch (...) {
+            ++threw;
+        }
+    }
+    const long long featMs =
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - f0).count();
     if (threw > 0) DH_LOG_W("world gen: decoration threw in %d chunk(s) of batch (%d,%d)", threw, x0, z0);
 
-    const long long n       = static_cast<long long>(w) * w;
+    // 3. deliver the batch (never a ring chunk)
+    const long long n       = static_cast<long long>(nDeliver);
     const long long perMs   = (batch->baseMsSum.load() + featMs) / std::max(1LL, n);
-    long long       placedT = 0;
+    long long       placedT = 0, structPlacedT = 0;
     int             okCount = 0;
-    for (int dz = 0; dz < w; ++dz)
-        for (int dx = 0; dx < w; ++dx) {
-            auto lc = batch->existing(x0 + dx, z0 + dz);
-            if (!lc) {
-                batch->ok.store(false); // the chunk's own task already counted the failure
-                continue;
-            }
-            auto wrapped = std::make_shared<ScratchChunk>(lc, serializer_);
-            (void)wrapped->freeze(); // the batch keeps the LevelChunk alive
-            const long long nonAir = countNonAir(*wrapped);
-            if (nonAir == 0) {
-                batch->ok.store(false);
-                ++failed_;
-                noteChunkDone(perMs, false);
-                continue;
-            }
-            const long long placed = nonAir - before[static_cast<std::size_t>(dz) * w + dx];
-            placedT += placed;
-            lightBlockOnly(*wrapped);
-            if (batch->cancelled.load() || !batch->onChunk) continue;
-            ++generated_;
-            ++okCount;
-            noteChunkDone(perMs, true, featMs / std::max(1LL, n), placed);
-            batch->onChunk(std::move(wrapped));
+    for (std::size_t i = 0; i < nDeliver; ++i) {
+        auto wrapped = snap(plan.deliver[i].x, plan.deliver[i].z);
+        if (!wrapped) {
+            batch->ok.store(false); // the chunk's own task already counted the failure
+            continue;
         }
+        const long long nonAir = countNonAir(*wrapped);
+        if (nonAir == 0) {
+            batch->ok.store(false);
+            ++failed_;
+            noteChunkDone(perMs, false);
+            continue;
+        }
+        const long long placed       = nonAir - before[i];
+        const long long structPlaced = afterStruct[i] - before[i];
+        placedT += placed;
+        structPlacedT += structPlaced;
+        lightBlockOnly(*wrapped);
+        if (batch->cancelled.load()) continue;
+        if (staged) {
+            ++okCount;
+            batch->onStaged(baseSnap[i], structSnap[i], std::move(wrapped));
+            continue;
+        }
+        if (!batch->onChunk) continue;
+        ++generated_;
+        ++okCount;
+        noteChunkDone(perMs, true, featMs / std::max(1LL, n), placed, structMs / std::max(1LL, n), structPlaced);
+        batch->onChunk(std::move(wrapped));
+    }
     if (logIt)
         DH_LOG_I(
-            "world gen features batch (%d,%d) %dx%d: %lld ms total (base %lld ms summed over tasks), decorated %d of "
-            "%d cells (%d without base, %d threw) in %lld ms, delivered %d, placedBlocks=%lld",
+            "world gen features batch (%d,%d) %dx%d: %lld ms total (base %lld ms summed over tasks), structures %d of "
+            "%zu cells (%d without base, %d threw%s) in %lld ms, decorated %d of %zu cells (%d without base, %d threw) "
+            "in %lld ms, delivered %d, placedBlocks=%lld (structures %lld)",
             x0,
             z0,
             w,
@@ -918,13 +1043,20 @@ void BdsWorldGenerator::decorateAndDeliver(const std::shared_ptr<Batch>& batch) 
                     .count()
             ),
             batch->baseMsSum.load(),
+            structured,
+            plan.structures.size(),
+            structMissing,
+            structThrew,
+            structuresDisabled_ ? ", DISABLED" : "",
+            structMs,
             decorated,
-            (w + 2) * (w + 2),
+            plan.decorate.size(),
             missing,
             threw,
-            featMs,
+            featMs - structMs,
             okCount,
-            placedT
+            placedT,
+            structPlacedT
         );
 }
 
@@ -944,24 +1076,26 @@ void BdsWorldGenerator::compareWithReal(std::shared_ptr<dh::IChunk> real) {
         return;
     }
     const std::int32_t cx = real->chunkX(), cz = real->chunkZ();
-    queue(
+    queueBatch(
         cx,
         cz,
         1,
         GenerationMode::Features,
-        GenerationStep::Features,
-        [this, real](std::shared_ptr<dh::IChunk> gen) {
+        nullptr,
+        [this](bool) { compareInFlight_.fetch_sub(1); },
+        [this, real](
+            std::shared_ptr<dh::IChunk> base,
+            std::shared_ptr<dh::IChunk> afterStructures,
+            std::shared_ptr<dh::IChunk> gen
+        ) {
             if (!gen) return;
-            const dh::ChunkDiff d = dh::compareChunks(*real, *gen);
-            std::lock_guard     lock(compareMutex_);
+            const dh::ChunkDiff d = base && afterStructures
+                                      ? dh::compareChunksStaged(*real, *base, *afterStructures, *gen)
+                                      : dh::compareChunks(*real, *gen);
+            std::lock_guard lock(compareMutex_);
             compareTotal_.add(d);
             ++compareCount_;
-            DH_LOG_I(
-                "gen compare (%d,%d): %s",
-                real->chunkX(),
-                real->chunkZ(),
-                d.summary().c_str()
-            );
+            DH_LOG_I("gen compare (%d,%d): %s", real->chunkX(), real->chunkZ(), d.summary().c_str());
             if (compareCount_ % 10 == 0)
                 DH_LOG_I(
                     "gen compare TOTAL over %lld chunks (%lld skipped): %s",
@@ -969,8 +1103,7 @@ void BdsWorldGenerator::compareWithReal(std::shared_ptr<dh::IChunk> real) {
                     compareSkipped_.load(),
                     compareTotal_.summary().c_str()
                 );
-        },
-        [this](bool) { compareInFlight_.fetch_sub(1); }
+        }
     );
 }
 
