@@ -315,6 +315,50 @@ discard the clouds. Expected log lines: as in Run 13; `clouds: pattern from ...e
    lines while only the time changes. Clouds keep the same shape as before, with no holes around the player (the tint
    packing must not trigger the near clip).
 5. Performance: report `render.ms` and `render.cloudQuads` with clouds on/off (the real pattern is about 825k quads).
+
+## Run 14: LOD ice / water flickering black
+
+Root cause and RE evidence: `docs/PORTING.md`, "Run 14". In short, the Transparent pass sorts draws back to front by an
+unstable distance key. In `late`, a section's sea floor could therefore be drawn after its own ice and cover it.
+The new default is `overdraw`, with the LOD water/ice drawn by the new depth-writing clone `DH_TerrainWater`. Deploy
+the DLL and `DH_Terrain.material.bin` together, as before. The material file itself is unchanged, but the new index
+entry `DH_TerrainWater` comes from the DLL.
+
+Expected log lines after F5 (first frames):
+- `materials: DH clone forced water: stateMask=0x0002 depthStencil=010006010103010101030101... blend=060803080f0100`
+  (prefix as in the user's dh.log of build 1b56eee; what matters is byte 11, the 12th byte = `01`: depth write on,
+  while the `transparent` line has `00` there).
+- `materials: DH_TerrainWater mce material cloned (info=... material=...)`
+- `render: sky order overdraw -> opaque layer drawn with DH_Terrain + DH_TerrainLate redraw; translucent layer with
+  DH_TerrainWater (blend + depth write)`
+- `materials: DH binding first use: DH_TerrainWater -> pass=N`. N should equal the N logged for `DH_TerrainTransparent`
+  (and for `DH_TerrainLate`). `DH_Terrain` shows a different N, because it is the Opaque-pass copy; that is expected.
+HUD: `render.skyOrder=overdraw`.
+
+In game (checklist):
+1. Daytime, frozen ocean (or any LOD ocean) filling the view beyond the vanilla distance, default sky order
+   (`overdraw`). Walk, fly and turn for about 30 s. **PASS:** no black or dark section-sized patches on LOD ice or water,
+   and the ice/water tint stays put while moving.
+2. Numpad 4 (or Ctrl+F7) once: the order is late -> overdraw -> opaque, so from the default one press gives `opaque`.
+   Log `render: sky order opaque -> ...; translucent layer with DH_TerrainTransparent (blend, no depth write)`.
+   **PASS:** no black patches either. This is the reference: the floor is resolved before the water.
+3. Numpad 4 again -> `late`. Log `... translucent layer with DH_TerrainTransparent (blend, no depth write)`.
+   Move for at least 60 s (the order is not deterministic). **Expected:** the black flicker from the screenshot comes back. That confirms the Transparent-pass sort as the
+   cause. If `late` does NOT flicker any more, report it: the cause is then something else.
+4. Numpad 4 again -> back to `overdraw`. Night, clear sky, looking over LOD land and LOD ocean. **PASS/FAIL (important):**
+   no stars, sun or moon on LOD land (as in Run 13 with `late`). If stars show on LOD land in `overdraw` but not in `late`,
+   report it at once: the fix then needs a different approach. Report how visible stars are through LOD water or ice. Faint stars there
+   are a known cost (PORTING Run 14, risk 2), so a screenshot is enough.
+5. F7 HUD: note `render.ms` in `overdraw` vs `late` at the same spot (overdraw draws the opaque layer twice).
+6. Flat LOD ocean seen at a grazing angle from high up (y > 150): check whether any far water section vanishes behind
+   a nearer one (risk 3; it would look like a hole in the water showing the floor untinted). If step 1 still flickers,
+   compare step 1 with step 2 closely: flicker in `overdraw` but not in `opaque` would mean the DH_TerrainWater depth
+   write does not reach the GPU pipeline (risk 5).
+
+What to send back: PASS/FAIL for steps 1-4 and 6, the `render.ms` pair from step 5, the four expected log lines above
+(or their absence), the `pass=N` lines of all four clones, and a screenshot of any remaining patch, with the sky order
+shown on the HUD.
+
 ## Run 13: LOD content (snow, ice, trees)
 
 Background and root causes: PORTING.md "Run 13 (LOD content)". LODs already in the store keep their old content

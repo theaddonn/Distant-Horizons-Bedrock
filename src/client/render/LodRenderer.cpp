@@ -684,6 +684,7 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
     sc.dirty               = true;
 
     // Transparent layer: blended clone of DH_Terrain (depth test, no depth write); falls back to the opaque material.
+    // Also the cloud material (clouds keep no depth write whatever the sky order).
     mce::MaterialPtr const* transMaterial = material;
     if (dhShader && spikes::materialValid(spikes::dhTransparentMaterial()))
         transMaterial = &spikes::dhTransparentMaterial();
@@ -705,14 +706,23 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
     if (dhShader && cfg_.skyOrder != SkyOrder::Opaque && spikes::materialValid(spikes::dhLateMaterial()))
         lateMaterial = &spikes::dhLateMaterial();
     dh::hud::set("render.skyOrder", lateMaterial ? skyOrderName() : "opaque");
+    // LOD translucent layer (Run 14). The Transparent pass sorts back to front by an unstable distance key, so with a
+    // late opaque repeat the water/ice can be ordered before the floor of its own section. In Overdraw the floor is
+    // already resolved in the Opaque pass and DH_TerrainWater writes depth, so a later repeat fails against it.
+    mce::MaterialPtr const* waterMaterial = transMaterial;
+    if (lateMaterial && cfg_.skyOrder == SkyOrder::Overdraw && spikes::materialValid(spikes::dhWaterMaterial()))
+        waterMaterial = &spikes::dhWaterMaterial();
     if (!loggedSkyOrder_ && !vis.empty()) {
         loggedSkyOrder_ = true;
         DH_LOG_I(
-            "render: sky order %s -> opaque layer drawn with %s",
+            "render: sky order %s -> opaque layer drawn with %s; translucent layer with %s",
             skyOrderName(),
             !lateMaterial                          ? "DH_Terrain (Opaque pass; DH_TerrainLate unavailable or off)"
             : cfg_.skyOrder == SkyOrder::Overdraw ? "DH_Terrain + DH_TerrainLate redraw"
-                                                   : "DH_TerrainLate"
+                                                   : "DH_TerrainLate",
+            waterMaterial != transMaterial ? "DH_TerrainWater (blend + depth write)"
+            : transMaterial != material    ? "DH_TerrainTransparent (blend, no depth write)"
+                                           : "the opaque material"
         );
     }
 
@@ -742,7 +752,7 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
             for (auto const& part : parts) {
                 part.mesh->renderMesh(
                     mctx,
-                    transparent ? *transMaterial : *material,
+                    transparent ? *waterMaterial : *material,
                     drawTex,
                     0,
                     part.verts,
@@ -756,7 +766,8 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
     };
     std::size_t cloudCalls = 0;
     auto        drawAll    = [&] {
-        // insertion order inside the Transparent bin: opaque LODs (late), then DH water, then clouds
+        // submission order: opaque LODs (late), then DH water, then clouds. The Transparent pass re-sorts these back to
+        // front by a per-draw distance key (Run 14), so this is not necessarily the order the GPU sees.
         if (!lateMaterial || cfg_.skyOrder == SkyOrder::Overdraw) drawLayer(false, material, true);
         if (lateMaterial) drawLayer(false, lateMaterial, cfg_.skyOrder != SkyOrder::Overdraw);
         if (cfg_.drawTransparent) drawLayer(true, material, true);

@@ -57,6 +57,9 @@ mce::MaterialPtr const& dhTransparentMaterial();
 /// `DH_TerrainLate`: same compiled shader, opaque output and depth write, but flagged Blending so the dragon frame
 /// graph draws it in the Transparent pass, after the stars / sun / moon (Run 13). May be invalid.
 mce::MaterialPtr const& dhLateMaterial();
+/// `DH_TerrainWater`: blended like DH_TerrainTransparent but with depth write, for the LOD translucent layer when the
+/// opaque layer is repeated in the Transparent pass (SkyOrder::Overdraw, Run 14). May be invalid.
+mce::MaterialPtr const& dhWaterMaterial();
 
 /// Drops cached meshes (call when the buffer service changes or on level exit).
 void resetMeshes();
