@@ -289,6 +289,19 @@ public:
             bytes_ += frame.size();
             ++frames_;
             if (frame.size() > maxFrame_) maxFrame_ = frame.size();
+            // frame inspection: u16 version | u16 message id | body; FullDataSplit ends with its isFirst byte
+            FrameRec rec;
+            rec.size = frame.size();
+            if (frame.size() >= 4) {
+                rec.id = static_cast<std::uint16_t>((static_cast<unsigned>(frame[2]) << 8) | static_cast<unsigned>(frame[3]));
+            }
+            if (rec.id == kSplitId) {
+                rec.first = frame.back() != std::byte{0};
+                splitBytes_ += frame.size();
+            } else {
+                rec.frame.assign(frame.begin(), frame.end());
+            }
+            log_.push_back(std::move(rec));
         } else {
             ++rejected_;
         }
@@ -297,6 +310,22 @@ public:
     std::size_t maxFrameBytes() const override { return inner_.maxFrameBytes(); }
     void        setListener(ITransportListener* l) override { inner_.setListener(l); }
     void        disconnect(SessionId s) override { inner_.disconnect(s); }
+
+    /// One accepted frame: message id peeked from the envelope; the bytes are kept for everything but FullDataSplit.
+    struct FrameRec {
+        std::uint16_t          id    = 0;
+        std::size_t            size  = 0;
+        bool                   first = false; ///< FullDataSplit isFirst
+        std::vector<std::byte> frame;
+    };
+    static constexpr std::uint16_t kSplitId = 10; // net::MsgIds::FullDataSplit
+    const std::vector<FrameRec>&   log() const { return log_; }
+    std::size_t                    countId(std::uint16_t id) const {
+        std::size_t n = 0;
+        for (const auto& r : log_) n += r.id == id ? 1 : 0;
+        return n;
+    }
+    std::uint64_t splitBytes() const { return splitBytes_; }
 
     std::uint64_t bytes() const { return bytes_; }
     std::uint64_t frames() const { return frames_; }
@@ -307,6 +336,8 @@ private:
     ITransport&   inner_;
     std::uint64_t bytes_ = 0, frames_ = 0, rejected_ = 0;
     std::size_t   maxFrame_ = 0;
+    std::uint64_t splitBytes_ = 0;
+    std::vector<FrameRec> log_;
 };
 
 class RecordingLogger final : public ILogger {
