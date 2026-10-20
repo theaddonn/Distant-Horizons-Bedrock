@@ -89,7 +89,7 @@ namespace {
 constexpr int kDown = 0, kUp = 1, kNorth = 2, kSouth = 3, kWest = 4, kEast = 5;
 
 struct Writer {
-    Built&       out;
+    Built*       out[6]; ///< per face index (build(): all six the same Built)
     std::uint8_t r, g, b, a;
 
     static float shade(int face) {
@@ -116,9 +116,10 @@ struct Writer {
     /// (X for up/down/north/south, Z for east/west), wNS along the second (Z for up/down, Y for the walls).
     void quad(int face, int x, int y, int z, int wEW, int wNS) {
         if (wEW <= 0 || wNS <= 0) return;
-        if (out.buffers.empty() || out.buffers.back().size() + dh::kQuadBytes > dh::kMaxBufferBytes)
-            out.buffers.emplace_back();
-        auto&       buf = out.buffers.back();
+        Built& o = *out[face];
+        if (o.buffers.empty() || o.buffers.back().size() + dh::kQuadBytes > dh::kMaxBufferBytes)
+            o.buffers.emplace_back();
+        auto&       buf = o.buffers.back();
         const float s   = shade(face);
         const auto  cr  = static_cast<std::uint8_t>(std::lround(r * s));
         const auto  cg  = static_cast<std::uint8_t>(std::lround(g * s));
@@ -150,39 +151,36 @@ struct Writer {
             buf.push_back(std::byte{0});                 // tile
             buf.push_back(std::byte{0});
         }
-        ++out.quads;
+        ++o.quads;
     }
 };
 
-} // namespace
-
-Built build(Pattern const& pat, BuildParams const& p) {
-    Built out;
-    if (pat.empty() || p.cell <= 0) return out;
-    const double half = std::min(p.halfExtent, 30000.0);
-    const long   i0   = static_cast<long>(std::floor((p.centerX - half) / p.cell)),
-               i1     = static_cast<long>(std::ceil((p.centerX + half) / p.cell)),
-               j0     = static_cast<long>(std::floor((p.centerZ - half) / p.cell)),
-               j1     = static_cast<long>(std::ceil((p.centerZ + half) / p.cell));
-    const long nx = i1 - i0, nz = j1 - j0;
-    if (nx <= 0 || nz <= 0) return out;
-
+/// Core of build()/buildTile(): the cells [i0, i0 + nx) x [j0, j0 + nz) as quads in coordinates relative to
+/// (originX, originZ). Neighbours outside the region are read from the pattern, so no artificial walls appear at its
+/// edge (and none are missing where a neighbouring region has no cloud).
+void buildRegion(
+    Pattern const& pat,
+    long           i0,
+    long           j0,
+    long           nx,
+    long           nz,
+    int            originX,
+    int            originZ,
+    int            y0,
+    int            y1,
+    int            c,
+    bool           fancy,
+    Writer&        w
+) {
     std::vector<std::uint8_t> solid(static_cast<std::size_t>(nx) * static_cast<std::size_t>(nz));
     for (long j = 0; j < nz; ++j)
         for (long i = 0; i < nx; ++i) solid[static_cast<std::size_t>(j * nx + i)] = pat.at(i0 + i, j0 + j) ? 1 : 0;
-    // neighbours outside the covered square come from the pattern itself, so no artificial walls appear at its edge
     auto cell = [&](long i, long j) -> bool {
         if (i < 0 || j < 0 || i >= nx || j >= nz) return pat.at(i0 + i, j0 + j);
         return solid[static_cast<std::size_t>(j * nx + i)] != 0;
     };
-
-    Writer    w{out, p.r, p.g, p.b, p.a};
-    const int y0 = static_cast<int>(std::lround(p.yBottom));
-    const int y1 = p.fancy ? static_cast<int>(std::lround(p.yBottom + p.thickness)) : y0;
-    const int c  = p.cell;
-    auto      wx = [&](long i) { return static_cast<int>((i0 + i) * c - p.anchorX); };
-    auto      wz = [&](long j) { return static_cast<int>((j0 + j) * c - p.anchorZ); };
-
+    auto wx = [&](long i) { return static_cast<int>((i0 + i) * c - originX); };
+    auto wz = [&](long j) { return static_cast<int>((j0 + j) * c - originZ); };
     // top / bottom: greedy rectangles
     {
         std::vector<std::uint8_t> used(solid.size(), 0);
@@ -211,7 +209,7 @@ Built build(Pattern const& pat, BuildParams const& p) {
             }
     }
 
-    if (p.fancy && y1 > y0) {
+    if (fancy && y1 > y0) {
         const int th = y1 - y0;
         // north (-Z) / south (+Z) walls: runs along X
         for (long j = 0; j < nz; ++j) {
@@ -262,7 +260,79 @@ Built build(Pattern const& pat, BuildParams const& p) {
             }
         }
     }
+}
+
+} // namespace
+
+
+Built build(Pattern const& pat, BuildParams const& p) {
+    Built out;
+    if (pat.empty() || p.cell <= 0) return out;
+    const double half = std::min(p.halfExtent, 30000.0);
+    const long   i0   = static_cast<long>(std::floor((p.centerX - half) / p.cell)),
+               i1     = static_cast<long>(std::ceil((p.centerX + half) / p.cell)),
+               j0     = static_cast<long>(std::floor((p.centerZ - half) / p.cell)),
+               j1     = static_cast<long>(std::ceil((p.centerZ + half) / p.cell));
+    const long nx = i1 - i0, nz = j1 - j0;
+    if (nx <= 0 || nz <= 0) return out;
+    Writer    w{{&out, &out, &out, &out, &out, &out}, p.r, p.g, p.b, p.a};
+    const int y0 = static_cast<int>(std::lround(p.yBottom));
+    const int y1 = p.fancy ? static_cast<int>(std::lround(p.yBottom + p.thickness)) : y0;
+    buildRegion(pat, i0, j0, nx, nz, p.anchorX, p.anchorZ, y0, y1, p.cell, p.fancy, w);
     return out;
+}
+
+std::array<Built, 6> buildTile(Pattern const& pat, TileParams const& t) {
+    std::array<Built, 6> out;
+    if (pat.empty() || t.cell <= 0) return out;
+    Writer    w{{&out[0], &out[1], &out[2], &out[3], &out[4], &out[5]}, t.r, t.g, t.b, t.a};
+    const int y0 = static_cast<int>(std::lround(t.yBottom));
+    const int y1 = t.fancy ? static_cast<int>(std::lround(t.yBottom + t.thickness)) : y0;
+    buildRegion(
+        pat,
+        static_cast<long>(t.ti) * kTileCells,
+        static_cast<long>(t.tj) * kTileCells,
+        kTileCells,
+        kTileCells,
+        t.ti * kTileCells * t.cell,
+        t.tj * kTileCells * t.cell,
+        y0,
+        y1,
+        t.cell,
+        t.fancy,
+        w
+    );
+    return out;
+}
+
+double rectDistance(double x0, double z0, double x1, double z1, double px, double pz) {
+    const double dx = px < x0 ? x0 - px : (px > x1 ? px - x1 : 0.0);
+    const double dz = pz < z0 ? z0 - pz : (pz > z1 ? pz - z1 : 0.0);
+    return std::sqrt(dx * dx + dz * dz);
+}
+
+unsigned backFaceGroupMask(
+    double camX,
+    double camY,
+    double camZ,
+    double minX,
+    double maxX,
+    double minZ,
+    double maxZ,
+    double slabBottom,
+    double slabTop
+) {
+    // Mirrors dhCloudBackFace (dot(n, P - camera) >= 0 drops the face) for the extreme plane of each group: every
+    // face of a group lies in [min, max] on its normal axis, so the group is dropped entirely only when the camera is
+    // on the back side of the whole range.
+    unsigned m = 0;
+    if (camY >= slabBottom) m |= 1u << kDown;  // down faces at y0 <= slabBottom <= camY
+    if (camY <= slabTop) m |= 1u << kUp;       // up faces at y1 = slabTop >= camY
+    if (camZ >= maxZ) m |= 1u << kNorth;       // normal -Z: z <= camZ for every wall
+    if (camZ <= minZ) m |= 1u << kSouth;       // normal +Z
+    if (camX >= maxX) m |= 1u << kWest;        // normal -X
+    if (camX <= minX) m |= 1u << kEast;        // normal +X
+    return m;
 }
 
 } // namespace dh::render::cloud

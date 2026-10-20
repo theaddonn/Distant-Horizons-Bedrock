@@ -6,6 +6,7 @@
 #include "../../src/client/third_party/TinyPng.h"
 
 #include "dh/mesh/StageAVertex.h"
+#include "dh/pos/SectionPos.h"
 
 #include <cstring>
 
@@ -871,4 +872,174 @@ TEST_CASE("cloud brarchive: finds an entry by name and rejects bad archives") {
     a[8] = 2;
     a[0] = 0; // bad magic
     CHECK_FALSE(cloud::findInBrArchive(a.data(), a.size(), "clouds.png", off, len));
+}
+
+namespace {
+
+struct QuadInfo {
+    int face;
+    int lo[3], hi[3];
+};
+
+template <class F>
+void forEachQuad(cloud::Built const& b, F&& fn) {
+    for (auto const& buf : b.buffers)
+        for (std::size_t q = 0; q * dh::kQuadBytes < buf.size(); ++q) {
+            std::byte const* v = buf.data() + q * dh::kQuadBytes;
+            QuadInfo         qi{static_cast<int>(v[13]), {1 << 20, 1 << 20, 1 << 20}, {-(1 << 20), -(1 << 20), -(1 << 20)}};
+            for (int i = 0; i < 4; ++i) {
+                std::byte const* p = v + i * dh::kVertexBytes;
+                for (int a = 0; a < 3; ++a) {
+                    const int c = rd16s(p + 2 * a);
+                    qi.lo[a]    = std::min(qi.lo[a], c);
+                    qi.hi[a]    = std::max(qi.hi[a], c);
+                }
+            }
+            fn(qi);
+        }
+}
+
+long quadArea(QuadInfo const& q) {
+    long a = 1;
+    for (int i = 0; i < 3; ++i)
+        if (q.hi[i] > q.lo[i]) a *= q.hi[i] - q.lo[i];
+    return a;
+}
+
+} // namespace
+
+TEST_CASE("cloud tiles: per-face area equals the single-region build over the same cells") {
+    auto pat = cloud::proceduralPattern();
+    constexpr int c = 12, T = cloud::kTileCells;
+    // tiles ti, tj in [-1, 2): cells [-T, 2T) squared
+    cloud::BuildParams bp;
+    bp.cell       = c;
+    bp.centerX    = 0.5 * T * c;
+    bp.centerZ    = 0.5 * T * c;
+    bp.halfExtent = 1.5 * T * c; // cells x [-T, 2T), z [-T, 2T)
+    bp.yBottom    = 100;
+    bp.anchorX = bp.anchorZ = 0;
+    // anchor 0 keeps coordinates in int16 (|x| <= 3 * 1152)
+    long oldArea[6] = {}, oldQuads[6] = {};
+    forEachQuad(cloud::build(pat, bp), [&](QuadInfo const& q) {
+        oldArea[q.face] += quadArea(q);
+        ++oldQuads[q.face];
+    });
+
+    long newArea[6] = {};
+    for (int tj = -1; tj < 2; ++tj)
+        for (int ti = -1; ti < 2; ++ti) {
+            cloud::TileParams tp;
+            tp.cell    = c;
+            tp.ti      = ti;
+            tp.tj      = tj;
+            tp.yBottom = 100;
+            auto tile  = cloud::buildTile(pat, tp);
+            for (int f = 0; f < 6; ++f)
+                forEachQuad(tile[static_cast<std::size_t>(f)], [&](QuadInfo const& q) {
+                    CHECK(q.face == f);
+                    // inside the tile, local to its min corner, int16-safe
+                    CHECK(q.lo[0] >= 0);
+                    CHECK(q.hi[0] <= T * c);
+                    CHECK(q.lo[2] >= 0);
+                    CHECK(q.hi[2] <= T * c);
+                    CHECK(q.lo[1] >= 100);
+                    CHECK(q.hi[1] <= 104);
+                    newArea[q.face] += quadArea(q);
+                });
+        }
+    for (int f = 0; f < 6; ++f) {
+        CHECK(oldQuads[f] > 0);
+        CHECK(newArea[f] == oldArea[f]);
+    }
+}
+
+TEST_CASE("cloud tiles: empty pattern and empty tile give no quads") {
+    cloud::Pattern empty;
+    cloud::TileParams tp;
+    for (auto const& b : cloud::buildTile(empty, tp)) CHECK(b.quads == 0);
+    cloud::Pattern clear;
+    clear.w = clear.h = 8;
+    clear.solid.assign(64, 0);
+    for (auto const& b : cloud::buildTile(clear, tp)) {
+        CHECK(b.quads == 0);
+        CHECK(b.buffers.empty());
+    }
+    // a solid pattern: no walls anywhere (neighbours across the tile edge are solid too), one top + one bottom
+    cloud::Pattern solid;
+    solid.w = solid.h = 4;
+    solid.solid.assign(16, 1);
+    tp.ti = -3;
+    tp.tj = 5;
+    auto t = cloud::buildTile(solid, tp);
+    CHECK(t[0].quads == 1);
+    CHECK(t[1].quads == 1);
+    for (int f = 2; f < 6; ++f) CHECK(t[static_cast<std::size_t>(f)].quads == 0);
+}
+
+TEST_CASE("cloud tiles: section positions round-trip, also for negative tiles") {
+    for (int ti : {-40, -1, 0, 1, 40})
+        for (int tj : {-40, -1, 0, 7})
+            for (int g = 0; g < 6; ++g) {
+                auto pos = dh::sec::encode(0, ti * 8 + g, tj);
+                CHECK(dh::sec::detail(pos) == 0);
+                CHECK(dh::sec::x(pos) == ti * 8 + g);
+                CHECK(dh::sec::z(pos) == tj);
+            }
+}
+
+TEST_CASE("cloud tiles: rectDistance") {
+    CHECK(cloud::rectDistance(0, 0, 10, 10, 5, 5) == doctest::Approx(0.0));
+    CHECK(cloud::rectDistance(0, 0, 10, 10, 13, 5) == doctest::Approx(3.0));
+    CHECK(cloud::rectDistance(0, 0, 10, 10, 13, 14) == doctest::Approx(5.0));
+    CHECK(cloud::rectDistance(0, 0, 10, 10, -3, -4) == doctest::Approx(5.0));
+}
+
+TEST_CASE("cloud tiles: back-face group mask only drops groups whose every vertex faces away (dhCloudBackFace)") {
+    auto pat = cloud::proceduralPattern();
+    constexpr int c = 12, T = cloud::kTileCells;
+    cloud::TileParams tp;
+    tp.cell    = c;
+    tp.ti      = 1;
+    tp.tj      = -1;
+    tp.yBottom = 200;
+    auto         tile = cloud::buildTile(pat, tp);
+    const double ox = tp.ti * T * c, oz = tp.tj * T * c, ext = T * c;
+    // cameras around / above / below the tile (world = tile local + origin)
+    const double xs[] = {ox - 500, ox + 10, ox + ext * 0.5, ox + ext - 10, ox + ext + 700};
+    const double zs[] = {oz - 500, oz + 10, oz + ext * 0.5, oz + ext - 10, oz + ext + 700};
+    const double ys[] = {50, 200, 204, 400};
+    int          skippedGroups = 0;
+    for (double cx : xs)
+        for (double cz : zs)
+            for (double cy : ys) {
+                const unsigned mask = cloud::backFaceGroupMask(cx, cy, cz, ox, ox + ext, oz, oz + ext, 200, 204);
+                for (int f = 0; f < 6; ++f) {
+                    if (!(mask & (1u << f))) continue;
+                    ++skippedGroups;
+                    // the VS test: n = face normal, drop when dot(n, P - camera) >= 0
+                    const double n[6][3] = {{0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}, {-1, 0, 0}, {1, 0, 0}};
+                    forEachQuad(tile[static_cast<std::size_t>(f)], [&](QuadInfo const& q) {
+                        const double px[3] = {ox + q.lo[0] - cx, q.lo[1] - cy, oz + q.lo[2] - cz};
+                        const double qx[3] = {ox + q.hi[0] - cx, q.hi[1] - cy, oz + q.hi[2] - cz};
+                        for (int corner = 0; corner < 8; ++corner) {
+                            double d = 0;
+                            for (int a = 0; a < 3; ++a) d += n[f][a] * ((corner >> a) & 1 ? qx[a] : px[a]);
+                            CHECK(d >= 0.0);
+                        }
+                    });
+                }
+            }
+    CHECK(skippedGroups > 0);
+    // concrete expectations: above the slab and outside the tile on the south-east
+    const unsigned m = cloud::backFaceGroupMask(ox + ext + 5, 400, oz + ext + 5, ox, ox + ext, oz, oz + ext, 200, 204);
+    CHECK((m & (1u << 0)) != 0);  // down
+    CHECK((m & (1u << 1)) == 0);  // up visible
+    CHECK((m & (1u << 2)) != 0);  // north walls face -Z, camera at +Z of the tile
+    CHECK((m & (1u << 3)) == 0);
+    CHECK((m & (1u << 4)) != 0);  // west
+    CHECK((m & (1u << 5)) == 0);
+    // camera inside the tile footprint: no wall group dropped
+    const unsigned in = cloud::backFaceGroupMask(ox + 600, 400, oz + 600, ox, ox + ext, oz, oz + ext, 200, 204);
+    CHECK((in & 0x3Cu) == 0);
 }
