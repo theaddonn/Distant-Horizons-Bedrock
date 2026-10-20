@@ -456,7 +456,7 @@ In game:
 1. **Perf A/B.** Daytime, standing on the ground with LOD land to the horizon, clouds on. Wait 20 s and copy two
    `render: perf` lines. **PASS:** `clouds` kquads/frame well under 200 (expected ~110 looking horizontally, a few
    looking straight down), cloud calls ~200-250 horizontally. Then Numpad 7 (`full`), wait 20 s, copy two lines:
-   `late` calls go up by the `late skipped` count of the first lines. Numpad 7 back. Numpad 2 off: `clouds` drops to 0.
+   `late` calls go up by at least the `late skipped` count of the first lines (sections; a section can have several parts). Numpad 7 back. Numpad 2 off: `clouds` drops to 0.
 2. **Vanilla reference (needed for the proof).** Night, clear sky, F5 **off**. Look at vanilla terrain at the far edge
    of the vanilla render distance (hills 100-150 blocks away). **PASS:** no stars or moon in front of vanilla
    terrain. If stars do show on vanilla terrain there, report it at once: `beyond-vanilla` then leaves stars on

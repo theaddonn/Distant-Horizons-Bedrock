@@ -714,7 +714,8 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
     // Late repeat scope (Run 15, LateScope): clipStart = fadeEnd with no dither band, i.e. only the fragments beyond the
     // vanilla render distance are repainted, and sections entirely inside it are not submitted at all.
     const bool  lateBeyond = cfg_.lateScope == LateScope::BeyondVanilla && dhShader && camRel && fadeEnd > 0.0f;
-    const float lateClip   = std::floor(std::min(fadeEnd, 4095.0f) + 0.5f);
+    // never below the Opaque draw's own clip (overdraw tuning > 1 can put clipRadius beyond fadeEnd)
+    const float lateClip   = std::floor(std::min(std::max(fadeEnd, clipRadius), 4095.0f) + 0.5f);
     const float packedLate = lateBeyond ? lateClip + lateClip * 4096.0f : packedClip;
     // one sort per frame (near to far); the translucent layer walks it backwards
     std::sort(vis.begin(), vis.end(), [](VisibleSection const& a, VisibleSection const& b) {
