@@ -41,6 +41,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 
 #pragma clang diagnostic ignored "-Wdeprecated-declarations" // std::getenv
 
@@ -440,6 +441,118 @@ struct TlsFlag {
 };
 TlsFlag gInFileHook; // our own std::ifstream/ofstream must not be redirected
 
+//---------------------------------------------------------------------------------------------------------------------
+// Freeze watch (2026-10-19 freeze at pipeline-on, root cause unknown). Each engine-facing hook marks "thread T entered
+// site S at tick X"; a low-rate watchdog thread reports any site that has been in flight for > 3 s ONCE, with the stuck
+// thread's RIP / RSP and the module+RVA of every code pointer in the top of its stack, so the next occurrence names
+// the blocking call (symbolise with ~/.cache/dh-re). Cost on the hot paths: two relaxed atomic stores per hook call;
+// nothing is logged unless a hook is actually stuck. The watchdog logs only after ResumeThread (the suspended thread
+// might hold the logger mutex).
+//---------------------------------------------------------------------------------------------------------------------
+enum WatchSite { kWsResolve, kWsEnqueue, kWsGetMaterial, kWsCreateFile, kWsPatchIndex, kWsCount };
+constexpr char const* kWatchNames[kWsCount] = {
+    "resolveDragonMaterial", "enqueueAsync", "getMaterial", "CreateFileW redirect", "patched index"
+};
+struct WatchSlot {
+    std::atomic<ULONGLONG> since{0};
+    std::atomic<DWORD>     tid{0};
+    ULONGLONG              reported = 0; // watchdog-only
+};
+WatchSlot         gWatch[kWsCount];
+std::atomic<bool> gWatchStop{false};
+std::thread       gWatchThread;
+
+struct WatchGuard {
+    WatchSite site;
+    DWORD     me;
+    explicit WatchGuard(WatchSite s) : site(s), me(GetCurrentThreadId()) {
+        gWatch[s].tid.store(me, std::memory_order_relaxed);
+        gWatch[s].since.store(GetTickCount64(), std::memory_order_relaxed);
+    }
+    ~WatchGuard() {
+        // Only clear our own entry (another thread may have entered the same site meanwhile).
+        DWORD expect = me;
+        if (gWatch[site].tid.compare_exchange_strong(expect, 0)) gWatch[site].since.store(0, std::memory_order_relaxed);
+    }
+};
+
+std::string modRva(void* p) {
+    HMODULE mod = nullptr;
+    if (!GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            static_cast<LPCWSTR>(p),
+            &mod
+        )
+        || !mod)
+        return {};
+    wchar_t     w[MAX_PATH];
+    std::string name = "?";
+    if (GetModuleFileNameW(mod, w, MAX_PATH)) {
+        int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
+        if (n > 1) {
+            name.assign(static_cast<size_t>(n - 1), '\0');
+            WideCharToMultiByte(CP_UTF8, 0, w, -1, name.data(), n, nullptr, nullptr);
+        }
+        auto sl = name.find_last_of("\\/");
+        if (sl != std::string::npos) name = name.substr(sl + 1);
+    }
+    char b[64];
+    snprintf(
+        b,
+        sizeof(b),
+        "+0x%llx",
+        (unsigned long long)(reinterpret_cast<uintptr_t>(p) - reinterpret_cast<uintptr_t>(mod))
+    );
+    return name + b;
+}
+
+void reportStuck(int site, DWORD tid, ULONGLONG ms) {
+    std::string out;
+    HANDLE      h = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, tid);
+    if (h) {
+        CONTEXT ctx{};
+        ctx.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+        if (SuspendThread(h) != static_cast<DWORD>(-1)) {
+            if (GetThreadContext(h, &ctx)) {
+                out          = "rip=" + modRva(reinterpret_cast<void*>(ctx.Rip));
+                uintptr_t buf[96]{};
+                SIZE_T    rd = 0;
+                if (ReadProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(ctx.Rsp), buf, sizeof(buf), &rd)) {
+                    int shown = 0;
+                    for (SIZE_T i = 0; i < rd / sizeof(uintptr_t) && shown < 14; ++i) {
+                        std::string m = modRva(reinterpret_cast<void*>(buf[i]));
+                        if (m.empty()) continue;
+                        out += (shown++ ? " < " : " stack: ") + m;
+                    }
+                }
+            }
+            ResumeThread(h);
+        }
+        CloseHandle(h);
+    }
+    DH_LOG_W(
+        "materials: freeze watch: thread %lx stuck in %s for %llu ms %s",
+        (unsigned long)tid,
+        kWatchNames[site],
+        (unsigned long long)ms,
+        out.empty() ? "(context unavailable)" : out.c_str()
+    );
+}
+
+void watchdogMain() {
+    while (!gWatchStop.load()) {
+        for (int i = 0; i < 20 && !gWatchStop.load(); ++i) Sleep(50);
+        const ULONGLONG now = GetTickCount64();
+        for (int s = 0; s < kWsCount; ++s) {
+            const ULONGLONG since = gWatch[s].since.load(std::memory_order_relaxed);
+            const DWORD     tid   = gWatch[s].tid.load(std::memory_order_relaxed);
+            if (!since || !tid || now - since < 3000 || gWatch[s].reported == since) continue;
+            gWatch[s].reported = since;
+            reportStuck(s, tid, now - since);
+        }
+    }
+}
+
 std::string narrow(wchar_t const* w) {
     if (!w) return {};
     int n = WideCharToMultiByte(CP_UTF8, 0, w, -1, nullptr, 0, nullptr, nullptr);
@@ -461,6 +574,7 @@ std::string lowerSlashes(std::string s) {
 bool preparePatchedIndex(std::string const& originalPath) {
     std::lock_guard lock(gPatchMutex);
     if (gPatchedIndexReady.load()) return true;
+    WatchGuard wg(kWsPatchIndex);
     gInFileHook.set(true);
     std::string json;
     {
@@ -476,7 +590,8 @@ bool preparePatchedIndex(std::string const& originalPath) {
     }
     size_t before = json.size();
     bool   added  = splice(json, kEntry);
-    std::filesystem::create_directories(gModMaterialsDir);
+    std::error_code ec; // non-throwing: an exception here would leave gInFileHook set on this thread
+    std::filesystem::create_directories(gModMaterialsDir, ec);
     {
         std::ofstream out(gPatchedIndex, std::ios::binary | std::ios::trunc);
         out << json;
@@ -573,6 +688,7 @@ LL_STATIC_HOOK(
         std::string n = narrow(name);
         if (lowerSlashes(n).find("material") != std::string::npos) {
             FileHookGuard g;
+            WatchGuard    wg(kWsCreateFile);
             traceLoader("CreateFileW", n);
             if (endsWith(lowerSlashes(n), ".material.bin")) logBacktrace(n.c_str());
             std::wstring r = redirectFor(n);
@@ -766,6 +882,7 @@ LL_STATIC_HOOK(
         if ((gDhInfo && info == gDhInfo) || (gDhTransInfo && info == gDhTransInfo)
             || (gDhLateInfo && info == gDhLateInfo) || (gDhWaterInfo && info == gDhWaterInfo)) {
             ResolvingGuard g;
+            WatchGuard     wg(kWsResolve);
             void*          r = origin(sret, ctx, ds, pass);
             // Run 13 evidence: which dragon pass index each DH clone is resolved for (Opaque vs Transparent bin).
             {
@@ -837,7 +954,8 @@ LL_STATIC_HOOK(
     static std::atomic<int> crumbs{0};
     const bool              ours = descName && *descName == "DH_Terrain" && crumbs.fetch_add(1) < 8;
     if (ours) DH_LOG_I("materials: enqueueAsync(DH_Terrain) enter");
-    void* r = origin(ctx, sret, descName);
+    WatchGuard wg(kWsEnqueue);
+    void*      r = origin(ctx, sret, descName);
     if (ours) DH_LOG_I("materials: enqueueAsync(DH_Terrain) leave");
     return r;
 }
@@ -859,7 +977,11 @@ LL_STATIC_HOOK(
     static std::atomic<int> crumbs{0};
     const bool              ours = gActive.load() && name && *name == "DH_Terrain" && crumbs.fetch_add(1) < 8;
     if (ours) DH_LOG_I("materials: getMaterial(DH_Terrain, force=%d) enter", (int)forceReload);
-    void* ret = origin(self, sret, name, passphrase, forceReload);
+    void* ret;
+    {
+        WatchGuard wg(kWsGetMaterial);
+        ret = origin(self, sret, name, passphrase, forceReload);
+    }
     if (ours) DH_LOG_I("materials: getMaterial(DH_Terrain) leave");
     if (gActive.load() && name) {
         bool ok = *reinterpret_cast<void**>(sret) != nullptr;
@@ -917,6 +1039,8 @@ void installMaterialInjector() {
         return;
     }
     gActive.store(true);
+    gWatchStop.store(false);
+    gWatchThread = std::thread(watchdogMain);
     gModMaterialsDir = mod->getModDir() / "materials";
     gPatchedIndex    = gModMaterialsDir / "materials.index.json";
     gPatchedIndexReady.store(false);
@@ -1192,6 +1316,8 @@ void uninstallMaterialInjector() {
         HookGetFileAttributesExW::unhook();
         HookCreateFile2::unhook();
         HookCreateFileW::unhook();
+        gWatchStop.store(true);
+        if (gWatchThread.joinable()) gWatchThread.join();
         TraceSfsReadFileDataExt::unhook();
         TraceSfsOpenFile::unhook();
         TraceSfsReadFileData::unhook();
