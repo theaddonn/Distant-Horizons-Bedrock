@@ -50,6 +50,12 @@ inline std::vector<ChunkXZ> squareRing(std::int32_t minX, std::int32_t minZ, std
     return out;
 }
 
+/// The scratch chunks a batch needs constructed up front (one server-thread task per batch, PORTING.md "Run 16"):
+/// Features = the batch + the 2-chunk ring (the plan's base terrain cells, (w+4)^2), Surface = the batch (w^2).
+inline std::vector<ChunkXZ> batchConstructionCells(bool features, std::int32_t minX, std::int32_t minZ, std::int32_t width) {
+    return squareRing(minX, minZ, width, features ? 2 : 0);
+}
+
 /// `structureViewRing`: how many chunks around a structure-processed chunk its structure pass reads or writes (0 when
 /// the pass only touches the chunk itself, 1 for a full 3x3 view like vanilla's scheduler waits for).
 inline FeaturesBatchPlan makeFeaturesBatchPlan(

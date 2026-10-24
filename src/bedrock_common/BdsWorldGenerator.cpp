@@ -221,6 +221,8 @@ struct BdsWorldGenerator::Batch {
         std::mutex                  m;
         bool                        done   = false;
         bool                        usable = false; ///< base terrain generated and the height range supported
+        /// Run 16: the constructed (not yet generated) LevelChunk, filled by the batch's construction task before
+        /// `ready` is set; null after that = never constructed (aborted). Generation keeps it here; ~Batch destroys it.
         std::shared_ptr<LevelChunk> lc;
     };
     std::mutex                                                             cellsMutex;
@@ -239,6 +241,41 @@ struct BdsWorldGenerator::Batch {
             return;
         }
         ll::thread::ServerThreadExecutor::getDefault().execute([lcs = std::move(lcs)]() mutable { lcs.clear(); });
+    }
+    // --- batched construction (Run 16) ---
+    // One server-thread task constructs every scratch LevelChunk the batch needs (dh::batchConstructionCells); the
+    // workers wait on this latch instead of hopping per cell (the executor drains once per 50 ms tick).
+    bool                                                        prebuilt = false; ///< a construction task was posted
+    std::vector<std::pair<dh::ChunkXZ, std::shared_ptr<Cell>>> prebuild;
+    std::atomic<bool>                                           ready{false};
+    std::mutex                                                  readyM;
+    std::condition_variable                                     readyCv;
+    std::atomic<bool>                                           warnedWait{false};
+    std::chrono::steady_clock::time_point                       postedAt = std::chrono::steady_clock::now();
+    /// Runs on the server thread (or, probe only, a probe thread). Leaves early when closing / cancelled; always
+    /// opens the latch.
+    void constructAll(Dimension& dim) {
+        {
+            probe::Timer tRun(probe::pHopRun);
+            for (auto& [pos, c] : prebuild) {
+                if ((closing && closing->load()) || cancelled.load()) break;
+                try {
+                    c->lc = std::shared_ptr<LevelChunk>(new LevelChunk(
+                        dim,
+                        ::ChunkPos(pos.x, pos.z),
+                        /*readOnly=*/false,
+                        SubChunkInitMode::All,
+                        /*initializeMetaData=*/false,
+                        LevelChunkBlockActorStorage::TrackingMode::None
+                    ));
+                } catch (...) {}
+            }
+        }
+        {
+            std::lock_guard lock(readyM);
+            ready.store(true, std::memory_order_release);
+        }
+        readyCv.notify_all();
     }
     std::shared_ptr<Cell> cell(std::int32_t x, std::int32_t z) {
         std::lock_guard lock(cellsMutex);
@@ -459,6 +496,45 @@ void BdsWorldGenerator::queueBatch(
         std::erase_if(batches_, [](const std::weak_ptr<Batch>& w) { return w.expired(); });
         batches_.push_back(batch);
     }
+    // Run 16: construct every scratch LevelChunk of the batch in ONE server-thread task (the executor drains once per
+    // server tick, so a hop per cell cost ~40 ms each). Legacy single-worker mode keeps its whole-task hop.
+    const bool featuresPath = mode == GenerationMode::Features && !featuresDisabled_;
+    const bool surfacePath =
+        (mode == GenerationMode::Surface || (mode == GenerationMode::Features && featuresDisabled_))
+        && !serverThreadOnly_;
+    if (featuresPath || surfacePath) {
+        for (const auto& c : dh::batchConstructionCells(featuresPath, minChunkX, minChunkZ, widthChunks))
+            batch->prebuild.emplace_back(c, batch->cell(c.x, c.z));
+        batch->prebuilt = true;
+        batch->postedAt = std::chrono::steady_clock::now();
+        Dimension* dim  = &dimension_;
+        auto       run  = [batch, dim, enq = batch->postedAt] {
+            if (probe::enabled())
+                probe::add(
+                    probe::pHopQueue,
+                    std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - enq).count()
+                );
+            batch->constructAll(*dim);
+        };
+        if (probe::noHop()) {
+            // Probe only: headless BDS does not tick without players. Construct inline, or (HOPSIM) on a helper thread
+            // that wakes at the next multiple of DH_GEN_PROBE_HOPSIM_MS like one executor drain.
+            if (probe::hopSimMs() > 0) {
+                std::thread([run] {
+                    const long long period = probe::hopSimMs();
+                    const long long now    = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                              std::chrono::steady_clock::now().time_since_epoch()
+                    ).count();
+                    std::this_thread::sleep_for(std::chrono::milliseconds(period - now % period));
+                    run();
+                }).detach();
+            } else {
+                run();
+            }
+        } else {
+            ll::thread::ServerThreadExecutor::getDefault().execute(std::move(run));
+        }
+    }
     for (std::int32_t dz = 0; dz < widthChunks; ++dz) {
         for (std::int32_t dx = 0; dx < widthChunks; ++dx) {
             const std::int32_t cx = minChunkX + dx, cz = minChunkZ + dz;
@@ -486,7 +562,8 @@ void BdsWorldGenerator::noteChunkDone(
     long long featMs,
     long long placed,
     long long structMs,
-    long long structPlaced
+    long long structPlaced,
+    bool      sampled
 ) {
     (okChunk ? statChunks_ : statFailed_).fetch_add(1);
     statMs_.fetch_add(ms);
@@ -496,6 +573,7 @@ void BdsWorldGenerator::noteChunkDone(
         statPlaced_.fetch_add(placed);
         statStructMs_.fetch_add(structMs);
         statStructPlaced_.fetch_add(structPlaced);
+        if (sampled) statSampled_.fetch_add(1);
     }
     const long long now  = nowMs();
     long long       last = lastStatMs_.load();
@@ -509,6 +587,7 @@ void BdsWorldGenerator::noteChunkDone(
     const long long pl  = statPlaced_.exchange(0);
     const long long sms = statStructMs_.exchange(0);
     const long long spl = statStructPlaced_.exchange(0);
+    const long long sn  = statSampled_.exchange(0);
     if (tot > 0)
         DH_LOG_I(
             "world gen: %lld chunks in the last 10 s (avg %lld ms%s, in flight %d, threads %d; ok %lld, failed %lld)"
@@ -522,7 +601,8 @@ void BdsWorldGenerator::noteChunkDone(
             nf,
             fn > 0 ? (std::string(", features avg ") + std::to_string(fms / fn) + " ms (structures "
                       + std::to_string(sms / fn) + " ms), placedBlocks " + std::to_string(pl) + " ("
-                      + std::to_string(pl / fn) + "/chunk), structureBlocks " + std::to_string(spl))
+                      + std::to_string(pl / std::max(1LL, sn)) + "/chunk over " + std::to_string(sn)
+                      + " sampled chunks = 1 batch in 8), structureBlocks " + std::to_string(spl) + " (sampled)")
                          .c_str()
                    : ""
         );
@@ -563,7 +643,7 @@ void BdsWorldGenerator::runChunk(const std::shared_ptr<Batch>& batch, std::int32
             [[fallthrough]];
         case GenerationMode::Surface:
         default:
-            chunk = generateScratch(cx, cz);
+            chunk = generateScratch(batch, cx, cz);
             ok    = chunk != nullptr;
             break;
         }
@@ -587,7 +667,29 @@ void BdsWorldGenerator::runChunk(const std::shared_ptr<Batch>& batch, std::int32
     finishChunk(batch, ok);
 }
 
-std::shared_ptr<dh::IChunk> BdsWorldGenerator::generateScratch(std::int32_t cx, std::int32_t cz) {
+bool BdsWorldGenerator::waitBatchCells(const std::shared_ptr<Batch>& batch) {
+    if (batch->ready.load(std::memory_order_acquire)) return true;
+    probe::Timer tHop(probe::pHop);
+    std::unique_lock lock(batch->readyM);
+    while (!batch->ready.load(std::memory_order_acquire)) {
+        batch->readyCv.wait_for(lock, 50ms);
+        if (batch->ready.load(std::memory_order_acquire)) break;
+        if (closing_->load() || batch->cancelled.load()) return false;
+        if (std::chrono::steady_clock::now() - batch->postedAt > kInternalServerTtl && !batch->warnedWait.exchange(true))
+            DH_LOG_W(
+                "world gen: waiting for server thread (game paused?) to construct the chunks of batch (%d,%d) %dx%d; "
+                "will continue when it ticks",
+                batch->minX,
+                batch->minZ,
+                batch->width,
+                batch->width
+            );
+    }
+    return true;
+}
+
+std::shared_ptr<dh::IChunk>
+BdsWorldGenerator::generateScratch(const std::shared_ptr<Batch>& batch, std::int32_t cx, std::int32_t cz) {
     // Per-task outcome log for the first 10 tasks (proves the fix / shows hangs in game).
     static std::atomic<int> taskSeq{0};
     const int               seq   = taskSeq.fetch_add(1);
@@ -612,6 +714,7 @@ std::shared_ptr<dh::IChunk> BdsWorldGenerator::generateScratch(std::int32_t cx, 
     //
     ::Dimension*     dim = &dimension_;
     BlockSerializer* ser = &serializer_;
+    if (probe::enabled()) probe::gSnapshots.fetch_add(1); // the one snapshot generate() takes
     struct Diag {
         bool heightOk     = false;
         int  stateBefore  = -1;
@@ -621,7 +724,7 @@ std::shared_ptr<dh::IChunk> BdsWorldGenerator::generateScratch(std::int32_t cx, 
     };
     auto diag = std::make_shared<Diag>();
 
-    auto construct = [dim, cp]() -> std::shared_ptr<LevelChunk> {
+    auto construct = [dim, cp]() -> std::shared_ptr<LevelChunk> { // legacy single-worker path only
         return std::shared_ptr<LevelChunk>(new LevelChunk(
             *dim,
             cp,
@@ -674,16 +777,12 @@ std::shared_ptr<dh::IChunk> BdsWorldGenerator::generateScratch(std::int32_t cx, 
         // thread; loadChunk and the snapshot run on this worker: WorldGenerator's per-thread state
         // (mThreadLocalHeightmapProvider is InstancedThreadLocalValue, generatorHelpersPool InstancedThreadLocal)
         // is created lazily per calling thread, which is how vanilla runs it on its generation workers.
-        probe::Timer tHop(probe::pHop);
-        auto lc = onServerThread(construct, kInternalServerTtl, closing_);
-        tHop.stop();
-        if (lc) {
+        // Run 16: the LevelChunk was constructed by the batch's construction task; it stays in the cell and ~Batch
+        // destroys it on the server thread (the `leftover` reference released here is never the last one).
+        auto cell = batch->cell(cx, cz);
+        if (waitBatchCells(batch) && cell->lc) {
             std::shared_ptr<LevelChunk> leftover;
-            wrapped = generate(std::move(lc), leftover);
-            if (leftover)
-                ll::thread::ServerThreadExecutor::getDefault().execute([leftover = std::move(leftover)]() mutable {
-                    leftover.reset();
-                });
+            wrapped = generate(cell->lc, leftover);
         }
     }
     if (!wrapped) {
@@ -701,11 +800,7 @@ std::shared_ptr<dh::IChunk> BdsWorldGenerator::generateScratch(std::int32_t cx, 
 
     // Validate: a chunk with no solid block is a failed generation, not terrain.
     probe::Timer tSnapS(probe::pSnap);
-    long long nonAir = 0;
-    for (int z = 0; z < 16; ++z)
-        for (int x = 0; x < 16; ++x)
-            for (std::int32_t y = wrapped->minNonEmptyHeight(); y < wrapped->maxNonEmptyHeight(); ++y)
-                if (!wrapped->blockAt(x, y, z)->isAir) ++nonAir;
+    const long long      nonAir = wrapped->nonAirBlocks(); // counted while the snapshot materialised the blocks
     const std::int32_t   topY   = wrapped->solidHeightMapValue(8, 8);
     const dh::BlockInfo* topBlk = wrapped->blockAt(8, topY - 1, 8);
     if (logIt)
@@ -780,56 +875,24 @@ std::shared_ptr<LevelChunk>
 BdsWorldGenerator::baseCell(const std::shared_ptr<Batch>& batch, std::int32_t x, std::int32_t z) {
     ::WorldGenerator* gen = dimension_.mWorldGenerator;
     if (gen == nullptr) return nullptr;
-    ::Dimension*    dim  = &dimension_;
     probe::Timer    tCell(probe::pCellTotal);
     if (probe::enabled()) probe::gCellsRequested.fetch_add(1);
     auto            cell = batch->cell(x, z);
+    // Run 16: wait (outside the cell mutex) for the batch's one construction task instead of hopping per cell.
+    if (!waitBatchCells(batch)) return nullptr; // closing / cancelled
     probe::Timer    tWait(probe::pCellWait);
     std::lock_guard lock(cell->m);
     tWait.stop();
     if (cell->done) return cell->usable ? cell->lc : nullptr;
     cell->done = true;
-    const ::ChunkPos cp(x, z);
-    probe::Timer     tHop(probe::pHop);
-    auto             construct =
-        [dim, cp, enq = std::chrono::steady_clock::now()]() -> std::shared_ptr<LevelChunk> {
-            if (probe::enabled())
-                probe::add(
-                    probe::pHopQueue,
-                    std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - enq).count()
-                );
-            probe::Timer tRun(probe::pHopRun);
-            return std::shared_ptr<LevelChunk>(new LevelChunk(
-                *dim,
-                cp,
-                /*readOnly=*/false,
-                SubChunkInitMode::All,
-                /*initializeMetaData=*/false,
-                LevelChunkBlockActorStorage::TrackingMode::None
-            ));
-        };
-    // DH_GEN_PROBE_NOHOP=1: headless BDS stops ticking without players, so the hop would wait for tick events that never
-    // come; construct on the worker instead (the ctor itself takes ~0.02 ms) and leak the chunks (probe only).
-    if (probe::noHop() && probe::hopSimMs() > 0) {
-        const long long period = probe::hopSimMs();
-        const long long now    = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                  std::chrono::steady_clock::now().time_since_epoch()
-        ).count();
-        std::this_thread::sleep_for(std::chrono::milliseconds(period - now % period));
-    }
-    auto lc = probe::noHop() ? construct() : onServerThread(construct, kInternalServerTtl, closing_);
-    tHop.stop();
+    std::shared_ptr<LevelChunk> lc = cell->lc; // stays in the cell: ~Batch destroys it on the server thread
     if (!lc) {
-        // hop timed out / aborted: let the next task that needs this cell try again
-        cell->done = false;
         static std::atomic<int> warned{0};
-        if (warned.fetch_add(1) < 10) DH_LOG_W("world gen: base chunk %d,%d not constructed (server-thread hop)", x, z);
+        if (warned.fetch_add(1) < 10)
+            DH_LOG_W("world gen: base chunk %d,%d not constructed (batch construction task left early)", x, z);
         return nullptr;
     }
-    if (!BedrockChunk::heightSupported(*lc)) {
-        cell->lc = std::move(lc); // keep it so ~Batch destroys it on the server thread (never handed out)
-        return nullptr;
-    }
+    if (!BedrockChunk::heightSupported(*lc)) return nullptr; // never handed out; ~Batch destroys it
     {
         probe::Timer tLoad(probe::pLoad);
         if (probe::enabled()) {
@@ -841,23 +904,10 @@ BdsWorldGenerator::baseCell(const std::shared_ptr<Batch>& batch, std::int32_t x,
         (void)lc->tryChangeState(ChunkState::Generating, ChunkState::Generated);
         if (probe::enabled()) probe::gOurs.set(false);
     }
-    cell->lc     = std::move(lc);
     cell->usable = true;
     return cell->lc;
 }
 
-namespace {
-
-long long countNonAir(dh::IChunk& w) {
-    long long n = 0;
-    for (int z = 0; z < 16; ++z)
-        for (int x = 0; x < 16; ++x)
-            for (std::int32_t y = w.minNonEmptyHeight(); y < w.maxNonEmptyHeight(); ++y)
-                if (!w.blockAt(x, y, z)->isAir) ++n;
-    return n;
-}
-
-} // namespace
 
 namespace {
 
@@ -1031,7 +1081,8 @@ void BdsWorldGenerator::decorateAndDeliver(const std::shared_ptr<Batch>& batch) 
         return;
     }
     static std::atomic<int> batchSeq{0};
-    const bool              logIt = batchSeq.fetch_add(1) < 10;
+    const int               seqNo = batchSeq.fetch_add(1);
+    const bool              logIt = seqNo < 10;
     const auto              f0    = std::chrono::steady_clock::now();
     const std::int32_t      w = batch->width, x0 = batch->minX, z0 = batch->minZ;
     probe::Timer            tBatch(probe::pFeatBatch);
@@ -1044,6 +1095,10 @@ void BdsWorldGenerator::decorateAndDeliver(const std::shared_ptr<Batch>& batch) 
     // after the last decoration, so no decoration ever spills into a chunk that was already delivered.
     const dh::FeaturesBatchPlan plan   = dh::makeFeaturesBatchPlan(x0, z0, w);
     const bool                  staged = static_cast<bool>(batch->onStaged);
+    // Run 16: steady state takes ONE snapshot per delivered chunk (the final one). placedBlocks / structureBlocks (the
+    // no-op detector statistics) are measured on every 8th batch only, by counting non-air directly on the scratch
+    // LevelChunk (no freeze); compare mode needs all three staged snapshots and keeps them.
+    const bool sampled = staged || seqNo % 8 == 0;
 
     auto snap = [&](std::int32_t x, std::int32_t z) -> std::shared_ptr<ScratchChunk> {
         probe::Timer tSnap(probe::pSnap);
@@ -1051,19 +1106,48 @@ void BdsWorldGenerator::decorateAndDeliver(const std::shared_ptr<Batch>& batch) 
         if (!lc) return nullptr;
         auto s = std::make_shared<ScratchChunk>(lc, serializer_);
         (void)s->freeze(); // the batch keeps the LevelChunk alive
+        if (probe::enabled()) probe::gSnapshots.fetch_add(1);
         return s;
+    };
+    // non-air blocks of a scratch LevelChunk without a snapshot (sampled statistics only): rows up to the highest
+    // non-air subchunk, one getBlock per position with the previous block cached
+    auto countDirect = [&](std::int32_t x, std::int32_t z) -> long long {
+        auto lc = batch->existing(x, z);
+        if (!lc) return 0;
+        const int rows = std::min(lc->getSubChunkCountUpToHighestNonAirBlock() * 16, dimension_.mHeightRange->mMax - dimension_.mHeightRange->mMin);
+        long long       n         = 0;
+        const ::Block*  last      = nullptr;
+        bool            lastNotAir = false;
+        for (int bz = 0; bz < 16; ++bz)
+            for (int bx = 0; bx < 16; ++bx)
+                for (int y = 0; y < rows; ++y) {
+                    const ::Block& b = lc->getBlock(
+                        ::ChunkBlockPos{static_cast<uchar>(bx), ChunkLocalHeight{static_cast<short>(y)}, static_cast<uchar>(bz)}
+                    );
+                    if (&b != last) {
+                        last       = &b;
+                        lastNotAir = !b.isAir();
+                    }
+                    if (lastNotAir) ++n;
+                }
+        return n;
     };
     // non-air count of the delivered chunks before the structure pass / before decoration (placedBlocks stats and
     // no-op detector); compare mode keeps the staged snapshots themselves
     const std::size_t                          nDeliver = plan.deliver.size();
     std::vector<long long>                     before(nDeliver, 0), afterStruct(nDeliver, 0);
     std::vector<std::shared_ptr<ScratchChunk>> baseSnap(staged ? nDeliver : 0), structSnap(staged ? nDeliver : 0);
-    for (std::size_t i = 0; i < nDeliver; ++i)
-        if (auto s = snap(plan.deliver[i].x, plan.deliver[i].z)) {
-            probe::Timer tCnt(probe::pSnap);
-            before[i] = countNonAir(*s);
-            if (staged) baseSnap[i] = std::move(s);
-        }
+    if (staged) {
+        for (std::size_t i = 0; i < nDeliver; ++i)
+            if (auto s = snap(plan.deliver[i].x, plan.deliver[i].z)) {
+                probe::Timer tCnt(probe::pSnap);
+                before[i]   = s->nonAirBlocks();
+                baseSnap[i] = std::move(s);
+            }
+    } else if (sampled) {
+        probe::Timer tCnt(probe::pCount);
+        for (std::size_t i = 0; i < nDeliver; ++i) before[i] = countDirect(plan.deliver[i].x, plan.deliver[i].z);
+    }
 
     auto aborted = [&] {
         if (!batch->cancelled.load() && !closing_->load()) return false;
@@ -1094,12 +1178,17 @@ void BdsWorldGenerator::decorateAndDeliver(const std::shared_ptr<Batch>& batch) 
     const long long structExcl = excludedCells_.load() - excl0; // approximate: other batches may run concurrently
     if (structThrew > 0)
         DH_LOG_W("world gen: structure pass threw in %d chunk(s) of batch (%d,%d)", structThrew, x0, z0);
-    for (std::size_t i = 0; i < nDeliver; ++i)
-        if (auto s = snap(plan.deliver[i].x, plan.deliver[i].z)) {
-            probe::Timer tCnt(probe::pSnap);
-            afterStruct[i] = countNonAir(*s);
-            if (staged) structSnap[i] = std::move(s);
-        }
+    if (staged) {
+        for (std::size_t i = 0; i < nDeliver; ++i)
+            if (auto s = snap(plan.deliver[i].x, plan.deliver[i].z)) {
+                probe::Timer tCnt(probe::pSnap);
+                afterStruct[i] = s->nonAirBlocks();
+                structSnap[i]  = std::move(s);
+            }
+    } else if (sampled) {
+        probe::Timer tCnt(probe::pCount);
+        for (std::size_t i = 0; i < nDeliver; ++i) afterStruct[i] = countDirect(plan.deliver[i].x, plan.deliver[i].z);
+    }
 
     // 2. decoration of the batch + 1 ring in DecorationParity order
     const auto d0        = std::chrono::steady_clock::now();
@@ -1131,17 +1220,15 @@ void BdsWorldGenerator::decorateAndDeliver(const std::shared_ptr<Batch>& batch) 
             batch->ok.store(false); // the chunk's own task already counted the failure
             continue;
         }
-        probe::Timer    tCnt2(probe::pSnap);
-        const long long nonAir = countNonAir(*wrapped);
-        tCnt2.stop();
+        const long long nonAir = wrapped->nonAirBlocks(); // computed by the snapshot, no second scan
         if (nonAir == 0) {
             batch->ok.store(false);
             ++failed_;
             noteChunkDone(perMs, false);
             continue;
         }
-        const long long placed       = nonAir - before[i];
-        const long long structPlaced = afterStruct[i] - before[i];
+        const long long placed       = sampled ? nonAir - before[i] : 0;
+        const long long structPlaced = sampled ? afterStruct[i] - before[i] : 0;
         placedT += placed;
         structPlacedT += structPlaced;
         {
@@ -1158,14 +1245,16 @@ void BdsWorldGenerator::decorateAndDeliver(const std::shared_ptr<Batch>& batch) 
         if (!batch->onChunk) continue;
         ++generated_;
         ++okCount;
-        noteChunkDone(perMs, true, featMs / std::max(1LL, n), placed, structMs / std::max(1LL, n), structPlaced);
+        noteChunkDone(
+            perMs, true, featMs / std::max(1LL, n), placed, structMs / std::max(1LL, n), structPlaced, sampled
+        );
         batch->onChunk(std::move(wrapped));
     }
     if (logIt)
         DH_LOG_I(
             "world gen features batch (%d,%d) %dx%d: %lld ms total (base %lld ms summed over tasks), structures %d of "
             "%zu cells (%d without base, %d threw, %lld with a mineshaft/outpost excluded%s) in %lld ms, decorated %d of %zu cells (%d without base, %d threw) "
-            "in %lld ms, delivered %d, placedBlocks=%lld (structures %lld)",
+            "in %lld ms, delivered %d, placedBlocks=%lld (structures %lld)%s",
             x0,
             z0,
             w,
@@ -1189,7 +1278,8 @@ void BdsWorldGenerator::decorateAndDeliver(const std::shared_ptr<Batch>& batch) 
             decoMs,
             okCount,
             placedT,
-            structPlacedT
+            structPlacedT,
+            sampled ? "" : " [not sampled]"
         );
 }
 

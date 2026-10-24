@@ -69,21 +69,22 @@ LL_TYPE_INSTANCE_HOOK(
 
 const char* kKindName[kKinds]   = {"loadChunk", "structurePostProcess", "decorationPostProcess"};
 const char* kPhaseName[kPhases] = {
-    "hop(LevelChunk ctor on server thread)",
+    "wait on batch construction latch",
     "loadChunk (pure)",
     "cell mutex wait",
     "baseCell total (per call)",
     "decoMutex wait",
-    "snapshot+countNonAir+freeze",
+    "snapshot (freeze + non-air count)",
     "lightBlockOnly",
     "structureCell (per cell)",
     "decorateCell (per cell)",
     "decorateAndDeliver total (per batch)",
     "runFeatures wall (per task)",
-    "hop: executor queue wait",
-    "hop: LevelChunk ctor run (server thread)",
+    "batch ctor task: executor queue wait",
+    "batch ctor task: all ctors (server thread)",
     "server tick gap",
-    "driver onServerTick duration"
+    "driver onServerTick duration",
+    "direct non-air count (sampled)"
 };
 
 std::mutex              gMutex;
@@ -140,6 +141,8 @@ void report(std::uint64_t from, std::uint64_t to, double wallS, long long (&last
         }
     // our generator's phases
     const long long cg = gCellsGenerated.load(), cr = gCellsRequested.load(), dl = gDelivered.load();
+    static long long lastSnaps = 0;
+    const long long sn = gSnapshots.load();
     if (dl - lastDelivered > 0 || cg - lastCellsGen > 0) {
         DH_LOG_I(
             "gen probe OURS cells: loadChunk ran %lld, baseCell calls %lld, chunks delivered %lld => %.2f cells/delivered chunk",
@@ -147,6 +150,12 @@ void report(std::uint64_t from, std::uint64_t to, double wallS, long long (&last
             cr - lastCellsReq,
             dl - lastDelivered,
             dl - lastDelivered > 0 ? double(cg - lastCellsGen) / double(dl - lastDelivered) : 0.0
+        );
+        DH_LOG_I(
+            "gen probe OURS snapshots: %lld taken for %lld delivered chunks => %.2f snapshots/delivered chunk",
+            sn - lastSnaps,
+            dl - lastDelivered,
+            dl - lastDelivered > 0 ? double(sn - lastSnaps) / double(dl - lastDelivered) : 0.0
         );
         for (int p = 0; p < kPhases; ++p) {
             const long long us = gPhaseUs[p].load(), n = gPhaseN[p].load();
@@ -165,6 +174,7 @@ void report(std::uint64_t from, std::uint64_t to, double wallS, long long (&last
         lastUs[p] = gPhaseUs[p].load();
         lastN[p]  = gPhaseN[p].load();
     }
+    lastSnaps     = sn;
     lastCellsGen  = cg;
     lastCellsReq  = cr;
     lastDelivered = dl;

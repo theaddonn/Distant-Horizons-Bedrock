@@ -56,6 +56,10 @@ void BedrockChunk::ensureBlocks() const {
         [&](int x, std::int32_t y, int z) { return blocks_[index(x, y, z)]; },
         [&](int x, std::int32_t y, int z, const dh::BlockInfo* b) { blocks_[index(x, y, z)] = b; }
     );
+    std::int64_t nonAir = 0; // after the fix-up above; one pointer pass instead of a second blockAt() scan per caller
+    for (const dh::BlockInfo* b : blocks_)
+        if (!b->isAir) ++nonAir;
+    nonAir_ = nonAir;
 }
 
 const dh::BlockInfo* BedrockChunk::blockAt(int relX, std::int32_t y, int relZ) const {

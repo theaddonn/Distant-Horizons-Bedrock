@@ -31,7 +31,8 @@
 //        thread), poll until it reaches ChunkState::Loaded (TTL 15 s), then snapshot on the server thread.
 //
 // Threads: scratch generation runs on this class's own FIFO worker threads (`scratchThreads`); only the LevelChunk
-// construction/destruction hops to the server thread;
+// construction/destruction hops to the server thread (Run 16: ONE construction task per batch, posted from queueBatch,
+// the workers wait on a per-batch latch; destruction is batched in ~Batch);
 // InternalServer / PreExistingOnly hop to the server thread (ll::thread::ServerThreadExecutor).
 //
 // Contract (IChunkGenerator.h): queue() never blocks; onChunk once per generated chunk with a shared_ptr<IChunk>
@@ -130,12 +131,17 @@ private:
         long long featMs       = -1,
         long long placed       = 0,
         long long structMs     = 0,
-        long long structPlaced = 0
+        long long structPlaced = 0,
+        bool      sampled      = false
     );
     void                        startWorkersLocked();
     static long long            nowMs();
     void                        finishChunk(const std::shared_ptr<Batch>& batch, bool ok);
-    std::shared_ptr<dh::IChunk> generateScratch(std::int32_t cx, std::int32_t cz);
+    std::shared_ptr<dh::IChunk> generateScratch(const std::shared_ptr<Batch>& batch, std::int32_t cx, std::int32_t cz);
+    /// Blocks until the batch's single server-thread construction task has run (Run 16: one hop per batch instead of
+    /// one per cell). Polls closing_ / cancelled every ~50 ms; never gives up on its own (a paused game does not tick
+    /// the server), warns once per batch after 15 s. False = aborted (closing / cancelled).
+    bool                        waitBatchCells(const std::shared_ptr<Batch>& batch);
     /// Features mode, one task: base terrain of the 5x5 around (cx, cz) (cached per batch). The batch's last task to
     /// get here runs decorateAndDeliver. False when the chunk's own base terrain failed.
     bool                        runFeatures(const std::shared_ptr<Batch>& batch, std::int32_t cx, std::int32_t cz);
@@ -178,6 +184,7 @@ private:
     std::atomic<long long>            statChunks_{0}, statFailed_{0}, statMs_{0}, lastStatMs_{0};
     std::atomic<long long>            statFeatChunks_{0}, statFeatMs_{0}, statPlaced_{0};
     std::atomic<long long>            statStructMs_{0}, statStructPlaced_{0};
+    std::atomic<long long>            statSampled_{0}; ///< delivered chunks whose placed/structure counts were measured
     std::atomic<long long>            excludedCells_{0}; ///< structure cells that took the exclusion path (Run 15)
     std::atomic<bool>                 loggedFeatureNames_{false};
 
