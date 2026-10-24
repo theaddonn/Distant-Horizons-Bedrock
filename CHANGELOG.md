@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `scripts/package.sh` and `scripts/check-version.sh`; CI builds both DLLs, runs the host tests and publishes `DistantHorizons-client-<version>.zip` and `DistantHorizons-server-<version>.zip` on `v*` tags.
 - Config options for the Bedrock-specific rendering settings under `client.graphics.*`, `client.advanced.*`, `client.keys.toggleRendering`, `client.debug.*` and `common.worldGenerator.compareMode`; every saved option gets a `<name>_doc` sibling key. See README.md.
 - `docs/DEBUG.md` documenting the debug overlay, debug keys and environment switches.
+- Pack icon (the Distant Horizons logo by Pankakes, CC BY-SA 4.0), used as the tooth avatar.
 
 ### Changed
 

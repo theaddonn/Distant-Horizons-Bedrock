@@ -1,3 +1,5 @@
+<img src="resources/pack_icon.png" alt="Distant Horizons icon" width="96" align="right">
+
 # Distant Horizons (Bedrock)
 
 A port of [Distant Horizons](https://gitlab.com/distant-horizons-team/distant-horizons) to Minecraft Bedrock Edition as a [LeviLamina](https://github.com/LiteLDev/LeviLamina) mod. It renders level-of-detail terrain far beyond the normal render distance: LOD terrain with water and ice, LOD clouds, fog hand-over to the vanilla chunks, LOD lighting, and generation of terrain that has not been visited yet.
@@ -105,4 +107,4 @@ See [docs/BUILDING.md](docs/BUILDING.md). Debugging: [docs/DEBUG.md](docs/DEBUG.
 
 ## License
 
-LGPL-3.0, like the original mod. See `LICENSE` and `LICENSE.LESSER`.
+LGPL-3.0, like the original mod. See `LICENSE` and `LICENSE.LESSER`. The icon is the Distant Horizons logo © 2024 by Pankakes, licensed under CC BY-SA 4.0 (`LICENSE-LOGOS`).
