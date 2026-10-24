@@ -1,6 +1,6 @@
 # dist/
 
-Prebuilt binary inputs that CI cannot produce. They are committed and shipped by `scripts/package.sh`.
+Prebuilt binary inputs that CI cannot produce. They are committed and shipped by the release workflow (`.github/workflows/release.yml`).
 
 ## materials/DH_Terrain.material.bin
 

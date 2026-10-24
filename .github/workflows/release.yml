@@ -1,13 +1,11 @@
-# Release: push a tag v<version> (must equal the version in xmake.lua / tooth.json / Version.h).
-# Tags with -alpha/-beta/-rc are published as pre-releases.
-# Builds both DLLs on Windows, packages them on Linux with scripts/package.sh and attaches
-# DistantHorizons-client-<ver>.zip and DistantHorizons-server-<ver>.zip to the GitHub release.
-# DH_Terrain.material.bin is NOT built here (needs dxc + vanilla materials); it is taken from dist/materials/
-# and its checksum is verified.
+# Release: publish a GitHub release (tag v<version>, where <version> is the version in tooth.json).
+# Builds both DLLs on Windows, assembles the mod folders with the prebuilt DH_Terrain.material.bin from
+# dist/materials/ and attaches Distant-Horizons-Bedrock-client-windows-x64.zip and
+# Distant-Horizons-Bedrock-server-windows-x64.zip to the release. The release body comes from CHANGELOG.md.
 on:
-  push:
-    tags:
-      - "v*"
+  release:
+    types:
+      - published
 
 jobs:
   build:
@@ -46,64 +44,69 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: dll-${{ matrix.target_type }}
+          name: ${{ github.event.repository.name }}-${{ github.sha }}-${{ matrix.target_type }}-windows-x64
           path: |
             bin/
 
-  release:
-    needs: build
+  update-release-notes:
     permissions:
       contents: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
-      - name: Tag matches the source version
+      - name: Tag matches tooth.json
         run: |
-          ver=$(scripts/check-version.sh)
-          if [ "v$ver" != "${GITHUB_REF_NAME}" ]; then
-            echo "tag ${GITHUB_REF_NAME} != source version v$ver" >&2
+          ver=$(jq -r .version tooth.json)
+          if [ "v$ver" != "${{ github.event.release.tag_name }}" ]; then
+            echo "release tag ${{ github.event.release.tag_name }} != tooth.json version v$ver" >&2
             exit 1
           fi
-          echo "VERSION=$ver" >> "$GITHUB_ENV"
 
-      - name: Verify the shipped material checksum
-        run: |
-          cd dist/materials
-          sha256sum -c DH_Terrain.material.bin.sha256
-
-      - uses: actions/download-artifact@v8
-        with:
-          name: dll-client
-          path: bin
-
-      - uses: actions/download-artifact@v8
-        with:
-          name: dll-server
-          path: bin
-
-      - name: Package
-        run: |
-          scripts/package.sh client out
-          scripts/package.sh server out
-          unzip -l "out/DistantHorizons-client-${VERSION}.zip"
-          unzip -l "out/DistantHorizons-server-${VERSION}.zip"
-
-      - name: Release notes from CHANGELOG.md
-        run: |
-          awk -v v="$VERSION" '
-            /^## \[/ { on = index($0, "## [" v "]") == 1; next }
-            on { print }
-          ' CHANGELOG.md > notes.md
-          if [ ! -s notes.md ]; then
-            awk '/^## \[/ { on = index($0, "## [Unreleased]") == 1; next } on { print }' CHANGELOG.md > notes.md
-          fi
-          cat notes.md
+      - id: extract-release-notes
+        uses: ffurrer2/extract-release-notes@v3
 
       - uses: softprops/action-gh-release@v3
         with:
-          prerelease: ${{ contains(github.ref_name, '-alpha') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-rc') }}
-          body_path: notes.md
+          body: |
+            ${{ steps.extract-release-notes.outputs.release_notes }}
+
+  upload-to-release:
+    needs:
+      - build
+      - update-release-notes
+    permissions:
+      contents: write
+    strategy:
+      matrix:
+        target_type:
+          - client
+          - server
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ github.event.repository.name }}-${{ github.sha }}-${{ matrix.target_type }}-windows-x64
+          path: artifact
+
+      - name: Add the prebuilt LOD shader (client)
+        if: matrix.target_type == 'client'
+        run: |
+          (cd dist/materials && sha256sum -c DH_Terrain.material.bin.sha256)
+          mkdir -p artifact/DistantHorizons/materials
+          cp dist/materials/DH_Terrain.material.bin artifact/DistantHorizons/materials/
+
+      - run: |
+          rm -f artifact/*/*.pdb
+          cp CHANGELOG.md LICENSE LICENSE.LESSER LICENSE-LOGOS README.md artifact/
+
+      - run: |
+          zip -r ../${{ github.event.repository.name }}-${{ matrix.target_type }}-windows-x64.zip *
+        working-directory: artifact
+
+      - uses: softprops/action-gh-release@v3
+        with:
           files: |
-            out/DistantHorizons-client-${{ env.VERSION }}.zip
-            out/DistantHorizons-server-${{ env.VERSION }}.zip
+            ${{ github.event.repository.name }}-${{ matrix.target_type }}-windows-x64.zip

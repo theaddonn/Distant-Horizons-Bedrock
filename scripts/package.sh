@@ -2,8 +2,8 @@
 # Usage: scripts/package.sh client|server <outdir>
 # Assembles DistantHorizons-<client|server>-<version>.zip in <outdir> from bin/ (built DLL), dist/ (prebuilt
 # material) and data/. Layout (zip root):
-#   client: mods/DistantHorizons/{DistantHorizons.dll, manifest.json, materials/DH_Terrain.material.bin, data/*.json}
-#   server: plugins/DistantHorizonsServer/{DistantHorizonsServer.dll, manifest.json, data/*.json}
+#   client: DistantHorizons/{DistantHorizons.dll, manifest.json, materials/DH_Terrain.material.bin, data/*.json}
+#   server: DistantHorizonsServer/{DistantHorizonsServer.dll, manifest.json, data/*.json}
 # plus LICENSE, LICENSE.LESSER, LICENSE-LOGOS, README.md, CHANGELOG.md at the zip root.
 # Does not run the game and does not write any config.json (the mod writes it on first start).
 # Needs: bash, sha256sum, zip. PDBs are not shipped.
@@ -26,7 +26,7 @@ if [ ! -f "$src/$name.dll" ] || [ ! -f "$src/manifest.json" ]; then
 fi
 mkdir -p "$out"; out=$(cd "$out" && pwd)
 stage=$(mktemp -d); trap 'rm -rf "$stage"' EXIT
-dst="$stage/$sub/$name"
+dst="$stage/$name"
 mkdir -p "$dst/data"
 cp "$src/$name.dll" "$src/manifest.json" "$dst/"
 cp "$ROOT"/data/*.json "$dst/data/"

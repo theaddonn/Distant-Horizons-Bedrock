@@ -16,7 +16,7 @@ First public beta: the client mod for Minecraft Bedrock 1.26.51 with LeviLamina 
 - Level-of-detail rendering for Minecraft Bedrock 1.26.51 as a LeviLamina 26.51.6 client mod (`DistantHorizons`): LOD terrain, water/ice transparency, LOD clouds, fog hand-over, LOD lighting, distant chunk generation.
 - Experimental server DLL (`DistantHorizonsServer`) for Bedrock Dedicated Server with LeviLamina (multiplayer LOD streaming).
 - Prebuilt `DH_Terrain.material.bin` in `dist/materials/` (with sha256), shipped in the client package.
-- `scripts/package.sh` and `scripts/check-version.sh`; CI builds both DLLs, runs the host tests and publishes `DistantHorizons-client-<version>.zip` and `DistantHorizons-server-<version>.zip` on `v*` tags.
+- GitHub Actions build both DLLs and run the host tests on every push; publishing a release attaches `Distant-Horizons-Bedrock-client-windows-x64.zip` and `Distant-Horizons-Bedrock-server-windows-x64.zip` with the release notes taken from this changelog.
 - Config options for the Bedrock-specific rendering settings under `client.graphics.*`, `client.advanced.*`, `client.keys.toggleRendering`, `client.debug.*` and `common.worldGenerator.compareMode`; every saved option gets a `<name>_doc` sibling key. See README.md.
 - `docs/DEBUG.md` documenting the debug overlay, debug keys and environment switches.
 - Pack icon (the Distant Horizons logo by Pankakes, CC BY-SA 4.0), used as the tooth avatar.

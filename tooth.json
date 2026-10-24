@@ -8,7 +8,9 @@
     "description": "Level-of-detail rendering for far-away terrain in Minecraft Bedrock, ported from the Distant Horizons Java mod.",
     "tags": [
       "platform:levilamina",
-      "type:mod"
+      "type:mod",
+      "platform:client",
+      "platform:server"
     ],
     "avatar_url": "https://raw.githubusercontent.com/theaddonn/Distant-Horizons-Bedrock/refs/heads/main/resources/pack_icon.png"
   },
@@ -23,18 +25,20 @@
         {
           "type": "zip",
           "urls": [
-            "https://{{tooth}}/releases/download/v{{version}}/DistantHorizons-client-{{version}}.zip"
+            "https://{{tooth}}/releases/download/v{{version}}/Distant-Horizons-Bedrock-client-windows-x64.zip"
           ],
           "placements": [
             {
               "type": "dir",
-              "src": "mods/DistantHorizons/",
+              "src": "DistantHorizons/",
               "dest": "mods/DistantHorizons/"
             }
           ]
         }
       ],
-      "preserve_files": [],
+      "preserve_files": [
+        "mods/DistantHorizons/config/config.json"
+      ],
       "remove_files": [],
       "scripts": {
         "pre_install": [],
@@ -57,12 +61,12 @@
         {
           "type": "zip",
           "urls": [
-            "https://{{tooth}}/releases/download/v{{version}}/DistantHorizons-server-{{version}}.zip"
+            "https://{{tooth}}/releases/download/v{{version}}/Distant-Horizons-Bedrock-server-windows-x64.zip"
           ],
           "placements": [
             {
               "type": "dir",
-              "src": "plugins/DistantHorizonsServer/",
+              "src": "DistantHorizonsServer/",
               "dest": "plugins/DistantHorizonsServer/"
             }
           ]
