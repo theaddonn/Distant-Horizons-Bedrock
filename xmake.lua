@@ -1,5 +1,5 @@
 -- Single source of truth for the mod version (scripts/check-version.sh verifies tooth.json, Version.h, core Version.cpp).
-local DH_VERSION = "0.1.0"
+local DH_VERSION = "0.1.0-beta.1-mc26.51"
 set_version(DH_VERSION)
 
 add_rules("mode.debug", "mode.release")

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.0-beta.1-mc26.51] - 2026-10-24
+
+First public beta: the client mod for Minecraft Bedrock 1.26.51 with LeviLamina 26.51.6. The server package is experimental.
+
 ### Added
 
 - Level-of-detail rendering for Minecraft Bedrock 1.26.51 as a LeviLamina 26.51.6 client mod (`DistantHorizons`): LOD terrain, water/ice transparency, LOD clouds, fog hand-over, LOD lighting, distant chunk generation.
@@ -24,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `common.worldGenerator.allowUnvalidatedGenerator` now defaults to `true` (distant generation was validated in game).
 - Enum values in `config.json` are matched case-insensitively, `-` and `_` being equivalent.
 - The mod version has one source of truth (`xmake.lua`).
+- Distant generation builds a batch's scratch chunks in one server-thread task and takes one snapshot per delivered chunk instead of three (headless measurement: 21.7 to 82.6 chunks/s with the tick drain emulated); generation waits while the game is paused instead of failing batches after 15 s.
+- `DH_GEN_PROBE=1` (server DLL) times vanilla and DH chunk generation phases for diagnostics.
 
 ### Removed
 

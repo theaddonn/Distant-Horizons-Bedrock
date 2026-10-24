@@ -6,7 +6,7 @@
 
 // Injected by xmake.lua (DH_VERSION); the fallback must equal it (scripts/check-version.sh).
 #ifndef DH_MOD_VERSION
-#define DH_MOD_VERSION "0.1.0"
+#define DH_MOD_VERSION "0.1.0-beta.1-mc26.51"
 #endif
 
 namespace dh {
