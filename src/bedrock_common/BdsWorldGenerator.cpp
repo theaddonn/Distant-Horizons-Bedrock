@@ -240,8 +240,12 @@ struct BdsWorldGenerator::Batch {
             for (auto& l : lcs) (void)new std::shared_ptr<LevelChunk>(std::move(l));
             return;
         }
+        // Already on the server thread (the construction task held the last reference): destroy inline.
+        if (ctorThread.load() == std::hash<std::thread::id>{}(std::this_thread::get_id())) return;
         ll::thread::ServerThreadExecutor::getDefault().execute([lcs = std::move(lcs)]() mutable { lcs.clear(); });
     }
+    /// Hash of the thread that ran constructAll (the server thread unless probe-only helper); 0 = not run yet.
+    std::atomic<std::size_t> ctorThread{0};
     // --- batched construction (Run 16) ---
     // One server-thread task constructs every scratch LevelChunk the batch needs (dh::batchConstructionCells); the
     // workers wait on this latch instead of hopping per cell (the executor drains once per 50 ms tick).
@@ -253,6 +257,7 @@ struct BdsWorldGenerator::Batch {
     /// Runs on the server thread (or, probe only, a probe thread). Leaves early when closing / cancelled; always
     /// opens the latch.
     void constructAll(Dimension& dim) {
+        if (!probe::noHop()) ctorThread.store(std::hash<std::thread::id>{}(std::this_thread::get_id()));
         {
             probe::Timer tRun(probe::pHopRun);
             for (auto& [pos, c] : prebuild) {
@@ -887,9 +892,10 @@ BdsWorldGenerator::baseCell(const std::shared_ptr<Batch>& batch, std::int32_t x,
     cell->done = true;
     std::shared_ptr<LevelChunk> lc = cell->lc; // stays in the cell: ~Batch destroys it on the server thread
     if (!lc) {
+        // constructAll leaves early only when closing / cancelled (expected then, not logged)
         static std::atomic<int> warned{0};
-        if (warned.fetch_add(1) < 10)
-            DH_LOG_W("world gen: base chunk %d,%d not constructed (batch construction task left early)", x, z);
+        if (!closing_->load() && !batch->cancelled.load() && warned.fetch_add(1) < 10)
+            DH_LOG_W("world gen: base chunk %d,%d not constructed (batch construction failed)", x, z);
         return nullptr;
     }
     if (!BedrockChunk::heightSupported(*lc)) return nullptr; // never handed out; ~Batch destroys it
@@ -1109,12 +1115,14 @@ void BdsWorldGenerator::decorateAndDeliver(const std::shared_ptr<Batch>& batch) 
         if (probe::enabled()) probe::gSnapshots.fetch_add(1);
         return s;
     };
-    // non-air blocks of a scratch LevelChunk without a snapshot (sampled statistics only): rows up to the highest
-    // non-air subchunk, one getBlock per position with the previous block cached
+    // non-air blocks of a scratch LevelChunk without a snapshot (sampled statistics only): one getBlock per position
+    // with the previous block cached. ALL three terms of the sampled statistics (before, after structures, final) use
+    // this one method (staged/compare mode uses the snapshot count for all three instead).
     auto countDirect = [&](std::int32_t x, std::int32_t z) -> long long {
         auto lc = batch->existing(x, z);
         if (!lc) return 0;
-        const int rows = std::min(lc->getSubChunkCountUpToHighestNonAirBlock() * 16, dimension_.mHeightRange->mMax - dimension_.mHeightRange->mMin);
+        // all rows: getSubChunkCountUpToHighestNonAirBlock() is not known to be kept up to date by loadChunk/setBlock
+        const int rows = dimension_.mHeightRange->mMax - dimension_.mHeightRange->mMin;
         long long       n         = 0;
         const ::Block*  last      = nullptr;
         bool            lastNotAir = false;
@@ -1214,19 +1222,26 @@ void BdsWorldGenerator::decorateAndDeliver(const std::shared_ptr<Batch>& batch) 
     const long long perMs   = (batch->baseMsSum.load() + featMs) / std::max(1LL, n);
     long long       placedT = 0, structPlacedT = 0;
     int             okCount = 0;
+    std::vector<long long> finalDirect(nDeliver, 0);
+    if (sampled && !staged) {
+        probe::Timer tCnt(probe::pCount);
+        for (std::size_t i = 0; i < nDeliver; ++i) finalDirect[i] = countDirect(plan.deliver[i].x, plan.deliver[i].z);
+    }
     for (std::size_t i = 0; i < nDeliver; ++i) {
         auto wrapped = snap(plan.deliver[i].x, plan.deliver[i].z);
         if (!wrapped) {
             batch->ok.store(false); // the chunk's own task already counted the failure
             continue;
         }
-        const long long nonAir = wrapped->nonAirBlocks(); // computed by the snapshot, no second scan
-        if (nonAir == 0) {
+        const long long snapAir = wrapped->nonAirBlocks(); // computed by the snapshot, no second scan
+        if (snapAir == 0) {
             batch->ok.store(false);
             ++failed_;
             noteChunkDone(perMs, false);
             continue;
         }
+        // sampled batches: the final term must use the same counting method as before/afterStruct
+        const long long nonAir       = sampled && !staged ? finalDirect[i] : snapAir;
         const long long placed       = sampled ? nonAir - before[i] : 0;
         const long long structPlaced = sampled ? afterStruct[i] - before[i] : 0;
         placedT += placed;
