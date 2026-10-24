@@ -248,8 +248,6 @@ struct BdsWorldGenerator::Batch {
     bool                                                        prebuilt = false; ///< a construction task was posted
     std::vector<std::pair<dh::ChunkXZ, std::shared_ptr<Cell>>> prebuild;
     std::atomic<bool>                                           ready{false};
-    std::mutex                                                  readyM;
-    std::condition_variable                                     readyCv;
     std::atomic<bool>                                           warnedWait{false};
     std::chrono::steady_clock::time_point                       postedAt = std::chrono::steady_clock::now();
     /// Runs on the server thread (or, probe only, a probe thread). Leaves early when closing / cancelled; always
@@ -271,11 +269,7 @@ struct BdsWorldGenerator::Batch {
                 } catch (...) {}
             }
         }
-        {
-            std::lock_guard lock(readyM);
-            ready.store(true, std::memory_order_release);
-        }
-        readyCv.notify_all();
+        ready.store(true, std::memory_order_release);
     }
     std::shared_ptr<Cell> cell(std::int32_t x, std::int32_t z) {
         std::lock_guard lock(cellsMutex);
@@ -514,6 +508,9 @@ void BdsWorldGenerator::queueBatch(
                     probe::pHopQueue,
                     std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - enq).count()
                 );
+            static std::mutex probeOneAtATime; // probe only: emulate the single server thread (concurrent LevelChunk ctors hang)
+            std::unique_lock  probeLock(probeOneAtATime, std::defer_lock);
+            if (probe::noHop()) probeLock.lock();
             batch->constructAll(*dim);
         };
         if (probe::noHop()) {
@@ -670,9 +667,12 @@ void BdsWorldGenerator::runChunk(const std::shared_ptr<Batch>& batch, std::int32
 bool BdsWorldGenerator::waitBatchCells(const std::shared_ptr<Batch>& batch) {
     if (batch->ready.load(std::memory_order_acquire)) return true;
     probe::Timer tHop(probe::pHop);
-    std::unique_lock lock(batch->readyM);
+    // Polling (no mutex/condition variable): wine's SRW-based condition variable starved the construction task's
+    // lock in measurement; 1 ms polls for the first 200 ms, then 20 ms (a paused game can keep us here for minutes).
+    const auto t0 = std::chrono::steady_clock::now();
     while (!batch->ready.load(std::memory_order_acquire)) {
-        batch->readyCv.wait_for(lock, 50ms);
+        const auto waited = std::chrono::steady_clock::now() - t0;
+        std::this_thread::sleep_for(waited < 200ms ? 1ms : 20ms);
         if (batch->ready.load(std::memory_order_acquire)) break;
         if (closing_->load() || batch->cancelled.load()) return false;
         if (std::chrono::steady_clock::now() - batch->postedAt > kInternalServerTtl && !batch->warnedWait.exchange(true))

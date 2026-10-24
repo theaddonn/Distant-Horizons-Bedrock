@@ -139,7 +139,7 @@ private:
     void                        finishChunk(const std::shared_ptr<Batch>& batch, bool ok);
     std::shared_ptr<dh::IChunk> generateScratch(const std::shared_ptr<Batch>& batch, std::int32_t cx, std::int32_t cz);
     /// Blocks until the batch's single server-thread construction task has run (Run 16: one hop per batch instead of
-    /// one per cell). Polls closing_ / cancelled every ~50 ms; never gives up on its own (a paused game does not tick
+    /// one per cell). Polls ready, closing_ and cancelled (1-20 ms); never gives up on its own (a paused game does not tick
     /// the server), warns once per batch after 15 s. False = aborted (closing / cancelled).
     bool                        waitBatchCells(const std::shared_ptr<Batch>& batch);
     /// Features mode, one task: base terrain of the 5x5 around (cx, cz) (cached per batch). The batch's last task to

@@ -542,3 +542,28 @@ old content: look at a **new world** or terrain **never seen before**. Needs Fea
 Send back: the first `world gen: Features mode` line, two or three `world gen features batch` lines, a few 10 s
 `world gen:` lines, the `gen compare TOTAL` lines if compare mode ran, and a screenshot of a distant village or
 other structure next to the same place after the real chunks loaded.
+
+## Run 16 checklist: generator throughput (one construction hop per batch, one snapshot per chunk)
+
+Nothing of this was run in game (the headless server cannot tick the executor without a player); please check:
+
+1. Normal flight over new terrain for ~1 minute. The 10 s `world gen: N chunks in the last 10 s (...)` lines should show a
+   clearly higher N than build c8c68b0 (~29 chunks/s on 14 threads, i.e. ~290 per 10 s). Headless measurements say the
+   per-cell server-thread wait is gone (21.7 -> 82.6 chunks/s with a 50 ms drain emulated per batch), so expect a large
+   multiple limited by CPU cores. The line now ends with `placedBlocks N (N/chunk over S sampled chunks = 1 batch in 8),
+   structureBlocks N (sampled)`; the per-chunk placed value should still be in the same range as before (not 0 unless a
+   chunk really placed nothing).
+2. No `world gen: base chunk ... not constructed` lines and no failed chunks (`failed 0` in the 10 s lines).
+3. Pause the game (Esc menu in singleplayer) for 20 s, then unpause. Expected: exactly ONE `world gen: waiting for server thread
+   (game paused?) to construct the chunks of batch (x,z) WxW; will continue when it ticks` per stalled batch (not a flood), no
+   `not constructed` warnings, no `finished not-ok`, and generation resumes right after unpausing (the 10 s line counts
+   climb again). Quitting to the menu while paused must still close the world cleanly (no hang).
+4. LODs look identical to the previous build in the same area (trees, villages and other structures, snow/ice, water);
+   a world with `common.worldGenerator.scratchThreads=-1` (legacy) still generates.
+5. Optional probe: start the game with env `DH_GEN_PROBE=1` and send the lines `gen probe OURS snapshots: ...`
+   (expect 1.00 snapshots/delivered chunk), `gen probe OURS cells: ...`, `gen probe OURS phase wait on batch construction
+   latch ...` (the real hop: roughly 0-50 ms per batch while the game ticks), `gen probe OURS phase batch ctor task: all ctors
+   (server thread) ...` (must stay well under 30 ms per batch) and `gen probe OURS phase batch ctor task: executor queue wait
+   ...`, plus the `gen probe VANILLA/OURS loadChunk` lines.
+
+Send back: a few 10 s `world gen:` lines, any `waiting for server thread` / `not constructed` lines, and the probe lines above if you ran it.
