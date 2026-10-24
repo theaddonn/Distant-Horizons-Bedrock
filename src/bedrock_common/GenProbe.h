@@ -34,20 +34,25 @@ struct TlsFlag {
     }
 };
 
+/// Env var value ("" when unset); GetEnvironmentVariableA avoids the CRT's getenv deprecation warning.
+inline std::string envStr(const char* name) {
+    char        buf[64];
+    const DWORD n = GetEnvironmentVariableA(name, buf, sizeof buf);
+    return n > 0 && n < sizeof buf ? std::string(buf, n) : std::string();
+}
+
 inline TlsFlag gOurs; ///< set around our own gen->loadChunk calls
 
 inline bool enabled() {
     static const bool on = [] {
-        const char* e = std::getenv("DH_GEN_PROBE");
-        return e != nullptr && std::string(e) == "1";
+        return envStr("DH_GEN_PROBE") == "1";
     }();
     return on;
 }
 /// Also drive our generator standalone from the server driver (no client needed): DH_GEN_PROBE_OURS=<batches>.
 inline int oursBatches() {
     static const int n = [] {
-        const char* e = std::getenv("DH_GEN_PROBE_OURS");
-        return e != nullptr ? std::atoi(e) : 0;
+        return std::atoi(envStr("DH_GEN_PROBE_OURS").c_str());
     }();
     return n;
 }
@@ -55,8 +60,7 @@ inline int oursBatches() {
 /// Probe only: skip the server-thread hop for scratch LevelChunk construction (headless BDS does not tick without players).
 inline bool noHop() {
     static const bool on = [] {
-        const char* e = std::getenv("DH_GEN_PROBE_NOHOP");
-        return enabled() && e != nullptr && std::string(e) == "1";
+        return enabled() && envStr("DH_GEN_PROBE_NOHOP") == "1";
     }();
     return on;
 }
@@ -65,8 +69,7 @@ inline bool noHop() {
 /// multiple of N ms on the steady clock before constructing the chunk (all waiters wake together, like one executor drain).
 inline int hopSimMs() {
     static const int n = [] {
-        const char* e = std::getenv("DH_GEN_PROBE_HOPSIM_MS");
-        return e != nullptr ? std::atoi(e) : 0;
+        return std::atoi(envStr("DH_GEN_PROBE_HOPSIM_MS").c_str());
     }();
     return n;
 }
