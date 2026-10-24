@@ -2,6 +2,7 @@
 
 #include "bedrock_common/ConfigBridge.h"
 #include "bedrock_common/FileLogger.h"
+#include "bedrock_common/GenProbe.h"
 #include "bedrock_common/LeviLogger.h"
 #include "bedrock_common/Platform.h"
 #include "server/ServerWorldDriver.h"
@@ -112,6 +113,7 @@ bool DistantHorizonsServer::enable() {
             if (mDriver) mDriver->onServerTick();
         });
         registerCommand();
+        dh::bedrock::probe::start(); // no-op unless DH_GEN_PROBE=1
 
         // Hot enable while the server is already running.
         if (ll::service::getLevel()) startDriver();
@@ -133,6 +135,7 @@ bool DistantHorizonsServer::disable() {
         mStartedListener.reset();
         mStoppingListener.reset();
         stopDriver();
+        dh::bedrock::probe::stop();
         return true;
     } catch (...) {
         DH_LOG_E("server: exception while disabling");

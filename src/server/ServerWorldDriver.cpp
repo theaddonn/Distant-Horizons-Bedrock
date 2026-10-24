@@ -5,6 +5,7 @@
 #include "bedrock_common/BedrockLevelInfo.h"
 #include "bedrock_common/ConfigBridge.h"
 #include "bedrock_common/FileLogger.h"
+#include "bedrock_common/GenProbe.h"
 #include "bedrock_common/KvChunkHashStore.h"
 #include "bedrock_common/LevelDbLodStore.h"
 #include "server/NetServer.h"
@@ -249,6 +250,15 @@ struct ServerWorldDriver::Impl {
     void sweepDim(Dim& d);
     void updatePlayers();
     void tickDims();
+    /// DH_GEN_PROBE_OURS=<batches>: drive our generator standalone (no client): 4x4 Features batches far from spawn,
+    /// <= 4 in flight (the GenQueue/isBusy cap of 64 tasks), no-op onChunk. Server thread.
+    void probeOurs();
+    void              probeLaunchOne();
+    std::atomic<int>  probeLaunched{0}, probeDoneBatches{0};
+    int               probeTicks = 0;
+    bool              probeStarted = false;
+    Dim*              probeDim     = nullptr;
+    Clock::time_point probeT0;
     void logPeriodic();
 };
 
@@ -456,6 +466,49 @@ void ServerWorldDriver::Impl::drainForStop() {
         left = pending.size();
     }
     DH_LOG_I("server driver: final drain: %zu pending at stop, %zu left", before, left);
+}
+
+void ServerWorldDriver::Impl::probeLaunchOne() {
+    const int total = probe::oursBatches();
+    const int i     = probeLaunched.fetch_add(1);
+    if (i >= total || probeDim == nullptr) return;
+    const int bx = 2000 + (i % 8) * 8, bz = 2000 + (i / 8) * 8;
+    probeDim->chunkGen->queue(
+        bx,
+        bz,
+        4,
+        dh::GenerationMode::Features,
+        dh::GenerationStep{},
+        [](std::shared_ptr<dh::IChunk>) {},
+        [this, total](bool ok) {
+            const int n = ++probeDoneBatches;
+            if (!ok) DH_LOG_W("gen probe OURS: a batch finished not-ok");
+            if (n == total) {
+                const double s = std::chrono::duration<double>(Clock::now() - probeT0).count();
+                DH_LOG_I(
+                    "gen probe OURS: run complete: %d batches (%d chunks) in %.1f s = %.1f chunks/s (end to end)",
+                    total,
+                    total * 16,
+                    s,
+                    total * 16 / s
+                );
+            }
+            probeLaunchOne(); // keep 4 batches (64 tasks, the GenQueue/isBusy cap) in flight without needing a server tick
+        }
+    );
+}
+
+void ServerWorldDriver::Impl::probeOurs() {
+    const int total = probe::oursBatches();
+    if (!probe::enabled() || total <= 0 || probeStarted || dims.empty()) return;
+    if (++probeTicks < 200) return; // ~10 s after the dimension is ready
+    for (auto& x : dims)
+        if (x->resource == "minecraft:overworld") probeDim = x.get();
+    if (probeDim == nullptr || !probeDim->chunkGen) return;
+    probeStarted = true;
+    probeT0      = Clock::now();
+    DH_LOG_I("gen probe OURS: starting %d Features batches (4x4) at chunk offsets ~(2000,2000), 4 in flight", total);
+    for (int k = 0; k < 4; ++k) probeLaunchOne();
 }
 
 void ServerWorldDriver::Impl::ensureAllDims() {
@@ -826,6 +879,17 @@ void ServerWorldDriver::stop() {
 void ServerWorldDriver::onServerTick() {
     if (!running_.load()) return;
     Impl& m = *impl_;
+    probe::Timer tMine(probe::pTickMine);
+    if (probe::enabled()) {
+        static Clock::time_point prev{};
+        const auto               nowT = Clock::now();
+        if (prev.time_since_epoch().count() != 0)
+            probe::add(
+                probe::pTickGap,
+                std::chrono::duration_cast<std::chrono::microseconds>(nowT - prev).count()
+            );
+        prev = nowT;
+    }
     try {
         m.net->applyPendingConfig();
         m.net->network().tick(); // 20 Hz: request groups, payload senders (bandwidth maths assume 50 ms)
@@ -845,6 +909,7 @@ void ServerWorldDriver::onServerTick() {
         m.updatePlayers();
         m.ingestPending();
         m.tickDims();
+        m.probeOurs();
         m.logPeriodic();
     } catch (...) {
         DH_LOG_E("server driver: exception swallowed in server tick");
