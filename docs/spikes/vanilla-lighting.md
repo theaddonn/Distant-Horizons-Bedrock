@@ -97,7 +97,7 @@ is the analogous accessor; its numeric range (0..1 vs 0.2..1, or a 0..15 Brightn
 - `ViewRenderData::mSkyBrightnessScalar` exists (float, offset-listed in
   https://github.com/LiteLDev/LeviLamina/blob/main/src-client/mc/deps/minecraft_renderer/objects/ViewRenderData.h)
   next to `mSkyColor/mSkyZenithColor/mSkyHorizonColor`, but no source explains its use. Our repo already observed it reads 0
-  (commit be16aab), so use `Dimension::getSkyDarken`.
+  (commit c27632a), so use `Dimension::getSkyDarken`.
 
 ## 3. Open questions
 1. Real Bedrock curve: run a one-off dump of the live lightmap pixels (or hook the image builder) at noon, midnight, rain and

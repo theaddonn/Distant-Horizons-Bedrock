@@ -50,7 +50,7 @@ Observed (first start, then `dh status`, then `stop`; ANSI colours stripped):
 [Server] Version: 1.26.51.1(ProtocolVersion 2193) with LeviLamina-26.51.6
 [Server] Server started in (30.7s)! For help, type "help" or "?"
 [LeviLamina] Enabling DistantHorizonsServer v0.1.0
-[DistantHorizonsServer] server: enabling (git 70ea5fb)
+[DistantHorizonsServer] server: enabling (git 53ed5ee)
 [DistantHorizonsServer] server driver: block table loaded (1531 blocks, 89 biomes)
 [DistantHorizonsServer] net: server network started (max frame 32768 bytes)
 [DistantHorizonsServer] world gen: configured 14 scratch worker thread(s) (started on first use)

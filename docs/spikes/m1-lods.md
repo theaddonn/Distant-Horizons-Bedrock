@@ -342,7 +342,7 @@ entry `DH_TerrainWater` comes from the DLL.
 
 Expected log lines after F5 (first frames):
 - `materials: DH clone forced water: stateMask=0x0002 depthStencil=010006010103010101030101... blend=060803080f0100`
-  (prefix as in the user's dh.log of build 1b56eee; what matters is byte 11, the 12th byte = `01`: depth write on,
+  (prefix as in the user's dh.log of build 1169bd3; what matters is byte 11, the 12th byte = `01`: depth write on,
   while the `transparent` line has `00` there).
 - `materials: DH_TerrainWater mce material cloned (info=... material=...)`
 - `render: sky order overdraw -> opaque layer drawn with DH_Terrain + DH_TerrainLate redraw; translucent layer with
@@ -548,7 +548,7 @@ other structure next to the same place after the real chunks loaded.
 Nothing of this was run in game (the headless server cannot tick the executor without a player); please check:
 
 1. Normal flight over new terrain for ~1 minute. The 10 s `world gen: N chunks in the last 10 s (...)` lines should show a
-   clearly higher N than build c8c68b0 (~29 chunks/s on 14 threads, i.e. ~290 per 10 s). Headless measurements say the
+   clearly higher N than build 4704baa (~29 chunks/s on 14 threads, i.e. ~290 per 10 s). Headless measurements say the
    per-cell server-thread wait is gone (21.7 -> 82.6 chunks/s with a 50 ms drain emulated per batch), so expect a large
    multiple limited by CPU cores. The line now ends with `placedBlocks N (N/chunk over S sampled chunks = 1 batch in 8),
    structureBlocks N (sampled)`; the per-chunk placed value should still be in the same range as before (not 0 unless a
