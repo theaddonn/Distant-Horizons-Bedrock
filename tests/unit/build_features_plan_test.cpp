@@ -69,3 +69,16 @@ TEST_CASE("features plan: the checker rejects broken plans") {
     CHECK(std::string(checkFeaturesBatchPlan(q)) == "delivered chunk with an undecorated chunk in its 3x3");
     CHECK(!std::string(checkFeaturesBatchPlan(p, 1)).empty()); // view ring 1 needs base ring 3
 }
+
+TEST_CASE("batchConstructionCells: Features = (w+4)^2 cells equal to the plan's base cells, Surface = w^2") {
+    using namespace dh;
+    for (std::int32_t w : {1, 2, 4, 8}) {
+        const auto f = batchConstructionCells(true, -3, 5, w);
+        const auto s = batchConstructionCells(false, -3, 5, w);
+        CHECK(f.size() == static_cast<std::size_t>((w + 4) * (w + 4)));
+        CHECK(s.size() == static_cast<std::size_t>(w * w));
+        CHECK(f == makeFeaturesBatchPlan(-3, 5, w).base);
+        CHECK(s == makeFeaturesBatchPlan(-3, 5, w).deliver);
+    }
+    CHECK(batchConstructionCells(true, 0, 0, 0).empty());
+}

@@ -36,6 +36,12 @@ public:
     /// the chunk. Used by the server glue (live chunks, BdsWorldGenerator results).
     void snapshot();
 
+    /// Number of non-air blocks of the snapshot (computed once while the blocks are materialised, no extra scan).
+    std::int64_t nonAirBlocks() const {
+        ensureBlocks();
+        return nonAir_;
+    }
+
     std::int32_t chunkX() const override { return chunkX_; }
     std::int32_t chunkZ() const override { return chunkZ_; }
     std::int32_t inclusiveMinBuildHeight() const override { return minY_; }
@@ -82,6 +88,7 @@ private:
     bool                      blockLightCorrect_ = false;
     bool                      skyLightCorrect_   = false;
 
+    mutable std::int64_t                   nonAir_                         = 0;
     mutable bool                           boundsValid_                    = false;
     mutable std::int32_t                   minNonEmpty_                    = 0;
     mutable std::int32_t                   maxNonEmpty_                    = 0;

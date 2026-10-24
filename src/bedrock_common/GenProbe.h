@@ -75,26 +75,28 @@ enum Kind { kLoad = 0, kStruct = 1, kDeco = 2, kKinds };
 
 /// Phases of OUR generator (BdsWorldGenerator). Times are microseconds summed over calls.
 enum Phase {
-    pHop,       ///< onServerThread(LevelChunk ctor): queue wait + ctor
+    pHop,       ///< Run 16: worker wait on the batch's construction latch (was: per-cell onServerThread hop)
     pLoad,      ///< pure gen->loadChunk (+ tryChangeState)
     pCellWait,  ///< blocked on Batch::Cell::m (another task generating that cell, incl. its hop)
     pCellTotal, ///< whole baseCell() call incl. wait (cells that already existed are cheap)
     pDecoWait,  ///< blocked on Batch::decoMutex
-    pSnap,      ///< snap() + countNonAir + freeze in decorateAndDeliver / generateScratch
+    pSnap,      ///< snap() (ScratchChunk + freeze + non-air count) in decorateAndDeliver / generateScratch
     pLight,     ///< lightBlockOnly
     pStruct,    ///< structureCell, per cell
     pDeco,      ///< decorateCell, per cell
     pFeatBatch, ///< decorateAndDeliver total (struct + deco + snapshots + delivery)
     pTask,      ///< runFeatures wall per task (base terrain of 5x5 incl. waiting)
-    pHopQueue,  ///< enqueue -> start on the server thread (executor queue wait)
-    pHopRun,    ///< LevelChunk ctor itself, measured on the server thread
+    pHopQueue,  ///< batch construction task: post -> start on the server thread (executor queue wait), per batch
+    pHopRun,    ///< all LevelChunk ctors of one batch, measured on the server thread, per batch
     pTickGap,   ///< time between two ServerLevelTick events seen by the driver
     pTickMine,  ///< time the driver spends inside onServerTick
+    pCount,     ///< direct non-air count on the LevelChunk (sampled placedBlocks statistics, Run 16)
     kPhases
 };
 inline std::atomic<long long> gPhaseUs[kPhases], gPhaseN[kPhases];
 inline std::atomic<long long> gCellsGenerated{0}; ///< cells that actually ran loadChunk
 inline std::atomic<long long> gCellsRequested{0}; ///< baseCell calls
+inline std::atomic<long long> gSnapshots{0};      ///< ScratchChunk snapshots (freeze) taken
 inline std::atomic<long long> gDelivered{0};      ///< chunks delivered by decorateAndDeliver / generateScratch
 
 inline void add(Phase p, long long us) {
