@@ -25,9 +25,11 @@ The mod writes its configuration on first start, so no `config.json` is shipped.
 
 ## Configuration
 
+In game: Settings -> Mods -> Distant Horizons (five pages: General with the quality and thread presets, Graphics, Culling, World generation, Advanced). Every client and common option below has a widget there; edits are saved to `config.json` at once. Rendering options (`client.advanced.*`, fog hand-over, cloud back-face culling, the master switch, the toggle key) apply immediately, the rest when you next join a world. The pages come from [Lever](https://github.com/theaddonn/Lever), which is built into the mod.
+
 File: `<game>/mods/DistantHorizons/config/config.json` (LeviLamina's config directory of the mod), written with defaults when missing. The file is nested JSON by the dotted path below. Rules:
 
-- Changes need a game restart.
+- Edits to the file need a game restart (it is read once at start); in-game edits apply as described above.
 - Unknown keys are ignored. Every saved option has a sibling `"<name>_doc"` key with its description; `_doc` keys are ignored on load.
 - Enum values are matched case-insensitively, `-` and `_` are equal (`"OVERDRAW"`, `"beyond_vanilla"` work). The file is saved with the canonical name.
 - Many Java-derived options are parsed and saved but not all are wired to the Bedrock renderer yet.
@@ -98,7 +100,7 @@ When reporting a bug, attach `dh.log` (and `dh.log.1`), `dh-freeze.log` if it ex
 - Late-pass water tint can differ slightly in the 115..144 block overlap band.
 - Faint stars can show through LOD water at night.
 - A freeze at pipeline start was seen once and is not root-caused; `dh-freeze.log` exists to capture it.
-- No in-game settings screen; edit `config.json` and restart.
+- Options other than the rendering ones apply when you next join a world, not live.
 - Server and multiplayer support is experimental.
 
 ## Building

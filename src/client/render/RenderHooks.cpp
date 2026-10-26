@@ -1,5 +1,7 @@
 #include "client/render/RenderHooks.h"
 
+#include "client/SettingsPage.h"
+
 #include "bedrock_common/ConfigBridge.h"
 #include "bedrock_common/FileLogger.h"
 #include "client/Input.h"
@@ -10,6 +12,10 @@
 #include "client/world/ClientWorldDriver.h"
 #include "dh/config/Options.h"
 #include "dh/render/RenderUtil.h"
+
+#include <optional>
+#include <string>
+#include <tuple>
 
 #include "ll/api/event/EventBus.h"
 #include "ll/api/event/client/ClientExitLevelEvent.h"
@@ -459,15 +465,27 @@ LL_TYPE_INSTANCE_HOOK(
 }
 
 /// Pipeline on/off (the whole thing: world driver hooks -> DH world -> quad tree, plus the renderer).
-void togglePipeline(LodRenderer& r) {
-    auto&      drv = bedrock::ClientWorldDriver::instance();
-    const bool on  = !drv.pipeline();
+void setPipeline(LodRenderer& r, bool on) {
+    auto& drv = bedrock::ClientWorldDriver::instance();
+    if (drv.pipeline() == on) return;
     if (on && r.config().farMode == FarMode::Off) {
         r.config().farMode = FarMode::LocalProjPush; // LODs live beyond the vanilla far plane
         DH_LOG_I("render: far-plane mode -> local-proj-push (pipeline turned on)");
     }
     drv.setPipeline(on); // also calls setEnabled()
     DH_LOG_I("render: pipeline %s", on ? "on" : "off");
+}
+
+/// The toggle key: like Java's quickEnableRendering key it flips the option itself, so the setting persists and
+/// the settings page shows the real state.
+void togglePipeline(LodRenderer& r) {
+    const bool on = !bedrock::ClientWorldDriver::instance().pipeline();
+    setPipeline(r, on);
+    auto& store = bedrock::ConfigBridge::instance().config();
+    if (store.options().client.enableRendering != on) {
+        store.set([on](dh::Options& o) { o.client.enableRendering = on; });
+        dh::settings::notifyChanged("client.enableRendering");
+    }
 }
 
 /// The synthetic test feed (Stage-A smoke path, only with DH_TEST_FEED=1): Shift+F5.
@@ -549,6 +567,64 @@ VFogMode fogModeOf(dh::VanillaFogMode m) {
 
 } // namespace
 
+namespace {
+
+/// The options that take effect without rejoining a world. Compared on every store change so an unrelated edit
+/// (a slider on another page) does not re-apply the render config and undo what the debug keys toggled at runtime.
+struct RuntimeOptions {
+    dh::AdvancedOptions advanced;
+    dh::DebugOptions    debug;
+    bool                backFaceCull;
+    dh::VanillaFogMode  vanillaFog;
+    bool                enableRendering;
+    std::string         toggleKey;
+
+    static RuntimeOptions of(const dh::Options& o) {
+        return {
+            o.client.advanced,
+            o.client.debug,
+            o.client.graphics.clouds.backFaceCull,
+            o.client.graphics.fog.vanillaFog,
+            o.client.enableRendering,
+            o.client.keys.toggleRendering
+        };
+    }
+    auto tie() const {
+        return std::tie(
+            advanced.skyOrder, advanced.lateScope, advanced.lightmapMode, advanced.nearClip, advanced.farPlane,
+            advanced.material, advanced.drawHook, advanced.coreFrustum, advanced.drawTransparent,
+            debug.enabled, debug.hudKey, debug.logRenderPerf, debug.logLightingDiag,
+            backFaceCull, vanillaFog, enableRendering, toggleKey
+        );
+    }
+    bool operator==(const RuntimeOptions& o) const { return tie() == o.tie(); }
+};
+std::optional<RuntimeOptions> gApplied; // what applyRuntimeOptions last saw
+
+/// Applies the runtime options. Runs at install and on every change of the store (the settings page, the toggle
+/// key); a no-op when none of them changed.
+void applyRuntimeOptions(const dh::Options& opts) {
+    if (!gRenderer) return;
+    RuntimeOptions now = RuntimeOptions::of(opts);
+    if (gApplied && *gApplied == now) return;
+    gApplied = now;
+    gRenderer->applyOptions(opts);
+    gVFog      = fogModeOf(opts.client.graphics.fog.vanillaFog);
+    gDebugKeys = opts.client.debug.enabled;
+    gToggleKey = dh::input::resolveKey(opts.client.keys.toggleRendering, "client.keys.toggleRendering");
+    setPipeline(*gRenderer, opts.client.enableRendering);
+    if (bedrock::ClientWorldDriver::instance().pipeline() && gRenderer->config().farMode == FarMode::Off)
+        gRenderer->config().farMode = FarMode::LocalProjPush; // LODs live beyond the vanilla far plane
+    // The key poll only exists when something needs it: a bound key, the debug keys or the env test feed.
+    if ((gToggleKey != 0 || gDebugKeys || gFeedAllowed) && !gKeyListener)
+        gKeyListener = ll::event::EventBus::getInstance().emplaceListener<ll::event::AfterUIRenderEvent>(onKeys);
+    if (gDebugKeys) updateHud();
+}
+
+bool gStoreListenerAdded = false; // ConfigStore listeners cannot be removed: register once per process
+
+} // namespace
+
 LodRenderer& renderer() { return *gRenderer; }
 bool         enabled() { return gEnabled; }
 void         setEnabled(bool on) {
@@ -562,14 +638,24 @@ void install() {
     gRenderer  = std::make_unique<LodRenderer>();
 
     // Options (config.json is loaded by ConfigBridge::init in DistantHorizons::enable before this runs).
-    const dh::Options opts = bedrock::ConfigBridge::instance().config().options();
+    auto&             store = bedrock::ConfigBridge::instance().config();
+    const dh::Options opts  = store.options();
     gRenderer->applyOptions(opts);
+    gApplied   = RuntimeOptions::of(opts);
     gVFog      = fogModeOf(opts.client.graphics.fog.vanillaFog);
     gDebugKeys = opts.client.debug.enabled;
     gToggleKey = dh::input::resolveKey(opts.client.keys.toggleRendering, "client.keys.toggleRendering");
     {
         char const* feed = std::getenv("DH_TEST_FEED");
         gFeedAllowed     = feed != nullptr && feed[0] == '1';
+    }
+    // The pipeline itself is started by the world driver (client.enableRendering); from here on every change of
+    // the store re-applies the runtime options.
+    if (!gStoreListenerAdded) {
+        gStoreListenerAdded = true;
+        store.onChange([](const dh::Options& o) {
+            if (gInstalled) applyRuntimeOptions(o);
+        });
     }
 
     LodRenderHook::hook();
@@ -605,6 +691,7 @@ void uninstall() {
     if (!gInstalled) return;
     gInstalled = false;
     gEnabled   = false;
+    gApplied.reset();
     auto& bus  = ll::event::EventBus::getInstance();
     if (gKeyListener) bus.removeListener(gKeyListener);
     if (gExitListener) bus.removeListener(gExitListener);

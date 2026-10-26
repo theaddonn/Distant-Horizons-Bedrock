@@ -4,6 +4,7 @@
 #include "bedrock_common/FileLogger.h"
 #include "bedrock_common/LeviLogger.h"
 #include "bedrock_common/Platform.h"
+#include "client/SettingsPage.h"
 #include "client/Version.h"
 #include "client/hud/DebugHud.h"
 #include "client/render/MaterialInjector.h"
@@ -49,11 +50,13 @@ bool DistantHorizons::enable() {
     dh::render::installMaterialInjector(); // no-op if load() already installed it
     dh::render::install();
     dh::bedrock::ClientWorldDriver::instance().install();
+    dh::settings::install(); // after the render hooks: its setters feed the store listener registered there
     DH_LOG_I("DH enabled");
     return true;
 }
 
 bool DistantHorizons::disable() {
+    dh::settings::uninstall(); // first: the page callbacks point into this DLL
     dh::bedrock::ClientWorldDriver::instance().uninstall();
     dh::render::uninstall();
     dh::render::uninstallMaterialInjector();

@@ -16,6 +16,23 @@ add_requires("levilamina 26.51.6", {configs = {target_type = get_config("target_
 
 add_requires("levibuildscript 0.6.1")
 
+-- Lever (https://github.com/theaddonn/Lever): settings pages inside the vanilla Ore UI settings screen. Built from
+-- source at a pinned commit; client only. Bump the commit here (and the date-version) to update.
+package("lever")
+    set_homepage("https://github.com/theaddonn/Lever")
+    set_description("Settings pages for LeviLamina client mods")
+    set_license("MIT")
+    add_urls("https://github.com/theaddonn/Lever.git")
+    add_versions("2026.10.26", "16c76c9e600a797a434d2409e3427943c8acd25a")
+    on_install("windows", function (package)
+        import("package.tools.xmake").install(package)
+    end)
+package_end()
+
+if is_config("target_type", "client") then
+    add_requires("lever 2026.10.26")
+end
+
 if not has_config("vs_runtime") then
     set_runtimes("MD")
 end
@@ -62,6 +79,9 @@ target(mod_name)
         target:add("defines", "DH_GIT_SHA=\"" .. sha .. "\"")
     end)
     add_packages("levilamina")
+    if is_config("target_type", "client") then
+        add_packages("lever")
+    end
     set_kind("shared")
     set_symbols("debug")
     add_headerfiles("src/bedrock_common/**.h", mod_dir .. "/**.h")

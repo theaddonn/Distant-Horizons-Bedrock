@@ -49,6 +49,13 @@ Tests run with `$(projectdir)` (= `tests/`) as working directory, so golden file
 
 The `propagate` replay skips its slow cases (all `*_k8_*` and a few others, ~60 s under ASan) by default; run the full set with `DH_GOLDEN_SLOW=1 scripts/test-host.sh -tc="*propagate*"`.
 
+## Lever
+
+The client depends on [Lever](https://github.com/theaddonn/Lever) (the in-game settings pages). It is declared as an
+inline xmake package in `xmake.lua` (`package("lever")`) that clones the repository at a pinned commit and builds the
+static library with the same toolchain; the first client configure fetches it (needs network access). To update, change
+the commit hash and the date version in both `add_versions` and `add_requires`. The server build does not use it.
+
 ## Vendored dependencies
 
 Header-only dependencies of `dh_core` live in `src/core/third_party/` (see `THIRD_PARTY.md` there) and are a public include dir of `dh_core`, so both the Windows and host builds use the same headers.

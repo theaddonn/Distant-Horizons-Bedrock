@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- In-game settings: Settings -> Mods -> Distant Horizons, five pages generated from the option table (General with the quality and thread presets, Graphics, Culling, World generation, Advanced), saved to `config.json` at once. Built with [Lever](https://github.com/theaddonn/Lever), fetched by xmake at a pinned commit.
+
+### Changed
+
+- Rendering options (`client.advanced.*`, `client.graphics.fog.vanillaFog`, `client.graphics.clouds.backFaceCull`, `client.debug.*` log switches, `client.keys.toggleRendering`) and the master switch apply immediately when the store changes.
+- The toggle key now writes `client.enableRendering` (as Java's quick-enable key does), so the state persists and the settings page shows it.
+
 ## [0.1.0-beta.1-mc26.51] - 2026-10-24
 
 First public beta: the client mod for Minecraft Bedrock 1.26.51 with LeviLamina 26.51.6. The server package is experimental.
