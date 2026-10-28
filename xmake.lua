@@ -23,14 +23,14 @@ package("lever")
     set_description("Settings pages for LeviLamina client mods")
     set_license("MIT")
     add_urls("https://github.com/theaddonn/Lever.git")
-    add_versions("2026.10.26", "16c76c9e600a797a434d2409e3427943c8acd25a")
+    add_versions("0.1.0", "97969505af34d84c371e296bb2f2474207ccab46")
     on_install("windows", function (package)
         import("package.tools.xmake").install(package)
     end)
 package_end()
 
 if is_config("target_type", "client") then
-    add_requires("lever 2026.10.26")
+    add_requires("lever 0.1.0")
 end
 
 if not has_config("vs_runtime") then
