@@ -8,7 +8,7 @@
 // `levelName` is what FullDataSourceRequest.levelName carries and what ServerNetwork::findLevelByName compares
 // byte-for-byte. The client learns the key from LevelInit (answer to RequestLevelInit(dimensionResourceLocation)),
 // so with sendLevelKeys on it sends the key; with it off it never gets a key and sends the dimension resource
-// location (e.g. "minecraft:overworld"). See docs/PORTING.md (GLUE-3 follow-ups).
+// location (e.g. "minecraft:overworld"). See the internal porting notes (GLUE-3 follow-ups).
 
 #include <string>
 

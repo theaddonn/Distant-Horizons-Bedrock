@@ -2,7 +2,7 @@
 
 // dh::IChunkGenerator for the BDS server DLL: produces chunks that are NOT loaded in the world.
 //
-// Strategy (spike, nothing here could be run offline - see docs/spikes/server-driver.md):
+// Strategy (spike, nothing here could be run offline - see the internal server-driver spike notes):
 //   Surface / Features:
 //     1. scratch chunk: the dimension's WorldGenerator IS a ChunkSource (`class WorldGenerator : public
 //        ChunkSource`), so `generator->createNewChunk(cp, LoadMode::None, false)` returns a fresh, empty,
@@ -15,7 +15,7 @@
 //        3x3 neighbourhood: WorldGenerator::postProcessStructures + decorationPostProcessChunk).
 //     4. Generating -> Generated; wrap in an owning BedrockChunk, snapshot() it on the worker thread (blocks,
 //        biomes, height maps), release the LevelChunk, block-light it (lightChunk, block only) and deliver.
-//   Features (Run 13, docs/PORTING.md "Run 13 (LOD content)"): base terrain for the batch + a 2-chunk ring (cached
+//   Features (Run 13, the internal porting notes "Run 13 (LOD content)"): base terrain for the batch + a 2-chunk ring (cached
 //        per batch, generated in parallel by the batch's tasks); the last task to finish its base terrain decorates
 //        the batch + a 1-chunk ring like vanilla's OverworldGenerator::decorationPostProcessChunk (the engine's
 //        `decorateWorldGenPostProcess` with the vanilla chunk seed over the cell's 3x3, then the freeze/snow pass),
@@ -93,7 +93,7 @@ public:
     /// done(false).
     void stopWorkersAndWait();
 
-    /// Compare mode (env DH_BEDROCK_GEN_COMPARE=1, docs/PORTING.md "Run 13"): `real` is a snapshot of a chunk the
+    /// Compare mode (env DH_BEDROCK_GEN_COMPARE=1, the internal porting notes "Run 13"): `real` is a snapshot of a chunk the
     /// game generated; the same position is generated again through the Features path and the difference
     /// (dh::compareChunks) is logged per chunk plus a running total. At most 2 comparisons run at a time, the
     /// rest are skipped (counted). No-op when the mode is off.

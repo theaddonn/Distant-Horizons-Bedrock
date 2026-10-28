@@ -814,7 +814,7 @@ ClientWorldDriver::collectRenderList(dh::RenderListParams params, bool coreFrust
 
     // Java passes minHeight and `minHeight + level.getMaxHeight()` where Java's getMaxHeight() is the world HEIGHT.
     // Our ILevelInfo::maxHeight() is the exclusive top Y already (= min + height), so it is passed unchanged: the
-    // intended range, with no double add of the min (documented in docs/spikes/m1-lods.md).
+    // intended range, with no double add of the min (documented in the internal m1-lods spike notes).
     out.minY = c->info().minHeight();
     out.maxY = c->info().maxHeight();
     if (coreFrustum) {

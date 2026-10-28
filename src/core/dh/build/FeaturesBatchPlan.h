@@ -1,7 +1,7 @@
 #pragma once
 
 // Which chunks the Bedrock distant generator's Features mode builds, structure-processes, decorates and delivers for
-// one square batch, and in which order (Bedrock port, not part of Java DH; docs/PORTING.md "Run 15").
+// one square batch, and in which order (Bedrock port, not part of Java DH; the internal porting notes "Run 15").
 //
 // Vanilla's per-chunk state machine (scheduler RE, Run 15): loadChunk (-> Generated, 2); structure post-process once
 // the chunk's 3x3 is Generated (-> 4); decoration once all eight neighbours are at >= 4 plus the DecorationParity
@@ -14,7 +14,7 @@
 //   delivery       : the batch only, after ALL decoration (ring chunks are never delivered: their 3x3 is not
 //                    fully decorated)
 // Neighbour decoration two chunks out (a ring-1 cell's lower-class neighbours in ring 2) is not reproduced; see
-// PORTING.md "Run 15" for why and its cost.
+// the internal porting notes "Run 15" for why and its cost.
 
 #include <algorithm>
 #include <cstdint>
@@ -50,7 +50,7 @@ inline std::vector<ChunkXZ> squareRing(std::int32_t minX, std::int32_t minZ, std
     return out;
 }
 
-/// The scratch chunks a batch needs constructed up front (one server-thread task per batch, PORTING.md "Run 16"):
+/// The scratch chunks a batch needs constructed up front (one server-thread task per batch, the internal porting notes "Run 16"):
 /// Features = the batch + the 2-chunk ring (the plan's base terrain cells, (w+4)^2), Surface = the batch (w^2).
 inline std::vector<ChunkXZ> batchConstructionCells(bool features, std::int32_t minX, std::int32_t minZ, std::int32_t width) {
     return squareRing(minX, minZ, width, features ? 2 : 0);

@@ -209,7 +209,7 @@ void lightBlockOnly(BedrockChunk& chunk) {
     dh::LightingOptions lo;
     lo.maxSkyLight        = 15;
     lo.generateBlockLight = true;
-    lo.generateSkyLight   = false; // sky light is baked per section by the updater (PORTING.md, J2)
+    lo.generateSkyLight   = false; // sky light is baked per section by the updater (the internal porting notes, J2)
     dh::lightChunk(chunk, {}, lo);
 }
 
@@ -834,7 +834,7 @@ BdsWorldGenerator::generateScratch(const std::shared_ptr<Batch>& batch, std::int
     return wrapped;
 }
 
-// --- Features mode (docs/PORTING.md "Run 13 (LOD content)") ---------------------------------------------------
+// --- Features mode (the internal porting notes "Run 13 (LOD content)") ---------------------------------------------------
 //
 // Vanilla (static RE of 1.26.51, OverworldGenerator::decorationPostProcessChunk @0xc594e80 and its scheduler
 // @0x29db3c0): a chunk is decorated over a 3x3 ChunkViewSource centred on it, so features spill into all eight
@@ -976,7 +976,7 @@ bool BdsWorldGenerator::structureCell(const std::shared_ptr<Batch>& batch, std::
     // The tail loop that records structure references in the chunk (saved-data only) is not reproduced.
     //
     // Run 15: the starts are the LIVE generator's shared objects, so a piece that mutates itself while placing changes
-    // what the real chunk gets later. Excluded per cell (static RE, PORTING.md "Run 15"):
+    // what the real chunk gets later. Excluded per cell (static RE, the internal porting notes "Run 15"):
     //   * mineshaft, always: MineshaftCorridor::postProcess 0x6a51c90 sets hasPlacedSpider ([this+0x5a], 0x6a528ba)
     //     when it places the cave-spider spawner -> the real mineshaft would lose that spawner;
     //   * pillager_outpost, when the cell's 3x3 is incomplete (ring-2 cells): the piece (0x6a8cc00) fixes its height
@@ -1046,7 +1046,7 @@ bool BdsWorldGenerator::decorateCell(const std::shared_ptr<Batch>& batch, std::i
     ::Level& level = static_cast<::Level&>(dimension_.mLevel);
 
     // Vanilla: BlockSource over the 3x3 view (vanilla also prunes neighbours that are already past
-    // CheckingForReplacementData; within freshly generated terrain none can be, see PORTING.md "Run 15").
+    // CheckingForReplacementData; within freshly generated terrain none can be, see the internal porting notes "Run 15").
     CellView      view(dimension_, level, batch, x, z);
     ::BlockSource& bs = view.bs;
 
@@ -1095,7 +1095,7 @@ void BdsWorldGenerator::decorateAndDeliver(const std::shared_ptr<Batch>& batch) 
     probe::Timer            tDecoWait(probe::pDecoWait);
     std::lock_guard         deco(batch->decoMutex);
     tDecoWait.stop();
-    // Run 15 (docs/PORTING.md): vanilla's state machine runs the structure pass of a chunk once its 3x3 has base
+    // Run 15 (internal porting notes): vanilla's state machine runs the structure pass of a chunk once its 3x3 has base
     // terrain, decorates it once all eight neighbours are structure-processed (plus DecorationParity), and a chunk is
     // final once its whole 3x3 is decorated. The plan reproduces that for the batch; only batch chunks are delivered,
     // after the last decoration, so no decoration ever spills into a chunk that was already delivered.

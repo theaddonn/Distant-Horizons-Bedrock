@@ -1,4 +1,4 @@
-// Chunk ingestion for the client world driver (docs/PORTING.md, ChunkHashStore.h recipe; the server counterpart is
+// Chunk ingestion for the client world driver (the internal porting notes, ChunkHashStore.h recipe; the server counterpart is
 // src/server/ServerWorldDriver.cpp).
 //
 //   hooks / events   only NOTE (dimension, chunk, due time) in Session::pending (any thread, microseconds).

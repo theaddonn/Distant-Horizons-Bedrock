@@ -1,7 +1,7 @@
 #pragma once
 
 // GLUE-4: the client world driver. Bedrock hooks -> dh::DhClientServerWorld / dh::DhClientWorld -> LodQuadTree ->
-// MeshUploader (Stage-A renderer). Everything here is untested in game (see docs/spikes/m1-lods.md).
+// MeshUploader (Stage-A renderer). Everything here is untested in game (see the internal m1-lods spike notes).
 //
 // Modes (decided once per session in startSession()):
 //   singleplayer  a server Level lives in this process (ll::service::getLevel() / getMinecraft(false)->getLevel()
@@ -24,7 +24,7 @@
 //   render thread   LodRenderer::renderFrame: collectRenderList() under a try-shared lock.
 //   pool threads    everything inside the core (ThreadPools).
 //
-// Shutdown order (stopSession, PORTING.md): ingestion hooks off + drained -> worker stopped -> render lock taken
+// Shutdown order (stopSession, the internal porting notes): ingestion hooks off + drained -> worker stopped -> render lock taken
 // exclusively -> world.close() (levels: request modules/trees -> save cache flush -> executors drained -> provider)
 // -> world destroyed (network state detaches the transport listener) -> transport shut down -> thread pools shut
 // down and joined -> handles/serializer destroyed.

@@ -137,7 +137,7 @@ bool AbstractLevel::updateChunkAsync(std::shared_ptr<IChunk> chunk, std::vector<
     if (!shouldProcessChunkUpdate(ChunkPos(chunk->chunkX(), chunk->chunkZ()))) return false;
 
     inFlightChunkTasks_.fetch_add(1);
-    // PORTING.md "shared_ptr<IChunk> ownership": the task owns the chunk and its neighbours until it is done.
+    // the internal porting notes "shared_ptr<IChunk> ownership": the task owns the chunk and its neighbours until it is done.
     // The gate lets close() retire tasks that are queued but never started (they only touch the gate afterwards).
     const bool queued = deps_.exec.lodBuilder->execute(
         [this, gate = gate_, chunk = std::move(chunk), neighbours = std::move(neighbours)] {
@@ -576,7 +576,7 @@ ServerLevelModule::ServerLevelModule(
     // request handling over the network (AbstractDhServerLevel.registerNetworkHandlers)
     if (deps.serverNetwork != nullptr && deps.serverPlayers != nullptr && deps.exec.networkWork != nullptr) {
         mp::LevelInfo li;
-        // PORTING.md level naming rule (bedrock_common/LevelNaming.h): levelName = sendLevelKeys ? levelKey : dimension
+        // the internal porting notes level naming rule (bedrock_common/LevelNaming.h): levelName = sendLevelKeys ? levelKey : dimension
         li.dimension               = std::string(serverHandle.info().dimensionName());
         li.levelKey                = serverHandle.levelKey();
         li.levelName               = deps.serverPlayers->settings.sendLevelKeys ? li.levelKey : li.dimension;

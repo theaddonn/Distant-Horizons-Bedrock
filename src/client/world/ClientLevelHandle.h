@@ -7,7 +7,7 @@
 //     colours LODs; serverSideHandle() returns the paired server handle in singleplayer, nullptr when remote.
 //   * server handle  (isClientSide()==false): wraps the dimension of the in-process server Level (singleplayer only).
 //
-// Identity (docs/PORTING.md, LevelNaming.h):
+// Identity (the internal porting notes, LevelNaming.h):
 //   singleplayer  dhIdentifier() = dimension resource location, for BOTH handles (they must agree: the store folder
 //                 and the shared DhClientServerLevel are keyed by it).
 //   remote        dhIdentifier() = the server's levelKey once setLevelKey() was called with the LevelInit answer

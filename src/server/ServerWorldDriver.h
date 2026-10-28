@@ -10,7 +10,7 @@
 // Shared: BlockTable/BlockSerializer (data/*.json from the mod dir), ThreadPools (options), SystemClock,
 // PacketTransport + NetServer.
 //
-// Chunk ingestion (docs/PORTING.md, ChunkHashStore.h recipe):
+// Chunk ingestion (the internal porting notes, ChunkHashStore.h recipe):
 //   hooks Level::$onChunkLoaded and DBChunkStorage::$saveLiveChunk only note (dimension, chunk) in a pending
 //   set (any thread). The server-thread tick drains it under a time budget: re-fetch the chunk from the
 //   dimension's ChunkSource (shared_ptr keeps it alive), BedrockChunk -> unchanged-hash skip -> block light

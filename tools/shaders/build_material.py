@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """build_material.py - swap shader code of one pass in an UNPACKED vanilla .material.bin and repack it (Stage B).
 
-Works on the JSON+blob directory produced by `mbt.jar -u` (see docs/spikes/shader-toolchain.md): <dir>/<Name>.json,
+Works on the JSON+blob directory produced by `mbt.jar -u` (see the internal shader-toolchain spike notes): <dir>/<Name>.json,
 <dir>/<Pass>/<Pass>.json and <dir>/<Pass>/<n>.<Platform>.<Stage>.dxbc.  The bgfx v5 blob header (VSH/FSH, hash, uniform
 table, attribute ids, cbuf size) is held as structured fields in <Pass>.json, the .dxbc file is only the native code, so
 this tool edits those fields; the result is then serialised by MaterialBinTool into the v5 blob (identical to

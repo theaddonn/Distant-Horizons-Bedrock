@@ -17,7 +17,7 @@ struct Frustum5 {
     glm::vec4 p[5]{};
 
     /// `transposed` = row-vector layout as detected by spikes::analyzeProjection (clip = v * M); see the derivation in
-    /// docs/spikes/stage-a-render.md.
+    /// the internal stage-a-render spike notes.
     static Frustum5 build(glm::mat4 const& proj, glm::mat4 const& view, bool transposed) {
         Frustum5  f;
         glm::mat4 m   = transposed ? view * proj : proj * view;

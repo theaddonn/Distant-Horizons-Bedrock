@@ -1,7 +1,7 @@
 #pragma once
 
 // Bedrock world-generation facts the distant generator reproduces (not part of Java DH). From static RE of
-// Minecraft Bedrock 1.26.51 (docs/PORTING.md "Run 13 (LOD content)"):
+// Minecraft Bedrock 1.26.51 (the internal porting notes "Run 13 (LOD content)"):
 //
 // * Decoration chunk seed (OverworldGenerator::decorationPostProcessChunk, all arithmetic 32-bit):
 //     Random r(levelSeed); xs = r.nextInt() / 2 * 2 + 1; zs = r.nextInt() / 2 * 2 + 1;

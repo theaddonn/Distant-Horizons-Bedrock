@@ -7,7 +7,7 @@
 // Intended flow for WP-L (AbstractDhLevel.updateChunkAsync):
 //   1. caller: if (hashes.get(chunkPos) == newHash) skip;            // getChunkHash, 0 = unknown
 //   2. src = createFromChunk(...); tracker.notePending(src->pos, chunkPos, newHash);
-//   3. merge into the delayed save cache (mutate inside the first lock, see PORTING.md)
+//   3. merge into the delayed save cache (mutate inside the first lock, see the internal porting notes)
 //   4. when the cache hands over the merged section:
 //        provider.updateAsync(section)->onComplete([&](const Result<bool>& r) {
 //            if (r.has_value() && !provider.isClosed()) tracker.commit(section->pos);

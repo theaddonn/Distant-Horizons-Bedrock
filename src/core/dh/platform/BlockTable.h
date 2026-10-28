@@ -20,7 +20,7 @@
 // resolveBlock(): exact serial first; if absent and the serial carries a state list, the
 // base name (everything before '[') is tried; otherwise nullptr. Variants share every property
 // of their base entry (the table is per block id); they exist so the serial, and thus the
-// chunk hash and the stored palette, keep the layer height (PORTING.md snow-layer note: the
+// chunk hash and the stored palette, keep the layer height (the internal porting notes snow-layer note: the
 // Java snow rule looks for `layers=N` on minecraft:snow, Bedrock has
 // `minecraft:snow_layer[height=N]`; the transformer must match this serial).
 //

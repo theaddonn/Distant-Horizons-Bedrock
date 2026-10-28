@@ -1,7 +1,7 @@
 #pragma once
 
 // dh::ITransport over a LeviLamina custom network packet ("dh:frame"), shared by the client and the
-// server DLL (see docs/spikes/server-driver.md).
+// server DLL (see the internal server-driver spike notes).
 //
 // Carrier: ll::network::PacketBase<DhFramePacket> registered through ll::network::PacketRegistrar. Both
 // the client and the server LeviLamina.dll export PacketRegistrar / RuntimePacket (verified: the symbols

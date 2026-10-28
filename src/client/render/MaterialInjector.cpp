@@ -842,7 +842,7 @@ LL_STATIC_HOOK(
 //=====================================================================================================================
 
 //---------------------------------------------------------------------------------------------------------------------
-// Signature-resolved engine functions (Minecraft.Windows.exe 1.26.51; see docs/spikes/stage-b-offline.md). Raw-ABI
+// Signature-resolved engine functions (Minecraft.Windows.exe 1.26.51; see the internal stage-b-offline spike notes). Raw-ABI
 // detours: sret pointers are explicit parameters and the functions return them in rax.
 //---------------------------------------------------------------------------------------------------------------------
 

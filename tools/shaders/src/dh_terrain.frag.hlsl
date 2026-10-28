@@ -63,7 +63,7 @@ float4 main(PSIn i) : SV_Target0 {
             c *= LightMap.SampleLevel(LightSamp, uv, 0).rgb;
         } else {
             // Procedural lightmap (no vanilla texture available): Java LightTexture.updateLightTexture, gamma 0, no
-            // night vision (docs/spikes/vanilla-lighting.md 2b). daylight = skyDarken (0.2 night .. 1 day).
+            // night vision (the internal vanilla-lighting spike notes 2b). daylight = skyDarken (0.2 night .. 1 day).
             // Packed light = sky * 16 + block.
             float  packedLight = round(saturate(-i.texCoords.y - 1.0) * 255.0);
             float  sky = floor(packedLight / 16.0), block = packedLight - sky * 16.0;

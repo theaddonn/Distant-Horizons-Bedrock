@@ -6,7 +6,7 @@
 //       is spliced in renderer/materials/DH_Terrain.material.bin -> contents of
 //       <modDir>/materials/DH_Terrain.material.bin, returns true
 //   * RenderMaterialGroup::loadList: probe, logs the list path and whether "DH_Terrain" resolves afterwards.
-// Toggle: env DH_MATERIAL_INJECT=0|1 (default: on iff the .material.bin exists). See docs/spikes/stage-b-offline.md.
+// Toggle: env DH_MATERIAL_INJECT=0|1 (default: on iff the .material.bin exists). See the internal stage-b-offline spike notes.
 
 #include <cstdint>
 

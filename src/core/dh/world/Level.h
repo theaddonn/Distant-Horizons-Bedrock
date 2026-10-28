@@ -27,7 +27,7 @@
 //     server_ ............ ServerLevelModule       chunk generator, WorldGenerator, LodRequestModule(GenQueue)
 //     client_ ............ ClientLevelModule       LodQuadTree(s), RenderList
 //
-// close() order (PORTING.md "destruction order module -> queue -> provider"):
+// close() order (the internal porting notes "destruction order module -> queue -> provider"):
 //   1. closeImpl(): request module(s) stop their retrieval queue (module.close() -> queue.shutdown(true), futures
 //      cancelled), network handlers/listeners are detached, then the tree is closed (G2: queues first, then the
 //      tree) which disposes every section (sink.remove).
@@ -133,7 +133,7 @@ public:
       token(token),
       options_(opts) {}
 
-    /// Runs inside DelayedSaveCache's per-position lock (PORTING.md: mutate inside the first lock).
+    /// Runs inside DelayedSaveCache's per-position lock (the internal porting notes: mutate inside the first lock).
     void update(const ChunkSaveInput* in) override;
 
     FullDataSource                                 merged;
@@ -183,7 +183,7 @@ public:
     ///      section by the updater at detail 6)
     ///   3. createFromChunk -> merged into the delayed save cache (hash noted in the container)
     ///   4. when the cache hands the section over: provider.updateAsync -> commit the hashes (ChunkHashStore.h recipe)
-    /// `chunk` and `neighbours` are kept alive by the queued task (PORTING.md shared_ptr<IChunk> ownership); the
+    /// `chunk` and `neighbours` are kept alive by the queued task (the internal porting notes shared_ptr<IChunk> ownership); the
     /// caller must not mutate them afterwards. Returns false if the task could not be queued.
     bool updateChunkAsync(std::shared_ptr<IChunk> chunk, std::vector<std::shared_ptr<IChunk>> neighbours = {});
     bool onChunkLoaded(std::shared_ptr<IChunk> chunk, std::vector<std::shared_ptr<IChunk>> neighbours = {}) {

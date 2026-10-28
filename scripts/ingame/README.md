@@ -28,4 +28,4 @@ Facts learned about this machine
 * The game window is 2547x1343 at (254,365) on a 7680x2160 X screen; `import -window root` returns black.
 * LeviLamina logger output is not in `logs/latest.log`; read `mods/DistantHorizons/logs/dh.log` (rotates at 5 MB, one `.1` backup).
 
-HUD keys: F7 toggles the HUD, F8 writes `hud-dump: {...}` to dh.log. Spike keys: see `docs/spikes/render-spikes.md`.
+HUD keys: F7 toggles the HUD, F8 writes `hud-dump: {...}` to dh.log. Spike keys: see `the internal render-spikes spike notes`.

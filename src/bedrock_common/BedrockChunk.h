@@ -9,7 +9,7 @@
 //   ChunkWrapper rules); Bedrock's mHeightmap is NOT used.
 // * biomes: LevelChunk::getBiome per query (cached Biome* -> BiomeInfo*).
 // * DH light: in-memory nibble-per-byte arrays, zero-initialised; isDh*Correct start false (the
-//   native SubChunk light storages are not used, see docs/spikes/chunk-ingress.md).
+//   native SubChunk light storages are not used, see the internal chunk-ingress spike notes).
 
 #include "bedrock_common/BlockSerial.h"
 #include "dh/platform/IChunk.h"

@@ -43,7 +43,7 @@ namespace dh::render {
 class CloudRenderer {
 public:
     /// Texel size (blocks) and drift of the vanilla clouds (Java: 12 blocks per texel, 0.03 blocks/tick = 0.6 b/s
-    /// towards -X). Bedrock's own values are unverified in-game (docs/spikes/m1-lods.md, Run 10).
+    /// towards -X). Bedrock's own values are unverified in-game (the internal m1-lods spike notes, Run 10).
     static constexpr int   kCellBlocks     = 12;
     static constexpr float kDriftBlocksSec = 0.6f;
     static constexpr float kThickness      = 4.0f;

@@ -2,7 +2,7 @@
 
 // Bedrock-port diagnostic (not part of Java DH): how closely a chunk produced by the distant generator matches the
 // chunk the game itself generated at the same position. Used by the generator's compare mode
-// (DH_BEDROCK_GEN_COMPARE=1, docs/PORTING.md "Run 13") to measure decoration fidelity in game.
+// (DH_BEDROCK_GEN_COMPARE=1, the internal porting notes "Run 13") to measure decoration fidelity in game.
 
 #include <cstdint>
 #include <string>

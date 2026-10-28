@@ -3,7 +3,7 @@
 // Stage-A LOD renderer: owns the MeshUploader (the IVertexSink the core uploads into), the draw settings and the
 // per-frame draw loop (budgeted upload pump, frustum + near cut-off culling, opaque then transparent draws with a
 // per-section world-matrix translate). Render thread only, except sink() which any thread may use.
-// All the unknowns R0-R3 are toggles in Config (see docs/spikes/stage-a-render.md).
+// All the unknowns R0-R3 are toggles in Config (see the internal stage-a-render spike notes).
 
 #include "client/render/CloudRenderer.h"
 #include "client/render/MeshUploader.h"
@@ -53,7 +53,7 @@ inline constexpr int kDrawHookCount = 4;
 /// sky inserts; `Overdraw` keeps the opaque draw and repeats it with DH_TerrainLate (2x draw calls); `Opaque` is the
 /// pre-Run-13 behaviour (stars show through LODs).
 /// Run 14: the Transparent pass sorts its draws back to front by an unstable per-draw distance key with no submission
-/// tie-break (static RE, docs/PORTING.md Run 14), so in `Late` a section's opaque draw can land after its own ice or
+/// tie-break (static RE, the internal porting notes Run 14), so in `Late` a section's opaque draw can land after its own ice or
 /// water and overwrite it (black flicker). `Overdraw` is therefore the default: the sea floor is already in the depth
 /// buffer from the Opaque pass, and the translucent layer is drawn with DH_TerrainWater (blend + depth write), so a
 /// late repeat ordered after the water fails the depth test. `Late` keeps DH_TerrainTransparent (A/B repro only).

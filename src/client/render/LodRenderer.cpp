@@ -340,7 +340,7 @@ void LodRenderer::drawFrame(ScreenContext& ctx, ViewSnapshot const& vs, IClientI
     // DH_Terrain lighting (LightmapMode, client.advanced.lightmapMode). Default: the procedural Java lightmap in the FS (no texture).
     // Dynamic*: the live RenderDragon lightmap, dynamic texture BrightnessTexture<subClientId> in
     // MinecraftGameplayGraphicsResources::mDynamicTextures (read-only lookup, never creates the entry; see
-    // docs/spikes/lightmap-texture.md), bound at slot 0. Without it the draw falls back to the procedural path.
+    // the internal lightmap-texture spike notes), bound at slot 0. Without it the draw falls back to the procedural path.
     // LevelRenderer::mBrightnessTex is not tried any more: its client texture is NULL under RenderDragon (Run 11).
     bool               lightmapOk = false;
     char const*        lightSrc   = "none";

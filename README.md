@@ -105,7 +105,7 @@ When reporting a bug, attach `dh.log` (and `dh.log.1`), `dh-freeze.log` if it ex
 
 ## Building
 
-See [docs/BUILDING.md](docs/BUILDING.md). Debugging: [docs/DEBUG.md](docs/DEBUG.md). Porting notes: [docs/PORTING.md](docs/PORTING.md).
+See [docs/BUILDING.md](docs/BUILDING.md). Debugging: [docs/DEBUG.md](docs/DEBUG.md).
 
 ## License
 
