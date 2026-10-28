@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- In-game settings: Settings -> Mods -> Distant Horizons, five pages generated from the option table (General with the quality and thread presets, Graphics, Culling, World generation, Advanced), saved to `config.json` at once. Built with [Lever](https://github.com/theaddonn/Lever), fetched by xmake at a pinned commit.
+- In-game settings: Settings -> Mods -> Distant Horizons, one page generated from the option table with the sections General (with the quality preset), Graphics, Culling, World generation, Threads (preset dropdown or manual values) and Advanced, saved to `config.json` at once. Dependent rows (fog, clouds, cave culling height, zoom quality, debug, manual threads) grey out or appear with their switch. Built with [Lever](https://github.com/theaddonn/Lever), fetched by xmake at a pinned commit.
 
 ### Changed
 

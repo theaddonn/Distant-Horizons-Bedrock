@@ -1,12 +1,13 @@
 #pragma once
 
-// The in-game settings pages (Settings -> Mods -> Distant Horizons), built with Lever from the option metadata table
-// (dh/config/Options.h): one widget per option, grouped into a few pages. Edits go through the ConfigBridge store,
-// which saves config.json and runs the change listeners (RenderHooks applies the rendering options live).
+// The in-game settings page (Settings -> Mods -> Distant Horizons), built with Lever from the option metadata table
+// (dh/config/Options.h): one row per option, grouped into titled sections; rows that only matter while a switch is
+// on are greyed out or hidden with it. Edits go through the ConfigBridge store, which saves config.json and runs the
+// change listeners (RenderHooks applies the rendering options live).
 
 namespace dh::settings {
 
-/// Registers the pages with Lever. Call after ConfigBridge::init and after the render hooks are installed.
+/// Registers the page with Lever. Call after ConfigBridge::init and after the render hooks are installed.
 void install();
 
 /// Drops the registration (the callbacks point into this DLL). Call from disable().

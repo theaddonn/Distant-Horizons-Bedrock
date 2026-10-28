@@ -25,7 +25,7 @@ The mod writes its configuration on first start, so no `config.json` is shipped.
 
 ## Configuration
 
-In game: Settings -> Mods -> Distant Horizons (five pages: General with the quality and thread presets, Graphics, Culling, World generation, Advanced). Every client and common option below has a widget there; edits are saved to `config.json` at once. Rendering options (`client.advanced.*`, fog hand-over, cloud back-face culling, the master switch, the toggle key) apply immediately, the rest when you next join a world. The pages come from [Lever](https://github.com/theaddonn/Lever), which is built into the mod.
+In game: Settings -> Mods -> Distant Horizons, one page with the sections General (master switch, render distance, quality preset), Graphics, Culling, World generation, Threads (preset or manual) and Advanced. Every client and common option below has a widget there; rows that only matter when another option is on are greyed out or appear when it is turned on. Edits are saved to `config.json` at once. Rendering options (`client.advanced.*`, fog hand-over, cloud back-face culling, the master switch, the toggle key) apply immediately, the rest when you next join a world. The pages come from [Lever](https://github.com/theaddonn/Lever), which is built into the mod.
 
 File: `<game>/mods/DistantHorizons/config/config.json` (LeviLamina's config directory of the mod), written with defaults when missing. The file is nested JSON by the dotted path below. Rules:
 

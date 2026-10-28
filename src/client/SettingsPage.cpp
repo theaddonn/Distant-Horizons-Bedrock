@@ -26,55 +26,81 @@ namespace {
 
 constexpr const char* kModId = "distanthorizons";
 
-/// A header on a page followed by the options whose path equals `prefix` or starts with `prefix` + '.'. Options
-/// already placed by an earlier section (pages are filled in order) are skipped, which is how "General" takes the
+/// An optional header followed by the options whose path equals `prefix` or starts with `prefix` + '.'. Options
+/// already placed by an earlier group (sections are filled in order) are skipped, which is how "General" takes the
 /// render distance out of the quality group.
-struct Section {
+struct Group {
     const char* header;
     const char* subtitle;
     const char* prefix;
 };
 
-struct PageSpec {
-    const char*          id;
-    const char*          title;
-    std::vector<Section> sections;
+/// One titled section of the mod's settings page.
+struct SectionSpec {
+    const char*        id;
+    const char*        title;
+    std::vector<Group> groups;
 };
 
-const std::vector<PageSpec>& pages() {
-    static const std::vector<PageSpec> kPages = {
+const std::vector<SectionSpec>& sections() {
+    static const std::vector<SectionSpec> kSections = {
         {"general",
          "General",
          {
-             {"Rendering", "The master switch and the options that matter most", "client.enableRendering"},
+             {nullptr, nullptr, "client.enableRendering"},
              {nullptr, nullptr, "client.graphics.quality.lodChunkRenderDistanceRadius"},
              {nullptr, nullptr, "client.keys"},
          }},
         {"graphics",
          "Graphics",
          {
-             {"Quality", "Detail of the LODs (the quality preset on the General page sets most of these)", "client.graphics.quality"},
+             {"Quality", "Detail of the LODs (the quality preset above sets most of these)", "client.graphics.quality"},
              {nullptr, nullptr, "client.graphics.enableSsao"},
              {nullptr, nullptr, "client.graphics.enableAntiAliasing"},
              {nullptr, nullptr, "client.graphics.overrideVanillaGraphicsSettings"},
              {"Fog", "DH fog and the hand-over from the vanilla fog", "client.graphics.fog"},
              {"Clouds", "The LOD cloud layer", "client.graphics.clouds"},
          }},
-        {"culling", "Culling", {{"Culling", "What is skipped when LODs are built and drawn", "client.graphics.culling"}}},
-        {"worldgen",
-         "World generation",
-         {{"Distant generation", "Generating chunks beyond the loaded ones (singleplayer)", "common.worldGenerator"}}},
+        {"culling", "Culling", {{nullptr, nullptr, "client.graphics.culling"}}},
+        {"worldgen", "World generation", {{nullptr, nullptr, "common.worldGenerator"}}},
+        {"threads", "Threads", {{nullptr, nullptr, "common.multiThreading"}}},
         {"advanced",
          "Advanced",
          {
              {"Rendering internals", "The verified defaults; change only for troubleshooting", "client.advanced"},
              {"Debug", "Overlay, debug keys and extra log lines", "client.debug"},
              {"LOD building", nullptr, "common.lodBuilding"},
-             {"Threads", "The thread preset above sets these", "common.multiThreading"},
          }},
     };
-    return kPages;
+    return kSections;
 }
+
+/// Rows that only matter while a switch is on: `prefix` rows (other than the switch itself) are greyed out, or
+/// hidden when `hide`, while the switch `gate` is off.
+struct Gate {
+    const char* gate;
+    const char* prefix;
+    bool        hide;
+};
+
+const Gate kGates[] = {
+    {"client.graphics.fog.enableDhFog", "client.graphics.fog", false},
+    {"client.graphics.clouds.renderDhClouds", "client.graphics.clouds", false},
+    {"client.graphics.culling.enableCaveCulling", "client.graphics.culling.caveCullingHeight", true},
+    {"client.graphics.quality.increaseQualityWhenZoomedIn", "client.graphics.quality.maxZoomQualityIncrease", true},
+    {"client.debug.enabled", "client.debug", false},
+};
+
+const OptionMeta* findMeta(std::string_view path) {
+    const OptionMeta* meta = optionMeta();
+    for (std::size_t i = 0; i < optionMetaCount(); ++i)
+        if (meta[i].path == path) return &meta[i];
+    return nullptr;
+}
+
+/// UI-only: show the manual thread values instead of the preset dropdown. Starts as "manual" when the stored values
+/// match no preset.
+bool gManualThreads = false;
 
 bool matches(std::string_view path, std::string_view prefix) {
     if (path == prefix) return true;
@@ -132,7 +158,7 @@ std::string enumLabel(const char* javaName) {
 dh::ConfigStore& store() { return bedrock::ConfigBridge::instance().config(); }
 
 /// The page an option path is placed on ("" when none).
-std::string pageOf(std::string_view path);
+std::string sectionOf(std::string_view path);
 
 template <class T>
 T readOption(const OptionMeta& m) {
@@ -185,40 +211,40 @@ std::string formatNumber(const OptionMeta& m, double v) {
     return buf;
 }
 
-/// Adds the widget for one option. Numbers with a usable range become sliders, unbounded ones text fields.
-void addOption(lever::Page& page, const OptionMeta& m) {
+/// Adds the row for one option. Numbers with a usable range become sliders, unbounded ones text fields.
+lever::Widget& addOption(lever::Section& sec, const OptionMeta& m) {
     const std::string id    = settingId(m.path);
     const std::string label = labelOf(m.path);
     const std::string desc  = m.comment ? m.comment : "";
     switch (m.type) {
     case OptionType::Bool:
-        page.addToggle(id, label, desc, [&m] { return readOption<bool>(m); }, [&m](bool v) { writeOption<bool>(m, v); });
-        break;
+        return sec.toggle(id, label, [&m] { return readOption<bool>(m); }, [&m](bool v) { writeOption<bool>(m, v); })
+            .description(desc);
     case OptionType::Enum: {
         std::vector<std::string> names;
         for (int i = 0; i < m.enumCount; ++i) names.push_back(enumLabel(m.enumNames[i]));
-        page.addDropdown(
-            id,
-            label,
-            desc,
-            std::move(names),
-            [&m] { return static_cast<int>(readOption<std::uint8_t>(m)); },
-            [&m](int v) {
-                if (v >= 0 && v < m.enumCount) writeOption<std::uint8_t>(m, static_cast<std::uint8_t>(v));
-            }
-        );
-        break;
+        return sec
+            .dropdown(
+                id,
+                label,
+                std::move(names),
+                [&m] { return static_cast<int>(readOption<std::uint8_t>(m)); },
+                [&m](int v) {
+                    if (v >= 0 && v < m.enumCount) writeOption<std::uint8_t>(m, static_cast<std::uint8_t>(v));
+                }
+            )
+            .description(desc);
     }
     case OptionType::String:
-        page.addTextField(
-            id,
-            label,
-            desc,
-            [&m] { return readOption<std::string>(m); },
-            [&m](const std::string& v) { writeOption<std::string>(m, v); },
-            1024
-        );
-        break;
+        return sec
+            .textField(
+                id,
+                label,
+                [&m] { return readOption<std::string>(m); },
+                [&m](const std::string& v) { writeOption<std::string>(m, v); },
+                1024
+            )
+            .description(desc);
     case OptionType::Int:
     case OptionType::Float:
     case OptionType::Double: {
@@ -227,61 +253,80 @@ void addOption(lever::Page& page, const OptionMeta& m) {
         const bool   bounded = std::isfinite(min) && std::isfinite(max) && min >= -1.0e6 && max <= 1.0e6 && max > min;
         const double step    = bounded ? niceStep(max - min, m.type == OptionType::Int) : 0;
         if (step > 0) {
-            page.addSlider(id, label, desc, min, max, step, [&m] { return readNumber(m); }, [&m](double v) { writeNumber(m, v); });
-        } else {
-            const std::string pageId = pageOf(m.path);
-            page.addTextField(
+            return sec.slider(id, label, min, max, step, [&m] { return readNumber(m); }, [&m](double v) { writeNumber(m, v); })
+                .description(desc);
+        }
+        const std::string sectionId = sectionOf(m.path);
+        return sec
+            .textField(
                 id,
                 label,
-                desc.empty() ? std::string("A number.") : desc + " (a number)",
                 [&m] { return formatNumber(m, readNumber(m)); },
-                [&m, id, pageId](const std::string& v) {
+                [&m, id, sectionId](const std::string& v) {
                     char*        end = nullptr;
                     const double d   = std::strtod(v.c_str(), &end);
                     if (end != v.c_str() && std::isfinite(d)) writeNumber(m, d);
-                    else lever::notifyChanged(kModId, pageId, id); // invalid text: show the stored value again
+                    else lever::notifyChanged(kModId, sectionId, id); // invalid text: show the stored value again
                 },
                 32
-            );
-        }
-        break;
+            )
+            .description(desc.empty() ? std::string("A number.") : desc + " (a number)");
     }
+    }
+    return sec.header(id, label, desc); // unreachable: every OptionType is handled above
+}
+
+/// Greys out or hides a row whose switch (kGates) is off; the switch row itself is left alone.
+void applyGates(lever::Widget& w, const OptionMeta& m) {
+    for (const Gate& g : kGates) {
+        if (!matches(m.path, g.prefix) || std::strcmp(m.path, g.gate) == 0) continue;
+        const OptionMeta* gate = findMeta(g.gate);
+        if (!gate || gate->type != OptionType::Bool) continue;
+        lever::Condition on = [gate] { return readOption<bool>(*gate); };
+        if (g.hide) w.visibleWhen(std::move(on));
+        else w.enabledWhen(std::move(on));
     }
 }
 
-/// The preset dropdowns are not options: they derive from and write several options at once.
-void addQualityPreset(lever::Page& page) {
+/// The preset dropdowns are not options: they derive from and write several options at once. A preset touches rows
+/// in other sections, so the whole mod page is told to re-read.
+void addQualityPreset(lever::Section& sec) {
     static const char* const kNames[] = {"Custom", "Minimum", "Low", "Medium", "High", "Extreme"};
-    page.addDropdown(
-        "qualityPreset",
-        "Quality preset",
-        "Sets the resolution, vertical quality, transparency, SSAO, anti-aliasing, fade, cave culling and biome blending "
-        "options together. Custom = the current values match no preset.",
-        std::vector<std::string>(std::begin(kNames), std::end(kNames)),
-        [] { return static_cast<int>(detectQualityPreset(store().options())); },
-        [](int v) {
-            if (v <= 0 || v > static_cast<int>(QualityPreset::Extreme)) return;
-            store().set([v](Options& o) { applyQualityPreset(o, static_cast<QualityPreset>(v)); });
-            lever::notifyChanged(kModId); // touches Graphics, Culling and this dropdown
-        }
-    );
+    sec.dropdown(
+           "qualityPreset",
+           "Quality preset",
+           std::vector<std::string>(std::begin(kNames), std::end(kNames)),
+           [] { return static_cast<int>(detectQualityPreset(store().options())); },
+           [](int v) {
+               if (v <= 0 || v > static_cast<int>(QualityPreset::Extreme)) return;
+               store().set([v](Options& o) { applyQualityPreset(o, static_cast<QualityPreset>(v)); });
+               lever::notifyChanged(kModId);
+           }
+    )
+        .description(
+            "Sets the resolution, vertical quality, transparency, SSAO, anti-aliasing, fade, cave culling and biome "
+            "blending options in the Graphics and Culling sections together. Custom = the current values match no preset."
+        );
 }
 
-void addThreadPreset(lever::Page& page) {
+void addThreadPreset(lever::Section& sec) {
     static const char* const kNames[] =
         {"Custom", "Minimal impact", "Low impact", "Balanced", "Aggressive", "I paid for the whole CPU"};
-    page.addDropdown(
-        "threadPreset",
-        "Thread preset",
-        "Sets the number of worker threads and their run-time ratio together.",
-        std::vector<std::string>(std::begin(kNames), std::end(kNames)),
-        [] { return static_cast<int>(detectThreadPreset(store().options(), store().cores())); },
-        [](int v) {
-            if (v <= 0 || v > static_cast<int>(ThreadPreset::IPaidForTheWholeCpu)) return;
-            store().set([v](Options& o) { applyThreadPreset(o, static_cast<ThreadPreset>(v), store().cores()); });
-            lever::notifyChanged(kModId);
-        }
-    );
+    sec.toggle("manualThreads", "Manual thread settings", [] { return gManualThreads; }, [](bool v) { gManualThreads = v; })
+        .description("Off: pick a preset. On: set the number of worker threads and their run-time ratio yourself.");
+    sec.dropdown(
+           "threadPreset",
+           "Thread preset",
+           std::vector<std::string>(std::begin(kNames), std::end(kNames)),
+           [] { return static_cast<int>(detectThreadPreset(store().options(), store().cores())); },
+           [](int v) {
+               if (v <= 0 || v > static_cast<int>(ThreadPreset::IPaidForTheWholeCpu)) return;
+               store().set([v](Options& o) { applyThreadPreset(o, static_cast<ThreadPreset>(v), store().cores()); });
+               lever::notifyChanged(kModId);
+           }
+    )
+        .description("Sets the number of worker threads and their run-time ratio together. Custom = the current values match no preset.")
+        .visibleWhen([] { return !gManualThreads; });
 }
 
 /// "0.1.0-beta.1-mc26.51" -> {0, 1, 0}.
@@ -299,10 +344,10 @@ lever::Version modVersion() {
 
 bool gInstalled = false;
 
-std::string pageOf(std::string_view path) {
-    for (const PageSpec& spec : pages())
-        for (const Section& s : spec.sections)
-            if (matches(path, s.prefix)) return spec.id;
+std::string sectionOf(std::string_view path) {
+    for (const SectionSpec& spec : sections())
+        for (const Group& g : spec.groups)
+            if (matches(path, g.prefix)) return spec.id;
     return {};
 }
 
@@ -319,45 +364,55 @@ void install() {
     info.description = std::string("Level-of-detail terrain beyond the vanilla render distance. Build ") + kGitSha
                      + ". Rendering options apply at once; quality, culling and generation options apply when you next "
                        "join a world.";
-    if (!lever::registerMod(info)) {
-        DH_LOG_W("settings: Lever refused the mod registration; no settings pages");
+    lever::Mod& mod = lever::registerMod(info);
+    if (!mod.valid()) {
+        DH_LOG_W("settings: Lever refused the mod registration; no settings page");
         return;
     }
+    gManualThreads = detectThreadPreset(store().options(), store().cores()) == ThreadPreset::Custom;
     const OptionMeta*               meta  = optionMeta();
     const std::size_t               count = optionMetaCount();
     std::unordered_set<std::string> placed;
     int                             widgets = 0;
-    for (const PageSpec& spec : pages()) {
-        lever::Page& page = lever::addPage(kModId, spec.id, spec.title);
-        if (std::strcmp(spec.id, "general") == 0) {
-            page.addBanner(
+    for (const SectionSpec& spec : sections()) {
+        lever::Section& sec       = mod.section(spec.id, spec.title);
+        const bool      isGeneral = std::strcmp(spec.id, "general") == 0;
+        const bool      isThreads = std::strcmp(spec.id, "threads") == 0;
+        if (isGeneral) {
+            sec.banner(
                 "apply",
                 "Rendering options apply at once; quality, culling and generation options apply when you next join a world.",
                 lever::BannerKind::Info
             );
-            page.addHeader("presets", "Presets", "Each one sets several options on the other pages");
-            addQualityPreset(page);
-            addThreadPreset(page);
+        }
+        if (isThreads) {
+            addThreadPreset(sec);
             widgets += 2;
         }
-        for (const Section& s : spec.sections) {
-            if (s.header) page.addHeader(std::string("h-") + s.prefix, s.header, s.subtitle ? s.subtitle : "");
+        for (const Group& g : spec.groups) {
+            if (g.header) sec.header(std::string("h-") + g.prefix, g.header, g.subtitle ? g.subtitle : "");
             for (std::size_t i = 0; i < count; ++i) {
                 const OptionMeta& m = meta[i];
-                if (!matches(m.path, s.prefix) || placed.count(m.path)) continue;
+                if (!matches(m.path, g.prefix) || placed.count(m.path)) continue;
                 placed.insert(m.path);
-                addOption(page, m);
+                lever::Widget& w = addOption(sec, m);
+                applyGates(w, m);
+                if (isThreads) w.visibleWhen([] { return gManualThreads; });
                 ++widgets;
             }
+        }
+        if (isGeneral) {
+            addQualityPreset(sec);
+            ++widgets;
         }
     }
     int unplaced = 0;
     for (std::size_t i = 0; i < count; ++i)
         if (!placed.count(meta[i].path) && std::strncmp(meta[i].path, "server.", 7) != 0) ++unplaced;
     DH_LOG_I(
-        "settings: %d widgets on %zu Lever pages (%d client/common options without a page), Lever %s",
+        "settings: %d widgets in %zu Lever sections (%d client/common options without a section), Lever %s",
         widgets,
-        pages().size(),
+        sections().size(),
         unplaced,
         std::string(lever::libraryVersion()).c_str()
     );
@@ -371,8 +426,13 @@ void uninstall() {
 
 void notifyChanged(const char* optionPath) {
     if (!gInstalled || !optionPath) return;
-    const std::string page = pageOf(optionPath);
-    if (!page.empty()) lever::notifyChanged(kModId, page, settingId(optionPath));
+    for (const Gate& g : kGates)
+        if (std::strcmp(optionPath, g.gate) == 0) { // a switch: its dependent rows re-evaluate too
+            lever::notifyChanged(kModId);
+            return;
+        }
+    const std::string section = sectionOf(optionPath);
+    if (!section.empty()) lever::notifyChanged(kModId, section, settingId(optionPath));
 }
 
 } // namespace dh::settings
